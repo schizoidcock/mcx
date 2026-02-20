@@ -50,16 +50,45 @@ return {
 
 ## Installation
 
+### Global Install (Recommended)
+
 ```bash
+# Install the CLI globally
+npm install -g @papicandela/mcx-cli
+
+# Or with bun
+bun add -g @papicandela/mcx-cli
+```
+
+> **Requires Bun:** MCX uses Bun for runtime. [Install Bun](https://bun.sh) if you haven't already.
+
+### From Source (Development)
+
+```bash
+git clone https://github.com/schizoidcock/mcx
+cd mcx
 bun install
 bun run build
 ```
 
-> **Fully Bun-native:** Uses Bun for package management, building, and runtime. No Node.js required.
-
 ## Quick Start
 
-### 1. Setup
+### New Project Setup
+
+```bash
+# 1. Create and enter your project directory
+mkdir my-project && cd my-project
+
+# 2. Initialize MCX (creates config, installs dependencies)
+mcx init
+
+# 3. Generate adapters from API docs
+mcx gen
+
+# 4. Configure MCP (see Claude Code Integration below)
+```
+
+### Development Setup (from source)
 
 ```bash
 # Create environment file
@@ -67,19 +96,13 @@ cp .env.template .env
 
 # Create config file
 cp mcx.config.template.ts mcx.config.ts
-```
 
-### 2. Create Adapters
-
-```bash
-# Option A: Generate from OpenAPI docs (recommended)
+# Generate or create adapters
 mcx gen
-
-# Option B: Copy from template
-cp adapters/adapter.template.ts adapters/my-api.ts
+# or: cp adapters/adapter.template.ts adapters/my-api.ts
 ```
 
-### 3. Run
+### Run
 
 ```bash
 # Start MCP server (stdio mode for Claude Code)
@@ -157,10 +180,13 @@ Initialize a new MCX project in the current directory.
 mcx init
 ```
 
-Creates:
+Creates/updates:
+- `package.json` - With MCX dependencies (`@papicandela/mcx-core`, `@papicandela/mcx-adapters`)
 - `mcx.config.ts` - Configuration file
 - `adapters/example.ts` - Example adapter
 - `skills/hello.ts` - Example skill
+
+Automatically runs `bun install` to install dependencies.
 
 ### `mcx list`
 
@@ -337,7 +363,7 @@ export const zep = defineAdapter({
 ## Creating Adapters
 
 ```typescript
-import { defineAdapter } from '@mcx/adapters';
+import { defineAdapter } from '@papicandela/mcx-adapters';
 
 export const myApi = defineAdapter({
   name: 'myapi',
@@ -363,7 +389,7 @@ export const myApi = defineAdapter({
 Generic HTTP client with all standard methods.
 
 ```typescript
-import { createFetchAdapter } from '@mcx/adapters';
+import { createFetchAdapter } from '@papicandela/mcx-adapters';
 
 const api = createFetchAdapter({
   baseUrl: 'https://api.example.com',
@@ -381,7 +407,7 @@ Skills are reusable operations that combine multiple adapter calls.
 ### Using defineSkill
 
 ```typescript
-import { defineSkill } from '@mcx/core';
+import { defineSkill } from '@papicandela/mcx-core';
 
 export const dailySummary = defineSkill({
   name: 'daily-summary',
@@ -407,7 +433,7 @@ export const dailySummary = defineSkill({
 ### Using skillBuilder (Fluent API)
 
 ```typescript
-import { skillBuilder } from '@mcx/core';
+import { skillBuilder } from '@papicandela/mcx-core';
 
 export const processData = skillBuilder('process-data')
   .description('Fetch, transform, and store data')
@@ -466,7 +492,7 @@ skills/
 ### mcx.config.ts
 
 ```typescript
-import { defineConfig } from '@mcx/core';
+import { defineConfig } from '@papicandela/mcx-core';
 import { myAdapter } from './adapters/my-adapter';
 
 export default defineConfig({
@@ -494,7 +520,7 @@ export default defineConfig({
 ### Fluent Config Builder
 
 ```typescript
-import { configBuilder } from '@mcx/core';
+import { configBuilder } from '@papicandela/mcx-core';
 
 export default configBuilder()
   .adapter(myAdapter)
@@ -508,7 +534,7 @@ export default configBuilder()
 Use MCX programmatically in your own applications:
 
 ```typescript
-import { createExecutor } from '@mcx/core';
+import { createExecutor } from '@papicandela/mcx-core';
 
 const executor = createExecutor();
 await executor.loadConfig('./mcx.config.ts');
