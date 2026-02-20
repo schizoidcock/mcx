@@ -652,8 +652,8 @@ Then update your MCP configuration to point to the project:
 {
   "mcpServers": {
     "mcx": {
-      "command": "bun",
-      "args": ["run", "mcx", "serve", "-c", "/path/to/your/project"]
+      "command": "mcx",
+      "args": ["serve", "-c", "/path/to/your/project"]
     }
   }
 }
@@ -661,19 +661,20 @@ Then update your MCP configuration to point to the project:
 
 ## Claude Code Integration
 
-Add to your project's `.mcp.json`:
+Add to your Claude Code settings or project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "mcx": {
-      "command": "bun",
-      "args": ["run", "mcx", "serve"],
-      "cwd": "/path/to/project"
+      "command": "mcx",
+      "args": ["serve", "-c", "/path/to/project"]
     }
   }
 }
 ```
+
+> **Note:** The `-c` flag is required when using the globally installed CLI to specify which project's config to load.
 
 Or with environment variables:
 
@@ -681,9 +682,8 @@ Or with environment variables:
 {
   "mcpServers": {
     "mcx": {
-      "command": "bun",
-      "args": ["run", "mcx", "serve"],
-      "cwd": "/path/to/project",
+      "command": "mcx",
+      "args": ["serve", "-c", "/path/to/project"],
       "env": {
         "API_KEY": "your-api-key"
       }
