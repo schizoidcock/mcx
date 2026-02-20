@@ -215,8 +215,35 @@ async function promptImportAdapter(adapterName: string, adapterPath: string): Pr
   const match = newContent.match(adaptersRegex);
 
   if (match) {
-    const currentAdapters = match[1].trim();
-    const newAdapters = currentAdapters ? `${currentAdapters}, ${adapterName}` : adapterName;
+    let currentAdapters = match[1];
+
+    // Remove comments and clean up
+    const cleanedAdapters = currentAdapters
+      .split('\n')
+      .map(line => {
+        // Remove inline comments
+        const commentIndex = line.indexOf('//');
+        if (commentIndex !== -1) {
+          return line.slice(0, commentIndex);
+        }
+        return line;
+      })
+      .join('\n')
+      .trim();
+
+    // Extract actual adapter names (non-empty, non-whitespace tokens)
+    const adapterTokens = cleanedAdapters
+      .split(/[,\s]+/)
+      .filter(token => token.length > 0 && token !== ',');
+
+    // Add new adapter
+    adapterTokens.push(adapterName);
+
+    // Format the new adapters array
+    const newAdapters = adapterTokens.length > 0
+      ? adapterTokens.join(', ')
+      : adapterName;
+
     newContent = newContent.replace(adaptersRegex, `adapters: [${newAdapters}]`);
   }
 
