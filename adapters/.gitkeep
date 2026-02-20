@@ -1,0 +1,3 @@
+# This folder contains your adapters.
+# Use 'mcx gen -i' to generate adapters from OpenAPI docs.
+# Or copy from adapter.template.ts

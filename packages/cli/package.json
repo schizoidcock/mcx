@@ -1,0 +1,51 @@
+{
+  "name": "@mcx/cli",
+  "version": "0.1.0",
+  "description": "CLI for the MCX framework",
+  "type": "module",
+  "bin": {
+    "mcx": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun --env disable --external @opentui/core --external @opentui/react --external @opentui-ui/dialog --external @opentui-ui/toast && bun run add-shebang",
+    "add-shebang": "bun -e \"const f=Bun.file('dist/index.js');const c=await f.text();if(!c.startsWith('#!'))await Bun.write('dist/index.js','#!/usr/bin/env bun\\n'+c)\"",
+    "dev": "bun --watch dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mcx/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@opentui-ui/dialog": "^0.1.2",
+    "@opentui-ui/toast": "^0.0.5",
+    "@opentui/core": "^0.1.79",
+    "@opentui/react": "^0.1.79",
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1",
+    "react": "^19.2.4",
+    "yaml": "^2.6.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "keywords": [
+    "mcx",
+    "cli",
+    "mcp",
+    "claude"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,34 @@
+node_modules/
+dist/
+*.log
+.turbo/
+.env
+.env.local
+coverage/
+.DS_Store
+tasks/
+
+# User-generated files (use templates instead)
+adapters/*
+!adapters/.gitkeep
+!adapters/*.template.ts
+skills/*
+!skills/.gitkeep
+!skills/*.template.ts
+mcx.config.ts
+*.generated.ts
+
+# Test/temp files
+packages/cli/TODO.md
+packages/cli/alegra-complete/
+*.tmp
+*.temp
+
+# Personal adapters in package source (should be in user project, not here)
+packages/adapters/src/alegra.ts
+packages/adapters/src/supabase.ts
+packages/adapters/src/github.ts
+# Cache/generated
+.heroui-docs/
+.claude/
+examples/
