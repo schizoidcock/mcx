@@ -6,13 +6,14 @@ import { runCommand } from "./commands/run.js";
 import { serveCommand } from "./commands/serve.js";
 import { listCommand } from "./commands/list.js";
 import { genCommand } from "./commands/gen.js";
+import { updateCommand } from "./commands/update.js";
 
 const program = new Command();
 
 program
   .name("mcx")
   .description("MCX - Modular Code Execution framework for AI agents")
-  .version("0.1.0");
+  .version("0.1.2");
 
 program
   .command("init")
@@ -98,6 +99,22 @@ program
       });
     } catch (error) {
       console.error(pc.red("Gen failed:"), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("update")
+  .alias("upgrade")
+  .description("Update MCX CLI and project dependencies")
+  .option("-c, --cli", "Update CLI only")
+  .option("-p, --project", "Update project dependencies only")
+  .option("--check", "Check versions without updating")
+  .action(async (options: { cli?: boolean; project?: boolean; check?: boolean }) => {
+    try {
+      await updateCommand(options);
+    } catch (error) {
+      console.error(pc.red("Update failed:"), error);
       process.exit(1);
     }
   });

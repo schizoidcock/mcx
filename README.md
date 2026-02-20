@@ -188,6 +188,24 @@ Creates/updates:
 
 Automatically runs `bun install` to install dependencies.
 
+### `mcx update`
+
+Update MCX CLI and project dependencies. Alias: `mcx upgrade`
+
+```bash
+# Check versions without updating
+mcx update --check
+
+# Update everything (CLI + project)
+mcx update
+
+# Update CLI only
+mcx update --cli
+
+# Update project dependencies only
+mcx update --project
+```
+
 ### `mcx list`
 
 List all available adapters and skills. Alias: `mcx ls`
