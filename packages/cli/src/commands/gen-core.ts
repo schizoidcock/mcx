@@ -539,7 +539,7 @@ export function generateAdapter(name: string, endpoints: ParsedEndpoint[], baseU
   lines.push(` * Endpoints: ${endpoints.length}`);
   lines.push(` */`);
   lines.push(``);
-  lines.push(`import { defineAdapter } from '@mcx/adapters';`);
+  lines.push(`import { defineAdapter } from '@papicandela/mcx-adapters';`);
   lines.push(``);
   lines.push(`const BASE_URL = process.env.${envPrefix}_API_URL || '${baseUrl}';`);
   lines.push(``);
@@ -633,7 +633,7 @@ export function generateSDKAdapter(name: string, endpoints: ParsedEndpoint[], sd
   lines.push(` * Endpoints: ${endpoints.length}`);
   lines.push(` */`);
   lines.push(``);
-  lines.push(`import { defineAdapter } from '@mcx/adapters';`);
+  lines.push(`import { defineAdapter } from '@papicandela/mcx-adapters';`);
   lines.push(`import { ${sdk.importName} } from '${sdk.packageName}';`);
   lines.push(``);
 

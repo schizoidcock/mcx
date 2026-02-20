@@ -1,19 +1,26 @@
 {
-  "name": "@mcx/adapters",
+  "name": "@papicandela/mcx-adapters",
   "version": "0.1.0",
   "description": "MCX Adapter Utilities - HTTP client, generator",
+  "author": "papicandela",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/schizoidcock/mcx"
+  },
+  "keywords": ["mcp", "claude", "ai", "adapters", "api"],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "build": "bun build src/index.ts src/base.ts src/fetch.ts src/generator.ts --outdir dist --target node --external @mcx/core && tsc --emitDeclarationOnly --declaration --outDir dist",
+    "build": "bun build src/index.ts src/base.ts src/fetch.ts src/generator.ts --outdir dist --target node --external @papicandela/mcx-core && tsc --emitDeclarationOnly --declaration --outDir dist",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@mcx/core": "workspace:*",
+    "@papicandela/mcx-core": "workspace:*",
     "yaml": "^2.6.0",
     "zod": "^3.23.0"
   },

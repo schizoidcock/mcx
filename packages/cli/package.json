@@ -1,5 +1,5 @@
 {
-  "name": "@mcx/cli",
+  "name": "@papicandela/mcx-cli",
   "version": "0.1.0",
   "description": "CLI for the MCX framework",
   "type": "module",
@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mcx/core": "workspace:*",
+    "@papicandela/mcx-core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@opentui-ui/dialog": "^0.1.2",
     "@opentui-ui/toast": "^0.0.5",

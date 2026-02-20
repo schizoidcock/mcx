@@ -4,7 +4,7 @@
  * Copy this file to skills/your-skill.ts and customize:
  *   cp templates/skill.template.ts skills/my-skill.ts
  */
-import { defineSkill, skillBuilder } from "@mcx/core";
+import { defineSkill, skillBuilder } from "@papicandela/mcx-core";
 
 /**
  * Example 1: Using defineSkill with code string

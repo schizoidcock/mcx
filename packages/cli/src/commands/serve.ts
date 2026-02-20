@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import pc from "picocolors";
-import { BunWorkerSandbox } from "@mcx/core";
+import { BunWorkerSandbox } from "@papicandela/mcx-core";
 import { getMcxCliDir, getMcxRootDir } from "../utils/paths";
 
 // ============================================================================

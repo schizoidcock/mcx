@@ -10,7 +10,7 @@ export default defineConfig({
   banner: {
     js: "#!/usr/bin/env node",
   },
-  // Bundle @mcx/core directly but keep native modules external
-  noExternal: ["@mcx/core"],
+  // Bundle @papicandela/mcx-core directly but keep native modules external
+  noExternal: ["@papicandela/mcx-core"],
   external: ["isolated-vm"],
 });

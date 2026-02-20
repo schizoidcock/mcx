@@ -4,7 +4,7 @@
  * Copy this file to adapters/your-adapter.ts and customize:
  *   cp templates/adapter.template.ts adapters/my-api.ts
  */
-import { defineAdapter } from "@mcx/adapters";
+import { defineAdapter } from "@papicandela/mcx-adapters";
 
 // Configuration from environment variables
 const BASE_URL = process.env.MY_API_URL || "https://api.example.com";
