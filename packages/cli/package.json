@@ -24,7 +24,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun --env disable --external @opentui/core --external @opentui/react --external @opentui-ui/dialog --external @opentui-ui/toast && bun run add-shebang",
+    "build": "bun build src/index.ts --outdir dist --target bun --env disable --external @opentui/core --external @opentui/react --external @opentui-ui/dialog --external @opentui-ui/toast --external react --external react-reconciler && bun run add-shebang",
     "add-shebang": "bun -e \"const f=Bun.file('dist/index.js');const c=await f.text();if(!c.startsWith('#!'))await Bun.write('dist/index.js','#!/usr/bin/env bun\\n'+c)\"",
     "dev": "bun --watch dist/index.js",
     "typecheck": "tsc --noEmit"
