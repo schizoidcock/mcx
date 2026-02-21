@@ -13,7 +13,7 @@ const program = new Command();
 program
   .name("mcx")
   .description("MCX - Modular Code Execution framework for AI agents")
-  .version("0.1.3");
+  .version("0.1.4");
 
 program
   .command("init")
