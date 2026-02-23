@@ -3,6 +3,37 @@
  * Shared helpers for resolving MCX directories
  */
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { mkdirSync, existsSync } from "node:fs";
+
+/**
+ * Get the global MCX home directory (~/.mcx)
+ */
+export function getMcxHomeDir(): string {
+  return join(homedir(), ".mcx");
+}
+
+/**
+ * Ensure the global MCX home directory structure exists
+ * Creates ~/.mcx/, ~/.mcx/adapters/, ~/.mcx/skills/ if not present
+ */
+export function ensureMcxHomeDir(): string {
+  const homeDir = getMcxHomeDir();
+  const adaptersDir = join(homeDir, "adapters");
+  const skillsDir = join(homeDir, "skills");
+
+  if (!existsSync(homeDir)) {
+    mkdirSync(homeDir, { recursive: true });
+  }
+  if (!existsSync(adaptersDir)) {
+    mkdirSync(adaptersDir, { recursive: true });
+  }
+  if (!existsSync(skillsDir)) {
+    mkdirSync(skillsDir, { recursive: true });
+  }
+
+  return homeDir;
+}
 
 /**
  * Get the MCX CLI directory (packages/cli)
@@ -28,10 +59,19 @@ export function getMcxCliDir(): string {
 
 /**
  * Get the MCX root directory (where adapters/ and mcx.config.ts live)
- * Walks up from cwd looking for mcx.config.ts, falls back to cwd
+ * Returns ~/.mcx/ by default (global mode)
+ * Use findProjectRoot() if you need to find a local project config
  */
 export function getMcxRootDir(): string {
-  let dir = process.cwd();
+  return getMcxHomeDir();
+}
+
+/**
+ * Find a project-local MCX config by walking up from a directory
+ * Returns null if no mcx.config.ts found
+ */
+export function findProjectRoot(startDir: string = process.cwd()): string | null {
+  let dir = startDir;
 
   while (dir !== dirname(dir)) {
     const configPath = join(dir, "mcx.config.ts");
@@ -44,20 +84,26 @@ export function getMcxRootDir(): string {
     dir = dirname(dir);
   }
 
-  // Fall back to cwd if no config found
-  return process.cwd();
+  return null;
 }
 
 /**
- * Get the default adapters directory (in user's project)
+ * Get the default adapters directory (~/.mcx/adapters)
  */
 export function getAdaptersDir(): string {
-  return join(getMcxRootDir(), "adapters");
+  return join(getMcxHomeDir(), "adapters");
 }
 
 /**
- * Get the config file path
+ * Get the config file path (~/.mcx/mcx.config.ts)
  */
 export function getConfigPath(): string {
-  return join(getMcxRootDir(), "mcx.config.ts");
+  return join(getMcxHomeDir(), "mcx.config.ts");
+}
+
+/**
+ * Get the global .env file path (~/.mcx/.env)
+ */
+export function getEnvPath(): string {
+  return join(getMcxHomeDir(), ".env");
 }

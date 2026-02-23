@@ -50,14 +50,12 @@ return {
 
 ## Installation
 
-### Global Install (Recommended)
-
 ```bash
-# Install the CLI globally
-npm install -g @papicandela/mcx-cli
-
-# Or with bun
+# Install globally with bun (recommended)
 bun add -g @papicandela/mcx-cli
+
+# Initialize global directory (~/.mcx/)
+mcx init
 ```
 
 > **Requires Bun:** MCX uses Bun for runtime. [Install Bun](https://bun.sh) if you haven't already.
@@ -73,51 +71,48 @@ bun run build
 
 ## Quick Start
 
-### New Project Setup
-
 ```bash
-# 1. Create and enter your project directory
-mkdir my-project && cd my-project
-
-# 2. Initialize MCX (creates config, installs dependencies)
+# 1. Initialize global MCX directory
 mcx init
 
-# 3. Generate adapters from API docs
-mcx gen
+# 2. Generate adapters from API docs
+mcx gen ./api-docs.md -n myapi
 
-# 4. Configure MCP (see Claude Code Integration below)
+# 3. Add credentials
+# Edit ~/.mcx/.env with your API keys
+
+# 4. Start server (that's it!)
+mcx serve
+```
+
+MCX uses a **global directory** (`~/.mcx/`) for all adapters, skills, and configuration. No per-project setup needed.
+
+### Directory Structure
+
+```
+~/.mcx/
+├── adapters/           # All your adapters
+│   ├── stripe.ts
+│   └── myapi.ts
+├── skills/             # Reusable skills
+├── mcx.config.ts       # Auto-loads all adapters
+├── .env                # API credentials
+└── package.json        # Dependencies
 ```
 
 ### Development Setup (from source)
 
 ```bash
-# Create environment file
-cp .env.template .env
-
-# Create config file
-cp mcx.config.template.ts mcx.config.ts
-
-# Generate or create adapters
-mcx gen
-# or: cp adapters/adapter.template.ts adapters/my-api.ts
-```
-
-### Run
-
-```bash
-# Start MCP server (stdio mode for Claude Code)
-mcx serve
-
-# Or just run mcx (serve is the default command)
-mcx
+git clone https://github.com/schizoidcock/mcx
+cd mcx
+bun install
+bun run build
 ```
 
 ### Templates
 
 | File | Description |
 |------|-------------|
-| `.env.template` | Environment variables (API keys, etc.) |
-| `mcx.config.template.ts` | MCX configuration (adapters, sandbox settings) |
 | `adapters/adapter.template.ts` | Adapter template with CRUD examples |
 | `skills/skill.template.ts` | Skill template with 3 patterns |
 
@@ -133,12 +128,13 @@ mcx serve [options]
 Options:
   -t, --transport <type>  Transport mode: stdio (default) or http
   -p, --port <number>     HTTP port (default: 3100, only for http)
-  -c, --cwd <path>        Working directory for config and adapters
+  -c, --cwd <path>        Override config directory (default: ~/.mcx/)
 ```
 
 **Features:**
-- Auto-discovers `mcx.config.ts` by walking up the directory tree
-- Loads `.env` files automatically
+- Uses global `~/.mcx/` directory by default
+- Auto-loads all adapters from `~/.mcx/adapters/`
+- Loads `.env` from `~/.mcx/.env`
 - HTTP transport binds to `127.0.0.1` only (localhost)
 - HTTP mode exposes `/health` endpoint for monitoring
 
@@ -162,7 +158,7 @@ mcx gen ./api-docs -n myapi --exclude "reports,audit"
 
 Options:
   -n, --name <name>          Adapter name (auto-detected from source)
-  -o, --output <path>        Output file (default: adapters/<name>.ts)
+  -o, --output <path>        Output file (default: ~/.mcx/adapters/<name>.ts)
   -b, --base-url <url>       API base URL (auto-detected from OpenAPI)
   -a, --auth <type>          Auth type: basic, bearer, apikey, none
   --read-only                Generate GET methods only
@@ -174,37 +170,44 @@ Options:
 
 ### `mcx init`
 
-Initialize a new MCX project in the current directory.
+Initialize the global MCX directory at `~/.mcx/`.
 
 ```bash
 mcx init
 ```
 
-Creates/updates:
-- `package.json` - With MCX dependencies (`@papicandela/mcx-core`, `@papicandela/mcx-adapters`)
-- `mcx.config.ts` - Configuration file
-- `adapters/example.ts` - Example adapter
-- `skills/hello.ts` - Example skill
+Creates:
+- `~/.mcx/package.json` - MCX dependencies
+- `~/.mcx/mcx.config.ts` - Auto-loading config (discovers all adapters)
+- `~/.mcx/adapters/` - Directory for your adapters
+- `~/.mcx/skills/hello.ts` - Example skill
+- `~/.mcx/.env` - Template for API credentials
 
 Automatically runs `bun install` to install dependencies.
 
 ### `mcx update`
 
-Update MCX CLI and project dependencies. Alias: `mcx upgrade`
+Update MCX CLI and global installation. Alias: `mcx upgrade`
 
 ```bash
 # Check versions without updating
 mcx update --check
 
-# Update everything (CLI + project)
+# Update everything (CLI + global ~/.mcx/)
 mcx update
 
 # Update CLI only
 mcx update --cli
 
-# Update project dependencies only
-mcx update --project
+# Clean and update global installation only
+mcx update --global
 ```
+
+The `--global` flag cleans the `~/.mcx/` installation:
+- Removes `node_modules/` and `bun.lockb`
+- Regenerates `mcx.config.ts` with latest template
+- Updates dependencies to latest versions
+- Preserves your `adapters/`, `skills/`, and `.env`
 
 ### `mcx list`
 
@@ -588,80 +591,61 @@ const skillResult = await executor.runSkill('daily-summary', {
 
 ## Usage Models
 
-MCX supports two deployment models depending on your needs:
+### Global Directory (Default)
 
-### Model A: Centralized (Recommended for personal use)
-
-All adapters and skills live in a single MCX installation:
+MCX uses a single global directory for all adapters and configuration:
 
 ```
-D:\Claude\mcx\           ← MCX installed here
-├── mcx.config.ts
+~/.mcx/
+├── mcx.config.ts       # Auto-loads all adapters
 ├── adapters/
-│   ├── crm.ts
-│   ├── analytics.ts     ← add adapters here
-│   └── ...
-└── skills/
-    └── daily-summary.ts
+│   ├── stripe.ts
+│   ├── slack.ts        # Add adapters here
+│   └── myapi.ts
+├── skills/
+│   └── daily-summary.ts
+└── .env                # All API credentials
 ```
 
-The MCP server points to this directory. All your adapters are available in every conversation.
+**Benefits:**
+- One place for all adapters - always available
+- One `.env` file for all credentials
+- No per-project configuration needed
+- Claude Code config never changes
+
+### Per-Project (Legacy)
+
+For isolated project setups, use the `-c` flag:
+
+```bash
+mcx serve -c /path/to/project
+```
 
 **When to use:**
-- Personal setup with multiple APIs
-- You want all adapters always available
-- Simple configuration, no per-project setup needed
-
-### Model B: Per-project
-
-Each project has its own MCX configuration with isolated adapters:
-
-```
-D:\Claude\mcx\           ← MCX installed (just the runtime)
-
-D:\ProjectA\             ← Project A
-├── mcx.config.ts        ← created by `mcx init`
-├── adapters/
-│   └── project-a-api.ts
-└── skills/
-
-D:\ProjectB\             ← Project B
-├── mcx.config.ts
-├── adapters/
-│   └── project-b-api.ts
-└── skills/
-```
-
-Each project has its own adapters. The MCP server must point to the specific project directory.
-
-**When to use:**
-- Team environments where projects need different APIs
-- Distributing MCX as a project dependency
-- Isolating adapters per project for security or organization
+- Team environments with different API access
+- Isolating adapters per project for security
 - Different sandbox configurations per project
 
-**Setup:**
-```bash
-cd /path/to/your/project
-mcx init  # Creates mcx.config.ts, adapters/, skills/
-```
+## Claude Code Integration
 
-Then update your MCP configuration to point to the project:
+Add to your Claude Code settings (`~/.claude.json` or project's `.mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "mcx": {
       "command": "mcx",
-      "args": ["serve", "-c", "/path/to/your/project"]
+      "args": ["serve"]
     }
   }
 }
 ```
 
-## Claude Code Integration
+That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 
-Add to your Claude Code settings or project's `.mcp.json`:
+### Per-Project Override
+
+To use a specific project directory instead:
 
 ```json
 {
@@ -674,34 +658,16 @@ Add to your Claude Code settings or project's `.mcp.json`:
 }
 ```
 
-> **Note:** The `-c` flag is required when using the globally installed CLI to specify which project's config to load.
-
-Or with environment variables:
-
-```json
-{
-  "mcpServers": {
-    "mcx": {
-      "command": "mcx",
-      "args": ["serve", "-c", "/path/to/project"],
-      "env": {
-        "API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
 ## Server Options
 
 ```bash
-# Default: stdio transport (for Claude Code)
+# Default: uses ~/.mcx/ with stdio transport
 mcx serve
 
-# HTTP transport (for testing, other MCP clients, custom integrations)
+# HTTP transport (for testing, other MCP clients)
 mcx serve -t http -p 3100
 
-# Specify working directory
+# Use specific project directory
 mcx serve -c /path/to/project
 ```
 
@@ -709,7 +675,7 @@ mcx serve -c /path/to/project
 |--------|-------------|
 | `-t, --transport` | `stdio` (default) or `http` |
 | `-p, --port` | HTTP port (default: 3100, only for http transport) |
-| `-c, --cwd` | Working directory for config and adapters |
+| `-c, --cwd` | Override config directory (default: `~/.mcx/`) |
 
 ### HTTP Transport
 

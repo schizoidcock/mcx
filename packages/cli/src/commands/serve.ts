@@ -5,33 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import pc from "picocolors";
 import { BunWorkerSandbox } from "@papicandela/mcx-core";
-import { getMcxCliDir, getMcxRootDir } from "../utils/paths";
-
-// ============================================================================
-// Project Root Detection
-// ============================================================================
-
-/**
- * Find project root by searching up for mcx.config.ts
- * Similar to how ESLint/TypeScript find their config files
- */
-async function findProjectRoot(startDir: string): Promise<string | null> {
-  let dir = startDir;
-  const root = dirname(dir) === dir ? dir : null; // Handle root directory
-
-  while (true) {
-    const configPath = join(dir, "mcx.config.ts");
-    if (await Bun.file(configPath).exists()) {
-      return dir;
-    }
-
-    const parent = dirname(dir);
-    if (parent === dir) break; // Reached filesystem root
-    dir = parent;
-  }
-
-  return null;
-}
+import { getMcxCliDir, getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 
 // ============================================================================
 // .env Loading
@@ -85,18 +59,13 @@ async function loadEnvFromPath(envPath: string, label: string): Promise<number> 
 }
 
 /**
- * Load environment variables from MCX root directory
- * e.g., D:/Claude/mcx/.env
+ * Load environment variables from global MCX home directory
+ * e.g., ~/.mcx/.env
  */
 async function loadEnvFile(): Promise<void> {
-  const mcxCliDir = getMcxCliDir();
-  const mcxRoot = dirname(dirname(mcxCliDir)); // Go up from packages/cli
-  const envPath = join(mcxRoot, ".env");
-  const loaded = await loadEnvFromPath(envPath, envPath);
-
-  if (loaded === 0) {
-    console.error(pc.dim(`No .env file at ${envPath}`));
-  }
+  const mcxHome = getMcxHomeDir();
+  const envPath = join(mcxHome, ".env");
+  await loadEnvFromPath(envPath, "~/.mcx");
 }
 
 // ============================================================================
@@ -203,8 +172,8 @@ function summarizeObject(obj: unknown): unknown {
 
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
-    if (Array.isArray(val) && val.length > 3) {
-      result[key] = [`(${val.length} items)`];
+    if (Array.isArray(val) && val.length > MAX_ARRAY_ITEMS) {
+      result[key] = [...val.slice(0, MAX_ARRAY_ITEMS).map(summarizeObject), `... +${val.length - MAX_ARRAY_ITEMS} more`];
     } else if (typeof val === "object" && val !== null) {
       const keys = Object.keys(val as object);
       if (keys.length > 5) {
@@ -605,14 +574,22 @@ export interface ServeOptions {
 }
 
 export async function serveCommand(options: ServeOptions = {}): Promise<void> {
-  // If cwd is explicitly provided, use it
+  // If cwd is explicitly provided, use it (backward compatible)
   if (options.cwd) {
-    process.chdir(options.cwd);
+    // Check if it's a project-local config
+    const projectRoot = findProjectRoot(options.cwd);
+    if (projectRoot) {
+      process.chdir(projectRoot);
+      console.error(pc.dim(`[MCX] Using project: ${projectRoot}`));
+    } else {
+      process.chdir(options.cwd);
+      console.error(pc.dim(`[MCX] Using cwd: ${options.cwd}`));
+    }
   } else {
-    // Use MCX root directory as default (where adapters/ lives)
-    const mcxRoot = getMcxRootDir();
-    console.error(pc.dim(`[MCX] Using MCX root: ${mcxRoot}`));
-    process.chdir(mcxRoot);
+    // Default: use global ~/.mcx/ directory
+    const mcxHome = ensureMcxHomeDir();
+    console.error(pc.dim(`[MCX] Using global: ${mcxHome}`));
+    process.chdir(mcxHome);
   }
 
   if (options.transport === "http") {

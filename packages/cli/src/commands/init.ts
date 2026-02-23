@@ -2,26 +2,44 @@ import { mkdir, writeFile, access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import pc from "picocolors";
+import { getMcxHomeDir } from "../utils/paths";
 
 const MCX_CORE_VERSION = "^0.1.0";
 const MCX_ADAPTERS_VERSION = "^0.1.0";
 
+// Auto-loading config template that discovers adapters from adapters/
 const CONFIG_TEMPLATE = `import { defineConfig } from "@papicandela/mcx-core";
+import { readdirSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const adaptersDir = join(__dirname, "adapters");
+
+// Auto-load all adapters from adapters/
+const adapters: unknown[] = [];
+
+if (existsSync(adaptersDir)) {
+  const adapterFiles = readdirSync(adaptersDir).filter(f => f.endsWith(".ts"));
+
+  for (const file of adapterFiles) {
+    try {
+      const filePath = join(adaptersDir, file);
+      const fileUrl = pathToFileURL(filePath).href;
+      const mod = await import(fileUrl);
+      const adapter = mod.default || Object.values(mod)[0];
+      if (adapter && adapter.name && adapter.tools) {
+        adapters.push(adapter);
+      }
+    } catch (e) {
+      console.error(\`Failed to load adapter \${file}:\`, e);
+    }
+  }
+}
 
 export default defineConfig({
-  // Sandbox configuration
-  sandbox: {
-    timeout: 30000,
-    maxMemory: 256,
-  },
-
-  // Available adapters
-  adapters: [
-    // Add your adapters here
-    // example,
-  ],
-
-  // Skill directories
+  sandbox: { timeout: 30000 },
+  adapters,
   skills: ["./skills"],
 });
 `;
@@ -46,24 +64,12 @@ export default defineSkill({
 });
 `;
 
-const EXAMPLE_ADAPTER = `import { defineAdapter } from "@papicandela/mcx-adapters";
+const ENV_TEMPLATE = `# MCX Environment Variables
+# Add your API credentials here
 
-export default defineAdapter({
-  name: "example",
-  description: "An example adapter",
-
-  tools: {
-    greet: {
-      description: "Greet someone",
-      parameters: {
-        name: { type: "string", description: "Name to greet" },
-      },
-      async execute({ name }) {
-        return \`Hello, \${name}!\`;
-      },
-    },
-  },
-});
+# Example:
+# STRIPE_API_KEY=sk_test_...
+# OPENAI_API_KEY=sk-...
 `;
 
 async function exists(path: string): Promise<boolean> {
@@ -88,12 +94,11 @@ async function ensurePackageJson(cwd: string): Promise<boolean> {
       pkg = {};
     }
   } else {
-    // Create minimal package.json
-    const dirName = cwd.split(/[\\/]/).pop() || "mcx-project";
     pkg = {
-      name: dirName,
+      name: "mcx-global",
       version: "0.1.0",
       type: "module",
+      private: true,
     };
     created = true;
   }
@@ -153,55 +158,74 @@ async function runBunInstall(cwd: string): Promise<void> {
 }
 
 export async function initCommand(): Promise<void> {
-  const cwd = process.cwd();
+  const mcxHome = getMcxHomeDir();
 
-  console.log(pc.cyan("Initializing MCX project...\n"));
+  console.log(pc.cyan("Initializing global MCX directory...\n"));
+  console.log(pc.dim(`  Location: ${mcxHome}\n`));
+
+  // Create ~/.mcx directory
+  if (!(await exists(mcxHome))) {
+    await mkdir(mcxHome, { recursive: true });
+    console.log(pc.green("  Created ~/.mcx/"));
+  } else {
+    console.log(pc.dim("  ~/.mcx/ already exists"));
+  }
 
   // Create/update package.json with dependencies
-  const needsInstall = await ensurePackageJson(cwd);
+  const needsInstall = await ensurePackageJson(mcxHome);
 
-  // Create mcx.config.ts
-  const configPath = join(cwd, "mcx.config.ts");
-  if (await exists(configPath)) {
-    console.log(pc.yellow("  mcx.config.ts already exists, skipping"));
+  // Create adapters directory
+  const adaptersDir = join(mcxHome, "adapters");
+  if (!(await exists(adaptersDir))) {
+    await mkdir(adaptersDir, { recursive: true });
+    console.log(pc.green("  Created adapters/"));
   } else {
-    await writeFile(configPath, CONFIG_TEMPLATE);
-    console.log(pc.green("  Created mcx.config.ts"));
+    console.log(pc.dim("  adapters/ already exists"));
   }
 
   // Create skills directory
-  const skillsDir = join(cwd, "skills");
-  if (await exists(skillsDir)) {
-    console.log(pc.yellow("  skills/ already exists, skipping"));
-  } else {
+  const skillsDir = join(mcxHome, "skills");
+  if (!(await exists(skillsDir))) {
     await mkdir(skillsDir, { recursive: true });
     await writeFile(join(skillsDir, "hello.ts"), EXAMPLE_SKILL);
     console.log(pc.green("  Created skills/ with example skill"));
+  } else {
+    console.log(pc.dim("  skills/ already exists"));
   }
 
-  // Create adapters directory
-  const adaptersDir = join(cwd, "adapters");
-  if (await exists(adaptersDir)) {
-    console.log(pc.yellow("  adapters/ already exists, skipping"));
+  // Create mcx.config.ts with auto-loading
+  const configPath = join(mcxHome, "mcx.config.ts");
+  if (!(await exists(configPath))) {
+    await writeFile(configPath, CONFIG_TEMPLATE);
+    console.log(pc.green("  Created mcx.config.ts (auto-loads adapters)"));
   } else {
-    await mkdir(adaptersDir, { recursive: true });
-    await writeFile(join(adaptersDir, "example.ts"), EXAMPLE_ADAPTER);
-    console.log(pc.green("  Created adapters/ with example adapter"));
+    console.log(pc.dim("  mcx.config.ts already exists"));
+  }
+
+  // Create .env template
+  const envPath = join(mcxHome, ".env");
+  if (!(await exists(envPath))) {
+    await writeFile(envPath, ENV_TEMPLATE);
+    console.log(pc.green("  Created .env template"));
+  } else {
+    console.log(pc.dim("  .env already exists"));
   }
 
   // Install dependencies if needed
   if (needsInstall) {
     try {
-      await runBunInstall(cwd);
+      await runBunInstall(mcxHome);
       console.log(pc.green("\n  Dependencies installed successfully"));
     } catch (error) {
-      console.log(pc.yellow("\n  Failed to install dependencies. Run 'bun install' manually."));
+      console.log(pc.yellow("\n  Failed to install dependencies. Run 'bun install' in ~/.mcx/ manually."));
     }
   }
 
-  console.log(pc.cyan("\nMCX project initialized!"));
-  console.log(pc.dim("\nNext steps:"));
-  console.log(pc.dim("  1. Configure MCP in .mcp.json to point to this project"));
-  console.log(pc.dim("  2. Add your adapters in the adapters/ directory"));
-  console.log(pc.dim("  3. Run 'mcx serve' to start the MCP server"));
+  console.log(pc.cyan("\nMCX initialized!"));
+  console.log(pc.dim("\nUsage:"));
+  console.log(pc.dim("  1. Generate adapters:  mcx gen <openapi-spec> -n <name>"));
+  console.log(pc.dim("  2. Add credentials:    Edit ~/.mcx/.env"));
+  console.log(pc.dim("  3. Start server:       mcx serve"));
+  console.log(pc.dim("\nClaude Code config (no path needed):"));
+  console.log(pc.dim('  { "mcpServers": { "mcx": { "command": "mcx", "args": ["serve"] } } }'));
 }

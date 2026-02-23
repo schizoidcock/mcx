@@ -106,11 +106,12 @@ program
 program
   .command("update")
   .alias("upgrade")
-  .description("Update MCX CLI and project dependencies")
+  .description("Update MCX CLI and global installation")
   .option("-c, --cli", "Update CLI only")
-  .option("-p, --project", "Update project dependencies only")
+  .option("-g, --global", "Clean and update global ~/.mcx/ installation only")
+  .option("-p, --project", "Update project dependencies only (legacy)")
   .option("--check", "Check versions without updating")
-  .action(async (options: { cli?: boolean; project?: boolean; check?: boolean }) => {
+  .action(async (options: { cli?: boolean; global?: boolean; project?: boolean; check?: boolean }) => {
     try {
       await updateCommand(options);
     } catch (error) {

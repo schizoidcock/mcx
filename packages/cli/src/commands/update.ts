@@ -1,23 +1,70 @@
 import { spawn } from "node:child_process";
-import { readFile, access } from "node:fs/promises";
+import { readFile, writeFile, access, rm } from "node:fs/promises";
 import { join } from "node:path";
 import pc from "picocolors";
+import { getMcxHomeDir } from "../utils/paths";
 
 const CLI_PACKAGE = "@papicandela/mcx-cli";
 const CORE_PACKAGE = "@papicandela/mcx-core";
 const ADAPTERS_PACKAGE = "@papicandela/mcx-adapters";
 
+// Auto-loading config template (must match init.ts)
+const CONFIG_TEMPLATE = [
+  'import { defineConfig } from "@papicandela/mcx-core";',
+  'import { readdirSync, existsSync } from "fs";',
+  'import { join, dirname } from "path";',
+  'import { fileURLToPath, pathToFileURL } from "url";',
+  '',
+  'const __dirname = dirname(fileURLToPath(import.meta.url));',
+  'const adaptersDir = join(__dirname, "adapters");',
+  '',
+  '// Auto-load all adapters from adapters/',
+  'const adapters: unknown[] = [];',
+  '',
+  'if (existsSync(adaptersDir)) {',
+  '  const adapterFiles = readdirSync(adaptersDir).filter(f => f.endsWith(".ts"));',
+  '',
+  '  for (const file of adapterFiles) {',
+  '    try {',
+  '      const filePath = join(adaptersDir, file);',
+  '      const fileUrl = pathToFileURL(filePath).href;',
+  '      const mod = await import(fileUrl);',
+  '      const adapter = mod.default || Object.values(mod)[0];',
+  '      if (adapter && adapter.name && adapter.tools) {',
+  '        adapters.push(adapter);',
+  '      }',
+  '    } catch (e) {',
+  '      console.error(`Failed to load adapter ${file}:`, e);',
+  '    }',
+  '  }',
+  '}',
+  '',
+  'export default defineConfig({',
+  '  sandbox: { timeout: 30000 },',
+  '  adapters,',
+  '  skills: ["./skills"],',
+  '});',
+].join('\n');
+
 interface UpdateOptions {
   cli?: boolean;
   project?: boolean;
+  global?: boolean;
   check?: boolean;
 }
 
 async function getInstalledVersion(pkg: string): Promise<string | null> {
   try {
-    const result = await runCommand("npm", ["list", pkg, "--json", "-g"], true);
-    const data = JSON.parse(result);
-    return data.dependencies?.[pkg]?.version || null;
+    const result = await runCommand("bun", ["pm", "ls", "-g"], true);
+    // Look for package@version pattern in output
+    const lines = result.split("\n");
+    for (const line of lines) {
+      if (line.includes(pkg)) {
+        const versionMatch = line.match(/@(\d+\.\d+\.\d+)/);
+        if (versionMatch) return versionMatch[1];
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -25,10 +72,17 @@ async function getInstalledVersion(pkg: string): Promise<string | null> {
 
 async function getLatestVersion(pkg: string): Promise<string | null> {
   try {
-    const result = await runCommand("npm", ["view", pkg, "version"], true);
-    return result.trim();
+    const result = await runCommand("bun", ["info", pkg, "--json"], true);
+    const data = JSON.parse(result);
+    return data.version || data["dist-tags"]?.latest || null;
   } catch {
-    return null;
+    // Fallback to npm view if bun info fails
+    try {
+      const result = await runCommand("npm", ["view", pkg, "version"], true);
+      return result.trim();
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -79,6 +133,63 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+async function cleanGlobalInstall(): Promise<boolean> {
+  const mcxHome = getMcxHomeDir();
+
+  if (!(await exists(mcxHome))) {
+    console.log(pc.dim("  No global installation found"));
+    return true;
+  }
+
+  console.log(pc.cyan("\nCleaning global installation..."));
+  console.log(pc.dim(`  Location: ${mcxHome}`));
+
+  try {
+    // Remove node_modules (will reinstall)
+    const nodeModulesPath = join(mcxHome, "node_modules");
+    if (await exists(nodeModulesPath)) {
+      await rm(nodeModulesPath, { recursive: true, force: true });
+      console.log(pc.green("  Removed node_modules/"));
+    }
+
+    // Remove bun.lockb (will regenerate)
+    const lockPath = join(mcxHome, "bun.lockb");
+    if (await exists(lockPath)) {
+      await rm(lockPath, { force: true });
+      console.log(pc.green("  Removed bun.lockb"));
+    }
+
+    // Regenerate mcx.config.ts with latest template
+    const configPath = join(mcxHome, "mcx.config.ts");
+    await writeFile(configPath, CONFIG_TEMPLATE);
+    console.log(pc.green("  Regenerated mcx.config.ts"));
+
+    // Update package.json with latest versions
+    const pkgPath = join(mcxHome, "package.json");
+    if (await exists(pkgPath)) {
+      const content = await readFile(pkgPath, "utf-8");
+      const pkg = JSON.parse(content);
+      const deps = pkg.dependencies || {};
+      deps[CORE_PACKAGE] = "latest";
+      deps[ADAPTERS_PACKAGE] = "latest";
+      pkg.dependencies = deps;
+      await writeFile(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+      console.log(pc.green("  Updated package.json to latest versions"));
+    }
+
+    // Reinstall dependencies
+    console.log(pc.cyan("\n  Reinstalling dependencies..."));
+    await runCommand("bun", ["install"], false);
+    console.log(pc.green("  Dependencies reinstalled"));
+
+    console.log(pc.dim("\n  Preserved: adapters/, skills/, .env"));
+    return true;
+  } catch (error) {
+    console.log(pc.red(`  Failed to clean installation: ${error}`));
+    return false;
+  }
+}
+
 async function updateCli(): Promise<boolean> {
   console.log(pc.cyan("\nUpdating MCX CLI..."));
 
@@ -98,7 +209,7 @@ async function updateCli(): Promise<boolean> {
   console.log(pc.dim(`  ${installed || "not installed"} → ${latest}`));
 
   try {
-    await runCommand("npm", ["install", "-g", `${CLI_PACKAGE}@latest`]);
+    await runCommand("bun", ["install", "-g", `${CLI_PACKAGE}@latest`]);
     console.log(pc.green(`  Updated to ${latest}`));
     return true;
   } catch (error) {
@@ -225,14 +336,19 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
     return;
   }
 
-  // Default: update both CLI and project
-  const updateBoth = !options.cli && !options.project;
+  // Default: update CLI and global installation
+  const updateAll = !options.cli && !options.project && !options.global;
 
-  if (options.cli || updateBoth) {
+  if (options.cli || updateAll) {
     await updateCli();
   }
 
-  if (options.project || updateBoth) {
+  // Clean and update global installation (~/.mcx/)
+  if (options.global || updateAll) {
+    await cleanGlobalInstall();
+  }
+
+  if (options.project) {
     await updateProject(cwd);
   }
 
