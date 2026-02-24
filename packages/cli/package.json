@@ -1,6 +1,6 @@
 {
   "name": "@papicandela/mcx-cli",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "CLI for the MCX framework - MCP Code Execution",
   "author": "papicandela",
   "license": "MIT",
@@ -34,8 +34,8 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@opentui-ui/dialog": "^0.1.2",
     "@opentui-ui/toast": "^0.0.5",
-    "@opentui/core": "^0.1.79",
-    "@opentui/react": "^0.1.79",
+    "@opentui/core": "^0.1.81",
+    "@opentui/react": "^0.1.81",
     "commander": "^14.0.3",
     "picocolors": "^1.1.1",
     "react": "^19.2.4",
