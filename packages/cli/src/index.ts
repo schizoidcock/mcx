@@ -1,4 +1,8 @@
 import { Command } from "commander";
+import { spawn } from "node:child_process";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import pc from "picocolors";
 import * as path from "path";
 import { initCommand } from "./commands/init.js";
@@ -8,12 +12,71 @@ import { listCommand } from "./commands/list.js";
 import { genCommand } from "./commands/gen.js";
 import { updateCommand } from "./commands/update.js";
 
+const CLI_PACKAGE = "@papicandela/mcx-cli";
+const CURRENT_VERSION = "0.1.9";
+const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+async function autoUpdate(): Promise<void> {
+  try {
+    const mcxDir = join(homedir(), ".mcx");
+    const checkFile = join(mcxDir, ".last-update-check");
+
+    // Check if we should run (throttle to once per hour)
+    try {
+      const lastCheck = await readFile(checkFile, "utf-8");
+      const lastTime = parseInt(lastCheck, 10);
+      if (Date.now() - lastTime < CHECK_INTERVAL_MS) return;
+    } catch {}
+
+    // Get latest version from npm
+    const latest = await new Promise<string | null>((resolve) => {
+      const proc = spawn("npm", ["view", CLI_PACKAGE, "version"], {
+        shell: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let output = "";
+      proc.stdout?.on("data", (d) => (output += d.toString()));
+      proc.on("close", (code) => resolve(code === 0 ? output.trim() : null));
+      proc.on("error", () => resolve(null));
+      setTimeout(() => { proc.kill(); resolve(null); }, 3000);
+    });
+
+    if (!latest || latest === CURRENT_VERSION) {
+      // Save check timestamp
+      await mkdir(mcxDir, { recursive: true });
+      await writeFile(checkFile, Date.now().toString());
+      return;
+    }
+
+    // Auto-update silently
+    console.error(pc.cyan(`Updating MCX CLI: ${CURRENT_VERSION} → ${latest}...`));
+    await new Promise<void>((resolve) => {
+      const proc = spawn("bun", ["install", "-g", `${CLI_PACKAGE}@latest`], {
+        shell: true,
+        stdio: "inherit",
+      });
+      proc.on("close", () => resolve());
+      proc.on("error", () => resolve());
+    });
+
+    // Save check timestamp
+    await mkdir(mcxDir, { recursive: true });
+    await writeFile(checkFile, Date.now().toString());
+    console.error(pc.green(`Updated to ${latest}`));
+  } catch {
+    // Silently fail - don't block CLI usage
+  }
+}
+
+// Run auto-update check in background (non-blocking)
+autoUpdate();
+
 const program = new Command();
 
 program
   .name("mcx")
   .description("MCX - Modular Code Execution framework for AI agents")
-  .version("0.1.4");
+  .version(CURRENT_VERSION);
 
 program
   .command("init")
