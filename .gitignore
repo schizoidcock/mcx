@@ -12,6 +12,9 @@ tasks/
 adapters/*
 !adapters/.gitkeep
 !adapters/*.template.ts
+!adapters/chrome-devtools.ts
+!adapters/chrome-devtools.README.md
+!adapters/README.md
 skills/*
 !skills/.gitkeep
 !skills/*.template.ts

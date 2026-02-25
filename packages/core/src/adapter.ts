@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type {
-  Adapter,
+  LegacyAdapter,
   AdapterConfig,
   AdapterMethod,
   AdapterMethodConfig,
@@ -88,6 +88,10 @@ function createMethod(config: AdapterMethodConfig): AdapterMethod {
 /**
  * Define an adapter with type-safe configuration and zod validation.
  *
+ * @deprecated Use defineAdapter from @papicandela/mcx-adapters instead.
+ * This function creates legacy adapters with methods: Map<>.
+ * The new unified Adapter type uses tools: Record<>.
+ *
  * @example
  * ```ts
  * const fileAdapter = defineAdapter({
@@ -111,7 +115,7 @@ function createMethod(config: AdapterMethodConfig): AdapterMethod {
 export function defineAdapter<TSchema extends z.ZodTypeAny = z.ZodTypeAny>(
   config: AdapterConfig<TSchema>,
   adapterConfig?: z.infer<TSchema>
-): Adapter {
+): LegacyAdapter {
   // Validate adapter configuration if schema provided
   let validatedConfig: unknown;
   if (config.configSchema && adapterConfig !== undefined) {
@@ -148,6 +152,8 @@ export type InferAdapterConfig<T extends AdapterConfig> = T extends AdapterConfi
 /**
  * Create an adapter factory that can be configured later.
  *
+ * @deprecated Use defineAdapter from @papicandela/mcx-adapters instead.
+ *
  * @example
  * ```ts
  * const createFileAdapter = createAdapterFactory({
@@ -161,6 +167,6 @@ export type InferAdapterConfig<T extends AdapterConfig> = T extends AdapterConfi
  */
 export function createAdapterFactory<TSchema extends z.ZodTypeAny>(
   config: AdapterConfig<TSchema>
-): (adapterConfig: z.infer<TSchema>) => Adapter {
+): (adapterConfig: z.infer<TSchema>) => LegacyAdapter {
   return (adapterConfig: z.infer<TSchema>) => defineAdapter(config, adapterConfig);
 }

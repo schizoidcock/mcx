@@ -3,7 +3,7 @@ import type { Adapter, MCXConfig, SandboxConfig, Skill } from "./types.js";
 /**
  * Default MCX configuration values.
  */
-const DEFAULT_CONFIG: Required<Omit<MCXConfig, "adapters" | "skills">> = {
+const DEFAULT_CONFIG: Required<Omit<MCXConfig, "adapters" | "skills" | "env">> = {
   sandbox: {
     timeout: 5000,
     memoryLimit: 128,

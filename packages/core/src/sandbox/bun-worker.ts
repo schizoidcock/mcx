@@ -1,21 +1,41 @@
 import type { ExecutionContext, SandboxConfig, SandboxResult } from "../types.js";
 import type { ISandbox } from "./interface.js";
+import { DEFAULT_NETWORK_POLICY, generateNetworkIsolationCode } from "./network-policy.js";
+import { normalizeCode } from "./normalizer.js";
+import { analyze, formatFindings, DEFAULT_ANALYSIS_CONFIG } from "./analyzer/index.js";
 
 const DEFAULT_CONFIG: Required<SandboxConfig> = {
   timeout: 5000,
   memoryLimit: 128, // Not enforced in workers, kept for API compat
   allowAsync: true,
   globals: {},
+  networkPolicy: DEFAULT_NETWORK_POLICY,
+  normalizeCode: true,
+  analysis: DEFAULT_ANALYSIS_CONFIG,
 };
 
 /**
  * Bun Worker based sandbox implementation.
  * Uses native Bun Workers for isolated code execution.
  *
+ * ## Security Layers
+ *
+ * 1. **Worker Isolation** - Code runs in separate JavaScript context
+ *    with no access to main thread's scope
+ *
+ * 2. **Network Isolation** - fetch/WebSocket blocked by default
+ *    (configurable via networkPolicy)
+ *
+ * 3. **Pre-execution Analysis** - Detects infinite loops, dangerous
+ *    patterns, adapter calls in loops before execution
+ *
+ * 4. **Code Normalization** - AST-based validation and auto-return
+ *
+ * 5. **Timeout** - Configurable execution timeout (default 5s)
+ *
  * SECURITY NOTE: This sandbox intentionally uses dynamic code execution
  * (Function constructor) within an isolated Worker context. The Worker
- * provides the security boundary - code runs in a separate JavaScript
- * context with no access to the main thread's scope.
+ * provides the security boundary.
  */
 export class BunWorkerSandbox implements ISandbox {
   private config: Required<SandboxConfig>;
@@ -37,6 +57,52 @@ export class BunWorkerSandbox implements ISandbox {
     context: ExecutionContext
   ): Promise<SandboxResult<T>> {
     const startTime = performance.now();
+
+    // Normalize code if enabled (auto-add return, etc.)
+    let normalizedCode = code;
+    if (this.config.normalizeCode) {
+      const result = normalizeCode(code);
+      if (result.error) {
+        // Return parse error immediately
+        return {
+          success: false,
+          error: { name: "SyntaxError", message: result.error },
+          logs: [],
+          executionTime: performance.now() - startTime,
+        };
+      }
+      normalizedCode = result.code;
+    }
+
+    // Pre-execution analysis
+    const analysisConfig = { ...DEFAULT_ANALYSIS_CONFIG, ...this.config.analysis };
+    const analysisResult = analyze(normalizedCode, analysisConfig);
+    const logs: string[] = [];
+
+    // Add warnings to logs
+    if (analysisResult.warnings.length > 0) {
+      logs.push(...formatFindings(analysisResult.warnings));
+    }
+
+    // Block execution if there are errors and blockOnError is enabled
+    if (analysisResult.errors.length > 0 && analysisConfig.blockOnError) {
+      const errorMessages = formatFindings(analysisResult.errors);
+      logs.push(...errorMessages);
+      return {
+        success: false,
+        error: {
+          name: "AnalysisError",
+          message: `Code analysis found ${analysisResult.errors.length} error(s): ${analysisResult.errors[0].message}`,
+        },
+        logs,
+        executionTime: performance.now() - startTime,
+      };
+    }
+
+    // If there are errors but blockOnError is false, add them as warnings
+    if (analysisResult.errors.length > 0) {
+      logs.push(...formatFindings(analysisResult.errors));
+    }
 
     return new Promise((resolve) => {
       // Build adapter method names for the worker
@@ -69,7 +135,7 @@ export class BunWorkerSandbox implements ISandbox {
           resolve({
             success: false,
             error: { name: "TimeoutError", message: `Execution timed out after ${this.config.timeout}ms` },
-            logs: [],
+            logs,
             executionTime: performance.now() - startTime,
           });
         }
@@ -79,7 +145,7 @@ export class BunWorkerSandbox implements ISandbox {
         const { type, ...data } = event.data;
 
         if (type === "ready") {
-          worker.postMessage({ type: "execute", data: { code } });
+          worker.postMessage({ type: "execute", data: { code: normalizedCode } });
         }
 
         else if (type === "adapter_call") {
@@ -104,7 +170,7 @@ export class BunWorkerSandbox implements ISandbox {
             success: data.success,
             value: data.value as T,
             error: data.error,
-            logs: data.logs || [],
+            logs: [...logs, ...(data.logs || [])],
             executionTime: performance.now() - startTime,
           });
         }
@@ -116,7 +182,7 @@ export class BunWorkerSandbox implements ISandbox {
         resolve({
           success: false,
           error: { name: "WorkerError", message: error.message || "Unknown worker error" },
-          logs: [],
+          logs,
           executionTime: performance.now() - startTime,
         });
       };
@@ -133,8 +199,14 @@ export class BunWorkerSandbox implements ISandbox {
   }
 
   private buildWorkerCode(): string {
+    // Generate network isolation code based on policy
+    const networkIsolation = generateNetworkIsolationCode(this.config.networkPolicy);
+
     // This code runs inside the isolated Worker
     return `
+      // Network isolation (injected based on policy)
+      ${networkIsolation}
+
       const logs = [];
       const pendingCalls = new Map();
       let callId = 0;

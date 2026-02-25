@@ -1,10 +1,25 @@
+/**
+ * MCX MCP Server
+ *
+ * Exposes three MCP tools:
+ * - mcx_execute: Execute code in sandboxed environment with adapter access
+ * - mcx_run_skill: Run a named skill with optional inputs
+ * - mcx_list: List available adapters and skills
+ *
+ * Features:
+ * - Auto-loads adapters from ~/.mcx/adapters/
+ * - Generates TypeScript types for LLM context
+ * - Network isolation, pre-execution analysis, code normalization
+ * - Supports stdio and HTTP transports
+ */
+
 import { join, dirname } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import pc from "picocolors";
-import { BunWorkerSandbox } from "@papicandela/mcx-core";
+import { BunWorkerSandbox, generateTypes, generateTypesSummary } from "@papicandela/mcx-core";
 import { getMcxCliDir, getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 
 // ============================================================================
@@ -69,27 +84,35 @@ async function loadEnvFile(): Promise<void> {
 }
 
 // ============================================================================
-// Types
+// Types (CLI-specific, compatible with @papicandela/mcx-core)
 // ============================================================================
+
+// Note: These types are intentionally local to serve.ts for CLI-specific needs.
+// They are compatible with the unified types in @papicandela/mcx-core.
+// Future refactor: import base types from core and extend here.
 
 interface Skill {
   name: string;
   description?: string;
+  /** CLI-specific: input schema for skills */
   inputs?: Record<string, { type: string; description?: string; default?: unknown }>;
   run: (ctx: { inputs: Record<string, unknown> }) => Promise<unknown>;
 }
 
+/** Compatible with @papicandela/mcx-core AdapterTool */
 interface AdapterMethod {
   description: string;
   execute: (params: unknown) => Promise<unknown>;
 }
 
+/** Compatible with @papicandela/mcx-core Adapter */
 interface Adapter {
   name: string;
   description?: string;
   tools: Record<string, AdapterMethod>;
 }
 
+/** Compatible with @papicandela/mcx-core MCXConfig */
 interface MCXConfig {
   adapters?: Adapter[];
   sandbox?: {
@@ -121,8 +144,19 @@ const RunSkillInputSchema = z.object({
 
 const ListInputSchema = z.object({}).strict();
 
+const SearchInputSchema = z.object({
+  query: z.string()
+    .min(1, "Search query is required")
+    .describe("Search term to find adapters, methods, or skills (searches names and descriptions)"),
+  type: z.enum(["all", "adapters", "methods", "skills"])
+    .optional()
+    .default("all")
+    .describe("Filter results by type"),
+}).strict();
+
 type ExecuteInput = z.infer<typeof ExecuteInputSchema>;
 type RunSkillInput = z.infer<typeof RunSkillInputSchema>;
+type SearchInput = z.infer<typeof SearchInputSchema>;
 
 // ============================================================================
 // Result Summarization (per Anthropic's code execution article)
@@ -306,12 +340,19 @@ async function createMcxServerCore(
   const adapterContext = buildAdapterContext(adapters);
 
   // Build descriptions for tool hints
-  const adapterNames = adapters.map((a) => a.name).join(", ") || "none";
   const skillNames = Array.from(skills.keys()).join(", ") || "none";
-  const adapterList = adapters.map(a => `- ${a.name}: ${Object.keys(a.tools).join(", ")}`).join("\n") || "No adapters loaded";
   const skillList = Array.from(skills.entries())
     .map(([name, skill]) => `- ${name}: ${skill.description || "No description"}`)
     .join("\n") || "No skills loaded";
+
+  // Generate TypeScript types for adapters (Cloudflare pattern)
+  // This provides LLM with precise type information
+  const typeDeclarations = adapters.length > 0
+    ? generateTypes(adapters as Parameters<typeof generateTypes>[0], { includeDescriptions: true })
+    : "// No adapters loaded";
+  const typeSummary = adapters.length > 0
+    ? generateTypesSummary(adapters as Parameters<typeof generateTypesSummary>[0])
+    : "none";
 
   const server = new McpServer({
     name: "mcx-mcp-server",
@@ -323,26 +364,24 @@ async function createMcxServerCore(
     "mcx_execute",
     {
       title: "Execute Code in MCX Sandbox",
-      description: `Execute JavaScript/TypeScript code in an isolated sandbox with access to registered adapters.
+      description: `Execute JavaScript/TypeScript code in an isolated sandbox.
 
-Available adapters: [${adapterNames}]
-${adapterList}
+## Available Adapters
+${typeSummary}
 
-IMPORTANT: Always filter/transform data before returning to minimize context usage.
+## TypeScript API
+\`\`\`typescript
+${typeDeclarations}
+\`\`\`
 
-Built-in helpers:
-- pick(arr, ['id', 'name', 'total']) - Extract specific fields
-- first(arr, 5) - First N items only
-- count(arr, 'status') - Count by field value
-- sum(arr, 'total') - Sum numeric field
+## Built-in Helpers
+- pick(arr, ['id', 'name']) - Extract specific fields
+- first(arr, 5) - First N items
+- count(arr, 'field') - Count by field value
+- sum(arr, 'field') - Sum numeric field
 - table(arr) - Format as markdown table
 
-Examples:
-  const data = await api.getRecords({ limit: 10 });
-  return pick(data, ['id', 'name', 'status']);
-
-  const data = await api.getRecords({ limit: 100 });
-  return { count: data.length, total: sum(data, 'amount'), byStatus: count(data, 'status') };`,
+IMPORTANT: Always filter/transform data before returning to minimize context.`,
       inputSchema: ExecuteInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -425,7 +464,17 @@ ${skillList}`,
       }
 
       try {
-        const result = await skill.run({ inputs: params.inputs, ...adapterContext });
+        // Wrap skill execution with timeout to prevent hanging
+        const timeoutMs = config?.sandbox?.timeout ?? 30000;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error(`Skill '${params.skill}' timed out after ${timeoutMs}ms`)), timeoutMs);
+        });
+
+        const result = await Promise.race([
+          skill.run({ inputs: params.inputs, ...adapterContext }),
+          timeoutPromise,
+        ]);
+
         return {
           content: [{ type: "text" as const, text: result !== undefined ? JSON.stringify(result, null, 2) : "Skill executed successfully" }],
           structuredContent: { result },
@@ -471,6 +520,156 @@ ${skillList}`,
       return {
         content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
         structuredContent: output,
+      };
+    }
+  );
+
+  // Tool: mcx_search
+  server.registerTool(
+    "mcx_search",
+    {
+      title: "Search MCX Adapters and Skills",
+      description: `Search for adapters, methods, or skills by name or description.
+Use this to discover available functionality without loading everything.
+Returns TypeScript type information for matching methods.`,
+      inputSchema: SearchInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (params: SearchInput) => {
+      const query = params.query.toLowerCase();
+      const searchType = params.type || "all";
+
+      const results: {
+        adapters: Array<{ name: string; description: string; matchedMethods: string[] }>;
+        methods: Array<{ adapter: string; method: string; description: string; typescript: string }>;
+        skills: Array<{ name: string; description: string }>;
+      } = {
+        adapters: [],
+        methods: [],
+        skills: [],
+      };
+
+      // Search adapters and methods
+      if (searchType === "all" || searchType === "adapters" || searchType === "methods") {
+        for (const adapter of adapters) {
+          const adapterMatches =
+            adapter.name.toLowerCase().includes(query) ||
+            (adapter.description?.toLowerCase().includes(query) ?? false);
+
+          const matchedMethods: string[] = [];
+
+          for (const [methodName, method] of Object.entries(adapter.tools)) {
+            const methodMatches =
+              methodName.toLowerCase().includes(query) ||
+              (method.description?.toLowerCase().includes(query) ?? false);
+
+            if (methodMatches || adapterMatches) {
+              matchedMethods.push(methodName);
+
+              if (searchType === "all" || searchType === "methods") {
+                // Generate TypeScript signature for this method
+                const params = method.parameters
+                  ? Object.entries(method.parameters)
+                      .map(([name, def]) => {
+                        const opt = def.required === false ? "?" : "";
+                        const type = def.type === "object" ? "Record<string, unknown>"
+                                   : def.type === "array" ? "unknown[]"
+                                   : def.type;
+                        return `${name}${opt}: ${type}`;
+                      })
+                      .join(", ")
+                  : "";
+
+                const typescript = params
+                  ? `${adapter.name}.${methodName}({ ${params} }): Promise<unknown>`
+                  : `${adapter.name}.${methodName}(): Promise<unknown>`;
+
+                results.methods.push({
+                  adapter: adapter.name,
+                  method: methodName,
+                  description: method.description || "No description",
+                  typescript,
+                });
+              }
+            }
+          }
+
+          if ((searchType === "all" || searchType === "adapters") && (adapterMatches || matchedMethods.length > 0)) {
+            results.adapters.push({
+              name: adapter.name,
+              description: adapter.description || "No description",
+              matchedMethods,
+            });
+          }
+        }
+      }
+
+      // Search skills
+      if (searchType === "all" || searchType === "skills") {
+        for (const [name, skill] of skills.entries()) {
+          const matches =
+            name.toLowerCase().includes(query) ||
+            (skill.description?.toLowerCase().includes(query) ?? false);
+
+          if (matches) {
+            results.skills.push({
+              name,
+              description: skill.description || "No description",
+            });
+          }
+        }
+      }
+
+      // Format output
+      const totalMatches = results.adapters.length + results.methods.length + results.skills.length;
+
+      if (totalMatches === 0) {
+        return {
+          content: [{ type: "text" as const, text: `No results found for "${params.query}"` }],
+          structuredContent: results,
+        };
+      }
+
+      const output = [
+        `Found ${totalMatches} result(s) for "${params.query}":`,
+        "",
+      ];
+
+      if (results.adapters.length > 0) {
+        output.push("## Adapters");
+        for (const a of results.adapters) {
+          output.push(`- **${a.name}**: ${a.description}`);
+          if (a.matchedMethods.length > 0) {
+            output.push(`  Methods: ${a.matchedMethods.join(", ")}`);
+          }
+        }
+        output.push("");
+      }
+
+      if (results.methods.length > 0) {
+        output.push("## Methods (TypeScript)");
+        for (const m of results.methods) {
+          output.push(`- \`${m.typescript}\``);
+          output.push(`  ${m.description}`);
+        }
+        output.push("");
+      }
+
+      if (results.skills.length > 0) {
+        output.push("## Skills");
+        for (const s of results.skills) {
+          output.push(`- **${s.name}**: ${s.description}`);
+        }
+      }
+
+      return {
+        content: [{ type: "text" as const, text: output.join("\n") }],
+        structuredContent: results,
       };
     }
   );

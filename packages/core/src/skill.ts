@@ -1,4 +1,6 @@
 import type { SandboxConfig, Skill, SkillConfig } from "./types.js";
+import { DEFAULT_NETWORK_POLICY } from "./sandbox/network-policy.js";
+import { DEFAULT_ANALYSIS_CONFIG } from "./sandbox/analyzer/index.js";
 
 /**
  * Default sandbox configuration for skills.
@@ -8,6 +10,9 @@ const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
   memoryLimit: 128,
   allowAsync: true,
   globals: {},
+  networkPolicy: DEFAULT_NETWORK_POLICY,
+  normalizeCode: true,
+  analysis: DEFAULT_ANALYSIS_CONFIG,
 };
 
 /**
