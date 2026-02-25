@@ -463,11 +463,13 @@ ${skillList}`,
         };
       }
 
+      // Wrap skill execution with timeout to prevent hanging
+      const timeoutMs = config?.sandbox?.timeout ?? 30000;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
       try {
-        // Wrap skill execution with timeout to prevent hanging
-        const timeoutMs = config?.sandbox?.timeout ?? 30000;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error(`Skill '${params.skill}' timed out after ${timeoutMs}ms`)), timeoutMs);
+          timeoutId = setTimeout(() => reject(new Error(`Skill '${params.skill}' timed out after ${timeoutMs}ms`)), timeoutMs);
         });
 
         const result = await Promise.race([
@@ -475,11 +477,15 @@ ${skillList}`,
           timeoutPromise,
         ]);
 
+        // Clear timeout to prevent memory leak
+        clearTimeout(timeoutId);
+
         return {
           content: [{ type: "text" as const, text: result !== undefined ? JSON.stringify(result, null, 2) : "Skill executed successfully" }],
           structuredContent: { result },
         };
       } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
         const message = error instanceof Error ? error.message : String(error);
         return {
           content: [{ type: "text" as const, text: `Skill '${params.skill}' error: ${message}` }],

@@ -11,6 +11,22 @@ import { existsSync, mkdirSync, rmSync } from "fs";
 import { platform, tmpdir } from "os";
 import { join } from "path";
 
+/**
+ * Escape a string for safe use in JavaScript string literals.
+ * Prevents script injection via selector/text parameters.
+ */
+function escapeJsString(str: string): string {
+  return str
+    .replace(/\\/g, "\\\\")   // Escape backslashes first
+    .replace(/'/g, "\\'")     // Escape single quotes
+    .replace(/"/g, '\\"')     // Escape double quotes
+    .replace(/\n/g, "\\n")    // Escape newlines
+    .replace(/\r/g, "\\r")    // Escape carriage returns
+    .replace(/\t/g, "\\t")    // Escape tabs
+    .replace(/</g, "\\x3c")   // Escape < to prevent </script> injection
+    .replace(/>/g, "\\x3e");  // Escape >
+}
+
 interface CDPSession {
   ws: WebSocket;
   id: number;
@@ -120,10 +136,19 @@ async function killChrome(): Promise<void> {
     }
   }
 
-  // Kill spawned process
+  // Kill spawned process and wait for it to exit
   if (chromeProcess) {
-    chromeProcess.kill();
+    const proc = chromeProcess;
     chromeProcess = null;
+    proc.kill();
+    // Wait for process to actually exit (max 2s)
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 2000);
+      proc.on("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
   }
 
   currentWsUrl = null;
@@ -454,7 +479,7 @@ export const chromeDevtools = defineAdapter({
           "Runtime.evaluate",
           {
             expression: `(() => {
-              const el = document.querySelector('${params.selector.replace(/'/g, "\\'")}');
+              const el = document.querySelector('${escapeJsString(params.selector)}');
               if (!el) return null;
               const rect = el.getBoundingClientRect();
               return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
@@ -490,7 +515,7 @@ export const chromeDevtools = defineAdapter({
 
         await sendCommand("Runtime.evaluate", {
           expression: `(() => {
-            const el = document.querySelector('${params.selector.replace(/'/g, "\\'")}');
+            const el = document.querySelector('${escapeJsString(params.selector)}');
             if (el) { el.focus(); el.value = ''; }
           })()`,
           returnByValue: true,
@@ -552,7 +577,7 @@ export const chromeDevtools = defineAdapter({
             const result = await sendCommand<{ result: { value: boolean } }>(
               "Runtime.evaluate",
               {
-                expression: `!!document.querySelector('${params.selector.replace(/'/g, "\\'")}')`,
+                expression: `!!document.querySelector('${escapeJsString(params.selector)}')`,
                 returnByValue: true,
               },
               sessionId
@@ -562,7 +587,7 @@ export const chromeDevtools = defineAdapter({
             const result = await sendCommand<{ result: { value: boolean } }>(
               "Runtime.evaluate",
               {
-                expression: `document.body.innerText.includes('${params.text.replace(/'/g, "\\'")}')`,
+                expression: `document.body.innerText.includes('${escapeJsString(params.text)}')`,
                 returnByValue: true,
               },
               sessionId
@@ -842,7 +867,7 @@ export const chromeDevtools = defineAdapter({
           await sendCommand(
             "Runtime.evaluate",
             {
-              expression: `document.querySelector('${params.selector.replace(/'/g, "\\'")}')?.scrollIntoView({ behavior: 'smooth', block: 'center' })`,
+              expression: `document.querySelector('${escapeJsString(params.selector)}')?.scrollIntoView({ behavior: 'smooth', block: 'center' })`,
               returnByValue: true,
             },
             sessionId
@@ -876,7 +901,7 @@ export const chromeDevtools = defineAdapter({
           "Runtime.evaluate",
           {
             expression: `(() => {
-              const el = document.querySelector('${params.selector.replace(/'/g, "\\'")}');
+              const el = document.querySelector('${escapeJsString(params.selector)}');
               if (!el) return null;
               const rect = el.getBoundingClientRect();
               return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
