@@ -36,6 +36,24 @@ import { allRules } from "./rules/index.js";
  */
 type VisitorMap = Map<string, Array<{ rule: Rule; visitor: Rule["visitors"][string] }>>;
 
+// Cache for visitor maps - keyed by stringified rules config
+const visitorMapCache = new Map<string, VisitorMap>();
+
+/**
+ * Get or build a visitor map (cached for performance)
+ */
+function getVisitorMap(rules: Rule[], config: Required<AnalysisConfig>): VisitorMap {
+  // Create cache key from rules config
+  const cacheKey = JSON.stringify(config.rules);
+
+  let map = visitorMapCache.get(cacheKey);
+  if (!map) {
+    map = buildVisitorMap(rules, config);
+    visitorMapCache.set(cacheKey, map);
+  }
+  return map;
+}
+
 /**
  * Build a visitor map from rules for efficient traversal
  */
@@ -162,8 +180,8 @@ export function analyze(
     };
   }
 
-  // Build visitor map
-  const visitorMap = buildVisitorMap(allRules, fullConfig);
+  // Get visitor map (cached for repeated calls with same config)
+  const visitorMap = getVisitorMap(allRules, fullConfig);
 
   // Create context
   const context: RuleContext = {

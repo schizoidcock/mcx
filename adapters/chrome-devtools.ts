@@ -196,7 +196,37 @@ async function findAvailablePort(): Promise<number> {
       return port;
     }
   }
-  throw new Error(`No available ports in range ${CDP_PORT_START}-${CDP_PORT_END}`);
+
+  // All ports exhausted - try to close orphan Chrome instances via CDP
+  console.warn("[mcx-cdp] All ports exhausted, attempting to close orphan instances...");
+  for (let port = CDP_PORT_START; port <= CDP_PORT_END; port++) {
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/devtools/browser`);
+      await new Promise<void>((resolve) => {
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+          setTimeout(() => { ws.close(); resolve(); }, 300);
+        };
+        ws.onerror = () => resolve();
+        setTimeout(resolve, 500);
+      });
+    } catch {
+      // Ignore errors
+    }
+  }
+
+  // Wait for processes to die
+  await new Promise((r) => setTimeout(r, 1000));
+
+  // Retry once
+  for (let port = CDP_PORT_START; port <= CDP_PORT_END; port++) {
+    const wsUrl = await checkCdpPort(port);
+    if (!wsUrl) {
+      return port;
+    }
+  }
+
+  throw new Error(`No available ports in range ${CDP_PORT_START}-${CDP_PORT_END}. Try manually killing Chrome processes.`);
 }
 
 /**
@@ -1207,6 +1237,11 @@ export const chromeDevtools = defineAdapter({
         filePath: { type: "string", required: true, description: "Absolute path to the file" },
       },
       execute: async (params: { targetId: string; selector: string; filePath: string }) => {
+        // Validate file exists
+        if (!existsSync(params.filePath)) {
+          throw new Error(`File not found: ${params.filePath}`);
+        }
+
         const sessionId = await attachToTarget(params.targetId);
         await enableDomains(sessionId);
 
