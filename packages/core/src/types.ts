@@ -1,7 +1,48 @@
 import type { z } from "zod";
 
+// ============================================================================
+// Unified Adapter Types (compatible with @papicandela/mcx-adapters)
+// ============================================================================
+
 /**
- * Configuration for an adapter method parameter
+ * Parameter definition for adapter tools
+ */
+export interface ParameterDefinition {
+  type: "string" | "number" | "boolean" | "object" | "array";
+  description?: string;
+  required?: boolean;
+  default?: unknown;
+}
+
+/**
+ * Adapter tool definition (unified interface)
+ */
+export interface AdapterTool<TParams = unknown, TResult = unknown> {
+  description: string;
+  parameters?: Record<string, ParameterDefinition>;
+  execute: (params: TParams) => Promise<TResult> | TResult;
+}
+
+/**
+ * A registered adapter instance (unified interface)
+ *
+ * This is the canonical adapter interface used throughout MCX.
+ * Compatible with both core and adapters package.
+ */
+export interface Adapter<TTools extends Record<string, AdapterTool> = Record<string, AdapterTool>> {
+  name: string;
+  description?: string;
+  version?: string;
+  tools: TTools;
+  dispose?: () => Promise<void> | void;
+}
+
+// ============================================================================
+// Legacy Types (deprecated - use unified types above)
+// ============================================================================
+
+/**
+ * @deprecated Use ParameterDefinition instead
  */
 export interface AdapterMethodParameter {
   name: string;
@@ -12,7 +53,7 @@ export interface AdapterMethodParameter {
 }
 
 /**
- * Configuration for an adapter method
+ * @deprecated Use AdapterTool instead
  */
 export interface AdapterMethodConfig {
   name: string;
@@ -22,7 +63,7 @@ export interface AdapterMethodConfig {
 }
 
 /**
- * A method exposed by an adapter
+ * @deprecated Use AdapterTool instead
  */
 export interface AdapterMethod {
   name: string;
@@ -32,7 +73,7 @@ export interface AdapterMethod {
 }
 
 /**
- * Configuration for defining an adapter
+ * @deprecated Use Adapter with tools: Record<> instead
  */
 export interface AdapterConfig<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
@@ -43,9 +84,9 @@ export interface AdapterConfig<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
 }
 
 /**
- * A registered adapter instance
+ * @deprecated Legacy adapter interface - use Adapter instead
  */
-export interface Adapter {
+export interface LegacyAdapter {
   name: string;
   description?: string;
   version: string;
@@ -53,18 +94,41 @@ export interface Adapter {
   config?: unknown;
 }
 
+import type { NetworkPolicy } from "./sandbox/network-policy.js";
+import type { AnalysisConfig } from "./sandbox/analyzer/index.js";
+
 /**
- * Configuration for the sandbox execution environment
+ * Configuration for the sandbox execution environment.
+ *
+ * @example
+ * ```ts
+ * const config: SandboxConfig = {
+ *   timeout: 10000,
+ *   networkPolicy: { mode: 'blocked' },
+ *   normalizeCode: true,
+ *   analysis: {
+ *     enabled: true,
+ *     blockOnError: true,
+ *     rules: { 'no-infinite-loop': 'error' }
+ *   }
+ * };
+ * ```
  */
 export interface SandboxConfig {
   /** Timeout in milliseconds (default: 5000) */
   timeout?: number;
-  /** Memory limit in MB (default: 128) */
+  /** Memory limit in MB (default: 128, not enforced in Bun Workers) */
   memoryLimit?: number;
   /** Whether to allow async/await (default: true) */
   allowAsync?: boolean;
-  /** Custom global variables to inject */
+  /** Custom global variables to inject into sandbox */
   globals?: Record<string, unknown>;
+  /** Network access policy - blocked, allowed (whitelist), or unrestricted (default: blocked) */
+  networkPolicy?: NetworkPolicy;
+  /** Normalize code before execution - auto-add return, syntax validation (default: true) */
+  normalizeCode?: boolean;
+  /** Pre-execution analysis - detects infinite loops, dangerous patterns (default: enabled) */
+  analysis?: AnalysisConfig;
 }
 
 /**
@@ -133,6 +197,8 @@ export interface MCXConfig {
   adaptersDir?: string;
   /** Path to skills directory */
   skillsDir?: string;
+  /** Environment variables to inject into sandbox */
+  env?: Record<string, string | undefined>;
 }
 
 /**
@@ -143,4 +209,6 @@ export interface ExecutionContext {
   adapters: Record<string, Record<string, (...args: unknown[]) => unknown | Promise<unknown>>>;
   /** Custom variables */
   variables?: Record<string, unknown>;
+  /** Environment variables accessible in sandbox */
+  env?: Record<string, string | undefined>;
 }

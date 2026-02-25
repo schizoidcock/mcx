@@ -349,8 +349,18 @@ export class MCXExecutor {
       if (!adapter) continue;
 
       adapterMethods[name] = {};
-      for (const [methodName, method] of adapter.methods) {
-        adapterMethods[name][methodName] = method.execute.bind(method);
+      // Support both new (tools: Record) and legacy (methods: Map) adapters
+      const tools = adapter.tools ?? (adapter as unknown as { methods: Map<string, { execute: (...args: unknown[]) => unknown }> }).methods;
+      if (tools instanceof Map) {
+        // Legacy adapter with methods: Map
+        for (const [methodName, method] of tools) {
+          adapterMethods[name][methodName] = method.execute.bind(method);
+        }
+      } else {
+        // New adapter with tools: Record
+        for (const [toolName, tool] of Object.entries(tools)) {
+          adapterMethods[name][toolName] = tool.execute.bind(tool);
+        }
       }
     }
 
