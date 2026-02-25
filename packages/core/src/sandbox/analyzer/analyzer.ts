@@ -36,21 +36,35 @@ import { allRules } from "./rules/index.js";
  */
 type VisitorMap = Map<string, Array<{ rule: Rule; visitor: Rule["visitors"][string] }>>;
 
-// Cache for visitor maps - keyed by stringified rules config
+// Cache for visitor maps - keyed by stringified rules config (LRU with max 10 entries)
+const CACHE_MAX_SIZE = 10;
 const visitorMapCache = new Map<string, VisitorMap>();
 
 /**
- * Get or build a visitor map (cached for performance)
+ * Get or build a visitor map (cached for performance with LRU eviction)
  */
 function getVisitorMap(rules: Rule[], config: Required<AnalysisConfig>): VisitorMap {
   // Create cache key from rules config
   const cacheKey = JSON.stringify(config.rules);
 
   let map = visitorMapCache.get(cacheKey);
-  if (!map) {
-    map = buildVisitorMap(rules, config);
+  if (map) {
+    // Move to end for LRU (delete and re-add)
+    visitorMapCache.delete(cacheKey);
     visitorMapCache.set(cacheKey, map);
+    return map;
   }
+
+  // Build new map
+  map = buildVisitorMap(rules, config);
+
+  // Evict oldest if at capacity
+  if (visitorMapCache.size >= CACHE_MAX_SIZE) {
+    const oldest = visitorMapCache.keys().next().value;
+    if (oldest) visitorMapCache.delete(oldest);
+  }
+
+  visitorMapCache.set(cacheKey, map);
   return map;
 }
 

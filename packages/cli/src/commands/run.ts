@@ -1,5 +1,6 @@
-import { readFile, access } from "node:fs/promises";
+import { readFile, access, realpath } from "node:fs/promises";
 import { join, extname, resolve } from "node:path";
+import { homedir } from "node:os";
 import pc from "picocolors";
 
 async function exists(path: string): Promise<boolean> {
@@ -9,6 +10,28 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Validate that a path is within allowed directories to prevent path traversal attacks.
+ * Allowed: cwd, ~/.mcx/
+ */
+async function validatePath(filePath: string): Promise<string> {
+  const cwd = process.cwd();
+  const mcxDir = join(homedir(), ".mcx");
+  const allowedDirs = [cwd, mcxDir];
+
+  // Resolve to real path (follows symlinks)
+  const realPath = await realpath(filePath).catch(() => filePath);
+
+  for (const dir of allowedDirs) {
+    const realDir = await realpath(dir).catch(() => dir);
+    if (realPath.startsWith(realDir)) {
+      return realPath;
+    }
+  }
+
+  throw new Error(`Path not allowed: ${filePath}. Must be within cwd or ~/.mcx/`);
 }
 
 async function loadConfig(): Promise<Record<string, unknown> | null> {
@@ -37,11 +60,14 @@ async function runScript(scriptPath: string): Promise<void> {
     process.exit(1);
   }
 
+  // Validate path is within allowed directories
+  const validatedPath = await validatePath(absolutePath);
+
   console.log(pc.cyan(`Running script: ${scriptPath}\n`));
 
   try {
     // Dynamic import and execute
-    const scriptModule = await import(`file://${absolutePath}`);
+    const scriptModule = await import(`file://${validatedPath}`);
 
     if (typeof scriptModule.default === "function") {
       const result = await scriptModule.default();
@@ -88,10 +114,13 @@ async function runSkill(skillName: string, args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Validate path is within allowed directories
+  const validatedPath = await validatePath(skillPath);
+
   console.log(pc.cyan(`Running skill: ${skillName}\n`));
 
   try {
-    const skillModule = await import(`file://${skillPath}`);
+    const skillModule = await import(`file://${validatedPath}`);
     const skill = skillModule.default || skillModule;
 
     if (!skill || typeof skill.run !== "function") {

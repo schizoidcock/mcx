@@ -64,11 +64,15 @@ function getUserDataDir(): string {
 /**
  * Find Chrome executable path based on OS
  */
+// Searched paths for error message
+let lastSearchedPaths: string[] = [];
+
 function findChromePath(): string | null {
   const os = platform();
+  let paths: string[] = [];
 
   if (os === "win32") {
-    const paths = [
+    paths = [
       process.env["PROGRAMFILES(X86)"] &&
         join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
       process.env.PROGRAMFILES &&
@@ -78,29 +82,25 @@ function findChromePath(): string | null {
       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
       "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
     ].filter(Boolean) as string[];
-
-    for (const p of paths) {
-      if (existsSync(p)) return p;
-    }
   } else if (os === "darwin") {
-    const paths = [
+    paths = [
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Chromium.app/Contents/MacOS/Chromium",
     ];
-    for (const p of paths) {
-      if (existsSync(p)) return p;
-    }
   } else {
-    const paths = [
+    paths = [
       "/usr/bin/google-chrome",
       "/usr/bin/google-chrome-stable",
       "/usr/bin/chromium",
       "/usr/bin/chromium-browser",
       "/snap/bin/chromium",
     ];
-    for (const p of paths) {
-      if (existsSync(p)) return p;
-    }
+  }
+
+  lastSearchedPaths = paths;
+
+  for (const p of paths) {
+    if (existsSync(p)) return p;
   }
 
   return null;
@@ -140,15 +140,13 @@ async function killChrome(): Promise<void> {
   if (chromeProcess) {
     const proc = chromeProcess;
     chromeProcess = null;
-    proc.kill();
-    // Wait for process to actually exit (max 2s)
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(resolve, 2000);
-      proc.on("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
+    // Attach listener BEFORE killing to avoid race condition
+    const exitPromise = new Promise<void>((resolve) => {
+      proc.once("exit", () => resolve());
+      setTimeout(() => resolve(), 2000); // Fallback timeout
     });
+    proc.kill();
+    await exitPromise;
   }
 
   currentWsUrl = null;
@@ -252,7 +250,7 @@ async function launchChrome(headless: boolean = true): Promise<string> {
 
   const chromePath = findChromePath();
   if (!chromePath) {
-    throw new Error("Chrome not found. Install Chrome.");
+    throw new Error(`Chrome not found. Install Chrome or Chromium.\nSearched paths:\n${lastSearchedPaths.map(p => `  - ${p}`).join('\n')}`);
   }
 
   currentHeadless = headless;
@@ -353,7 +351,11 @@ async function connect(): Promise<CDPSession> {
         connectionPromise = null;
       };
     });
-  })();
+  })().catch((err) => {
+    // Clear promise on any error so next call can retry
+    connectionPromise = null;
+    throw err;
+  });
 
   return connectionPromise;
 }
@@ -377,7 +379,22 @@ async function sendCommand<T = unknown>(
       message.sessionId = sessionId;
     }
 
-    s.ws.send(JSON.stringify(message));
+    // Check WebSocket state before sending
+    if (s.ws.readyState !== WebSocket.OPEN) {
+      s.callbacks.delete(id);
+      session = null;
+      connectionPromise = null;
+      reject(new Error(`WebSocket not open (state: ${s.ws.readyState}). Reconnect required.`));
+      return;
+    }
+
+    try {
+      s.ws.send(JSON.stringify(message));
+    } catch (err) {
+      s.callbacks.delete(id);
+      reject(new Error(`Failed to send CDP command: ${err}`));
+      return;
+    }
 
     setTimeout(() => {
       if (s.callbacks.has(id)) {
@@ -391,13 +408,42 @@ async function sendCommand<T = unknown>(
 /**
  * Get list of available targets
  */
-async function getTargets(): Promise<Array<{ id: string; title: string; url: string; type: string }>> {
+interface CDPTarget {
+  id: string;
+  title: string;
+  url: string;
+  type: string;
+}
+
+function validateTargets(data: unknown): CDPTarget[] {
+  if (!Array.isArray(data)) {
+    throw new Error("Invalid CDP response: expected array of targets");
+  }
+  return data.map((item, i) => {
+    if (typeof item !== "object" || item === null) {
+      throw new Error(`Invalid target at index ${i}: expected object`);
+    }
+    const t = item as Record<string, unknown>;
+    if (typeof t.id !== "string" || typeof t.type !== "string") {
+      throw new Error(`Invalid target at index ${i}: missing id or type`);
+    }
+    return {
+      id: t.id,
+      title: typeof t.title === "string" ? t.title : "",
+      url: typeof t.url === "string" ? t.url : "",
+      type: t.type,
+    };
+  });
+}
+
+async function getTargets(): Promise<CDPTarget[]> {
   await launchChrome(currentHeadless);
   if (!currentPort) {
     throw new Error("Chrome not running");
   }
   const response = await fetch(`http://127.0.0.1:${currentPort}/json/list`);
-  return response.json();
+  const data = await response.json();
+  return validateTargets(data);
 }
 
 /**

@@ -18,6 +18,9 @@ export type BaseConfig = z.infer<typeof BaseConfigSchema>;
 export interface AdapterTool<TParams = unknown, TResult = unknown> {
   description: string;
   parameters?: Record<string, ParameterDefinition>;
+  // Note: The `any` union allows TypeScript to accept concrete parameter types
+  // when AdapterTool is used without explicit generics (e.g., Record<string, AdapterTool>).
+  // Runtime validation is done via Zod schemas in the parameters definition.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execute: (params: TParams | any) => Promise<TResult> | TResult;
 }

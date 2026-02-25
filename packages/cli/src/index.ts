@@ -13,7 +13,7 @@ import { genCommand } from "./commands/gen.js";
 import { updateCommand } from "./commands/update.js";
 
 const CLI_PACKAGE = "@papicandela/mcx-cli";
-const CURRENT_VERSION = "0.2.2";
+const CURRENT_VERSION = "0.2.3";
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 async function autoUpdate(): Promise<void> {
@@ -31,7 +31,6 @@ async function autoUpdate(): Promise<void> {
     // Get latest version from npm
     const latest = await new Promise<string | null>((resolve) => {
       const proc = spawn("npm", ["view", CLI_PACKAGE, "version"], {
-        shell: true,
         stdio: ["pipe", "pipe", "pipe"],
       });
       let output = "";
@@ -52,7 +51,6 @@ async function autoUpdate(): Promise<void> {
     console.error(pc.cyan(`Updating MCX CLI: ${CURRENT_VERSION} → ${latest}...`));
     await new Promise<void>((resolve) => {
       const proc = spawn("bun", ["install", "-g", `${CLI_PACKAGE}@latest`], {
-        shell: true,
         stdio: "inherit",
       });
       proc.on("close", () => resolve());
