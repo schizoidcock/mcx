@@ -159,10 +159,14 @@ async function cleanGlobalInstall(): Promise<boolean> {
       console.log(pc.green("  Removed bun.lockb"));
     }
 
-    // Regenerate mcx.config.ts with latest template
+    // Preserve existing mcx.config.ts (don't overwrite user customizations)
     const configPath = join(mcxHome, "mcx.config.ts");
-    await writeFile(configPath, CONFIG_TEMPLATE);
-    console.log(pc.green("  Regenerated mcx.config.ts"));
+    if (await exists(configPath)) {
+      console.log(pc.dim("  Preserved mcx.config.ts (use 'mcx init --force' to regenerate)"));
+    } else {
+      await writeFile(configPath, CONFIG_TEMPLATE);
+      console.log(pc.green("  Created mcx.config.ts"));
+    }
 
     // Update package.json with latest versions
     const pkgPath = join(mcxHome, "package.json");
@@ -182,7 +186,7 @@ async function cleanGlobalInstall(): Promise<boolean> {
     await runCommand("bun", ["install"], false);
     console.log(pc.green("  Dependencies reinstalled"));
 
-    console.log(pc.dim("\n  Preserved: adapters/, skills/, .env"));
+    console.log(pc.dim("\n  Preserved: mcx.config.ts, adapters/, skills/, .env"));
     return true;
   } catch (error) {
     console.log(pc.red(`  Failed to clean installation: ${error}`));
