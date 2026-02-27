@@ -98,11 +98,12 @@ async function getProjectVersion(pkg: string, cwd: string): Promise<string | nul
   }
 }
 
-function runCommand(cmd: string, args: string[], silent = false): Promise<string> {
+function runCommand(cmd: string, args: string[], silent = false, cwd?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, {
       shell: true,
       stdio: silent ? "pipe" : "inherit",
+      cwd,
     });
 
     let output = "";
@@ -181,9 +182,9 @@ async function cleanGlobalInstall(): Promise<boolean> {
       console.log(pc.green("  Updated package.json to latest versions"));
     }
 
-    // Reinstall dependencies
+    // Reinstall dependencies in mcx home directory
     console.log(pc.cyan("\n  Reinstalling dependencies..."));
-    await runCommand("bun", ["install"], false);
+    await runCommand("bun", ["install"], false, mcxHome);
     console.log(pc.green("  Dependencies reinstalled"));
 
     console.log(pc.dim("\n  Preserved: mcx.config.ts, adapters/, skills/, .env"));
