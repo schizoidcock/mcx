@@ -99,6 +99,7 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 |---------|-------------|
 | **Progressive Disclosure** | Adapters loaded on demand, not upfront |
 | **Context Efficiency** | Filtering happens in sandbox, model sees results only |
+| **Configurable Truncation** | Control result size via `truncate`, `maxItems`, `maxStringLength` |
 | **Control Flow** | Loops, conditionals, retries run as native code |
 | **Privacy** | Intermediate data stays in sandbox |
 | **Skills** | Reusable operations combining multiple adapter calls |

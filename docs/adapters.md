@@ -17,7 +17,8 @@ export const myApi = defineAdapter({
         limit: { type: 'number', description: 'Max results' },
       },
       execute: async (params) => {
-        return fetch(`${BASE_URL}/records?limit=${params.limit}`).then(r => r.json());
+        const res = await fetch(`${BASE_URL}/records?limit=${params.limit}`);
+        return res.json();
       },
     },
   },
@@ -76,28 +77,43 @@ const api = createFetchAdapter({
 
 **Tools:** `get`, `post`, `put`, `patch`, `delete`, `head`, `request`
 
-## TypeScript Types for LLM
+## Response Truncation
 
-The `mcx_execute` tool includes TypeScript type declarations for all adapters, helping the LLM write correct code:
+MCX automatically truncates large responses at the MCP level. This is configurable via `mcx_execute` parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `truncate` | `true` | Enable/disable truncation |
+| `maxItems` | `10` | Max array items to return |
+| `maxStringLength` | `500` | Max string length |
+
+### Examples
 
 ```typescript
-// Included in mcx_execute tool description:
-interface Stripe_ListCustomers_Input {
-  /** Maximum number of customers to return */
-  limit?: number;
-  /** Filter by email */
-  email?: string;
-}
+// Default truncation (10 items, 500 chars)
+mcx_execute({ code: "await stripe.listCustomers()" })
 
-declare const stripe: {
-  /** List all customers */
-  listCustomers(params?: Stripe_ListCustomers_Input): Promise<Customer[]>;
-  /** Get customer by ID */
-  getCustomer(params: { id: string }): Promise<Customer>;
-};
+// More items
+mcx_execute({ code: "await stripe.listCustomers()", maxItems: 50 })
+
+// Full response (no truncation)
+mcx_execute({ code: "await stripe.listCustomers()", truncate: false })
+
+// Custom limits
+mcx_execute({
+  code: "await stripe.listCustomers()",
+  maxItems: 100,
+  maxStringLength: 2000
+})
 ```
 
-This allows the LLM to understand:
-- Available methods on each adapter
-- Parameter types and descriptions
-- Return types
+**Note:** Adapters return raw data. Truncation is applied by the MCP server before returning results.
+
+## TypeScript Types for LLM
+
+Adapter types are available via `mcx_search("adapter_name")`. The `mcx_execute` tool description shows a summary of available adapters, and the LLM can query specific adapter APIs on demand.
+
+This approach:
+- Keeps `mcx_execute` description compact (no full type declarations)
+- Allows LLM to discover adapter APIs as needed
+- Prevents context window overflow with large adapter collections

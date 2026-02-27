@@ -27,12 +27,27 @@ When using HTTP transport:
 - MCP endpoint: `POST /mcp`
 - Health check: `GET /health` returns `{ status, server, version }`
 
-### Result Summarization
+### Result Truncation
 
-Large results are automatically summarized to prevent context overflow:
-- Arrays truncated to 5 items with `"... and N more"` indicator
-- Nested arrays limited to 3 items
-- Objects with >5 keys are summarized
+Large results are automatically truncated to prevent context overflow. Configurable via `mcx_execute` parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `truncate` | `true` | Enable/disable truncation |
+| `maxItems` | `10` | Max array items to return |
+| `maxStringLength` | `500` | Max string length |
+
+Examples:
+```typescript
+// Default truncation
+mcx_execute({ code: "await api.list()" })
+
+// More items
+mcx_execute({ code: "await api.list()", maxItems: 50 })
+
+// Full response (no truncation)
+mcx_execute({ code: "await api.list()", truncate: false })
+```
 
 ## `mcx gen`
 

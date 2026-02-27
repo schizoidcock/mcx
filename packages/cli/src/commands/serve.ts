@@ -19,7 +19,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import pc from "picocolors";
-import { BunWorkerSandbox, generateTypes, generateTypesSummary } from "@papicandela/mcx-core";
+import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
 import { getMcxCliDir, getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 
 // ============================================================================
@@ -130,6 +130,18 @@ const ExecuteInputSchema = z.object({
   code: z.string()
     .min(1, "Code cannot be empty")
     .describe("JavaScript/TypeScript code to execute in the sandbox"),
+  truncate: z.boolean()
+    .optional()
+    .default(true)
+    .describe("Whether to truncate large results (default: true)"),
+  maxItems: z.number()
+    .optional()
+    .default(10)
+    .describe("Max array items to return when truncating (default: 10)"),
+  maxStringLength: z.number()
+    .optional()
+    .default(500)
+    .describe("Max string length when truncating (default: 500)"),
 }).strict();
 
 const RunSkillInputSchema = z.object({
@@ -162,7 +174,11 @@ type SearchInput = z.infer<typeof SearchInputSchema>;
 // Result Summarization (per Anthropic's code execution article)
 // ============================================================================
 
-const MAX_ARRAY_ITEMS = 5;
+interface TruncateOptions {
+  enabled: boolean;
+  maxItems: number;
+  maxStringLength: number;
+}
 
 interface SummarizedResult {
   value: unknown;
@@ -170,51 +186,65 @@ interface SummarizedResult {
   originalSize?: string;
 }
 
-function summarizeResult(value: unknown): SummarizedResult {
+function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResult {
+  if (!opts.enabled) {
+    return { value, truncated: false };
+  }
+
   if (value === undefined || value === null) {
     return { value, truncated: false };
   }
 
   if (Array.isArray(value)) {
-    if (value.length > MAX_ARRAY_ITEMS) {
+    if (value.length > opts.maxItems) {
       return {
-        value: value.slice(0, MAX_ARRAY_ITEMS).map(summarizeObject),
+        value: value.slice(0, opts.maxItems).map(v => summarizeObject(v, opts)),
         truncated: true,
-        originalSize: `${value.length} items, showing first ${MAX_ARRAY_ITEMS}`,
+        originalSize: `${value.length} items, showing first ${opts.maxItems}`,
       };
     }
-    return { value: value.map(summarizeObject), truncated: false };
+    return { value: value.map(v => summarizeObject(v, opts)), truncated: false };
   }
 
   if (typeof value === "object") {
-    return { value: summarizeObject(value), truncated: false };
+    return { value: summarizeObject(value, opts), truncated: false };
+  }
+
+  if (typeof value === "string" && value.length > opts.maxStringLength) {
+    return {
+      value: `${value.slice(0, opts.maxStringLength)}... [${value.length} chars]`,
+      truncated: true,
+      originalSize: `${value.length} chars`,
+    };
   }
 
   return { value, truncated: false };
 }
 
-function summarizeObject(obj: unknown): unknown {
+function summarizeObject(obj: unknown, opts: TruncateOptions): unknown {
   if (obj === null || obj === undefined) return obj;
-  if (typeof obj !== "object") return obj;
+  if (typeof obj !== "object") {
+    if (typeof obj === "string" && obj.length > opts.maxStringLength) {
+      return `${obj.slice(0, opts.maxStringLength)}... [${obj.length} chars]`;
+    }
+    return obj;
+  }
 
   if (Array.isArray(obj)) {
-    if (obj.length > MAX_ARRAY_ITEMS) {
-      return [...obj.slice(0, 3).map(summarizeObject), `... +${obj.length - 3} more`];
+    if (obj.length > opts.maxItems) {
+      return [...obj.slice(0, opts.maxItems).map(v => summarizeObject(v, opts)), `... +${obj.length - opts.maxItems} more`];
     }
-    return obj.map(summarizeObject);
+    return obj.map(v => summarizeObject(v, opts));
   }
 
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
-    if (Array.isArray(val) && val.length > MAX_ARRAY_ITEMS) {
-      result[key] = [...val.slice(0, MAX_ARRAY_ITEMS).map(summarizeObject), `... +${val.length - MAX_ARRAY_ITEMS} more`];
+    if (Array.isArray(val) && val.length > opts.maxItems) {
+      result[key] = [...val.slice(0, opts.maxItems).map(v => summarizeObject(v, opts)), `... +${val.length - opts.maxItems} more`];
+    } else if (typeof val === "string" && val.length > opts.maxStringLength) {
+      result[key] = `${val.slice(0, opts.maxStringLength)}... [${val.length} chars]`;
     } else if (typeof val === "object" && val !== null) {
-      const keys = Object.keys(val as object);
-      if (keys.length > 5) {
-        result[key] = { _summary: `{${keys.slice(0, 3).join(", ")}, ... +${keys.length - 3} keys}` };
-      } else {
-        result[key] = summarizeObject(val);
-      }
+      result[key] = summarizeObject(val, opts);
     } else {
       result[key] = val;
     }
@@ -345,11 +375,7 @@ async function createMcxServerCore(
     .map(([name, skill]) => `- ${name}: ${skill.description || "No description"}`)
     .join("\n") || "No skills loaded";
 
-  // Generate TypeScript types for adapters (Cloudflare pattern)
-  // This provides LLM with precise type information
-  const typeDeclarations = adapters.length > 0
-    ? generateTypes(adapters as Parameters<typeof generateTypes>[0], { includeDescriptions: true })
-    : "// No adapters loaded";
+  // Generate concise summary for tool description (full types available via mcx_search)
   const typeSummary = adapters.length > 0
     ? generateTypesSummary(adapters as Parameters<typeof generateTypesSummary>[0])
     : "none";
@@ -369,10 +395,7 @@ async function createMcxServerCore(
 ## Available Adapters
 ${typeSummary}
 
-## TypeScript API
-\`\`\`typescript
-${typeDeclarations}
-\`\`\`
+Use mcx_search("adapter_name") to see TypeScript API for specific adapters.
 
 ## Built-in Helpers
 - pick(arr, ['id', 'name']) - Extract specific fields
@@ -407,7 +430,11 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           };
         }
 
-        const summarized = summarizeResult(result.value);
+        const summarized = summarizeResult(result.value, {
+          enabled: params.truncate,
+          maxItems: params.maxItems,
+          maxStringLength: params.maxStringLength,
+        });
         const textOutput = [
           result.logs.length > 0 ? `Logs:\n${result.logs.join("\n")}\n` : "",
           summarized.truncated

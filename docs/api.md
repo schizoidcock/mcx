@@ -41,13 +41,35 @@ const skillResult = await executor.runSkill('daily-summary', {
 
 ## MCP Tools
 
-MCX exposes three tools to the AI agent:
+MCX exposes four tools to the AI agent:
 
 | Tool | Description |
 |------|-------------|
 | `mcx_execute` | Execute JavaScript/TypeScript code in sandbox with adapter access |
 | `mcx_run_skill` | Run a named skill with optional inputs |
 | `mcx_list` | List available adapters and skills (read-only) |
+| `mcx_search` | Search adapters/methods and get TypeScript API signatures |
+
+### mcx_execute Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `code` | string | required | JavaScript/TypeScript code to execute |
+| `truncate` | boolean | `true` | Enable/disable result truncation |
+| `maxItems` | number | `10` | Max array items when truncating |
+| `maxStringLength` | number | `500` | Max string length when truncating |
+
+### mcx_search
+
+Use `mcx_search` to discover adapter APIs without loading full type definitions:
+
+```typescript
+// Search by adapter name
+mcx_search({ query: "supabase" })
+
+// Search by method
+mcx_search({ query: "execute_sql", type: "methods" })
+```
 
 ## Built-in Helpers
 
