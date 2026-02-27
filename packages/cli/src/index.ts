@@ -13,7 +13,7 @@ import { genCommand } from "./commands/gen.js";
 import { updateCommand } from "./commands/update.js";
 
 const CLI_PACKAGE = "@papicandela/mcx-cli";
-const CURRENT_VERSION = "0.2.3";
+const CURRENT_VERSION = "0.2.4";
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 async function autoUpdate(): Promise<void> {
