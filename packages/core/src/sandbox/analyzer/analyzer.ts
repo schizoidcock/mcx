@@ -222,9 +222,9 @@ export function analyze(
 
   const elapsed = performance.now() - start;
 
-  // Log if we exceed performance budget
+  // Log if we exceed performance budget (use stderr to avoid breaking stdio transport)
   if (elapsed > 50) {
-    console.warn(`[mcx-analyzer] Exceeded 50ms budget: ${elapsed.toFixed(1)}ms`);
+    console.error(`[mcx-analyzer] Exceeded 50ms budget: ${elapsed.toFixed(1)}ms`);
   }
 
   return { warnings, errors, elapsed };

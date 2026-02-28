@@ -164,6 +164,10 @@ const SearchInputSchema = z.object({
     .optional()
     .default("all")
     .describe("Filter results by type"),
+  limit: z.number()
+    .optional()
+    .default(20)
+    .describe("Max number of results per category (default: 20)"),
 }).strict();
 
 type ExecuteInput = z.infer<typeof ExecuteInputSchema>;
@@ -173,6 +177,20 @@ type SearchInput = z.infer<typeof SearchInputSchema>;
 // ============================================================================
 // Result Summarization (per Anthropic's code execution article)
 // ============================================================================
+
+/** Maximum characters in a single response (MCP best practice) */
+const CHARACTER_LIMIT = 25000;
+
+/**
+ * Enforce character limit on text output
+ */
+function enforceCharacterLimit(text: string, limit: number = CHARACTER_LIMIT): { text: string; truncated: boolean } {
+  if (text.length <= limit) {
+    return { text, truncated: false };
+  }
+  const truncatedText = text.slice(0, limit) + `\n\n... [Response truncated at ${limit} chars, original was ${text.length} chars. Use more specific queries or lower truncation limits.]`;
+  return { text: truncatedText, truncated: true };
+}
 
 interface TruncateOptions {
   enabled: boolean;
@@ -440,7 +458,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           maxItems: params.maxItems,
           maxStringLength: params.maxStringLength,
         });
-        const textOutput = [
+        const rawTextOutput = [
           result.logs.length > 0 ? `Logs:\n${result.logs.join("\n")}\n` : "",
           summarized.truncated
             ? `Result (${summarized.originalSize}):\n${JSON.stringify(summarized.value, null, 2)}`
@@ -449,13 +467,16 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               : "Code executed successfully",
         ].filter(Boolean).join("\n");
 
+        // Enforce character limit as safety net
+        const { text: textOutput, truncated: charLimitTruncated } = enforceCharacterLimit(rawTextOutput);
+
         return {
           content: [{ type: "text" as const, text: textOutput }],
           structuredContent: {
             result: summarized.value,
             logs: result.logs,
             executionTime: result.executionTime,
-            truncated: summarized.truncated,
+            truncated: summarized.truncated || charLimitTruncated,
           },
         };
       } catch (error) {
@@ -589,19 +610,25 @@ Returns TypeScript type information for matching methods.`,
     async (params: SearchInput) => {
       const query = params.query.toLowerCase();
       const searchType = params.type || "all";
+      const limit = params.limit || 20;
 
       const results: {
         adapters: Array<{ name: string; description: string; matchedMethods: string[] }>;
         methods: Array<{ adapter: string; method: string; description: string; typescript: string }>;
         skills: Array<{ name: string; description: string }>;
+        pagination: { adapters_truncated: number; methods_truncated: number; skills_truncated: number };
       } = {
         adapters: [],
         methods: [],
         skills: [],
+        pagination: { adapters_truncated: 0, methods_truncated: 0, skills_truncated: 0 },
       };
 
       // Search adapters and methods
       if (searchType === "all" || searchType === "adapters" || searchType === "methods") {
+        let methodCount = 0;
+        let adapterCount = 0;
+
         for (const adapter of adapters) {
           const adapterMatches =
             adapter.name.toLowerCase().includes(query) ||
@@ -618,6 +645,12 @@ Returns TypeScript type information for matching methods.`,
               matchedMethods.push(methodName);
 
               if (searchType === "all" || searchType === "methods") {
+                // Enforce limit for methods
+                if (methodCount >= limit) {
+                  results.pagination.methods_truncated++;
+                  continue;
+                }
+
                 // Generate TypeScript signature for this method
                 const params = method.parameters
                   ? Object.entries(method.parameters)
@@ -641,38 +674,53 @@ Returns TypeScript type information for matching methods.`,
                   description: method.description || "No description",
                   typescript,
                 });
+                methodCount++;
               }
             }
           }
 
           if ((searchType === "all" || searchType === "adapters") && (adapterMatches || matchedMethods.length > 0)) {
-            results.adapters.push({
-              name: adapter.name,
-              description: adapter.description || "No description",
-              matchedMethods,
-            });
+            // Enforce limit for adapters
+            if (adapterCount >= limit) {
+              results.pagination.adapters_truncated++;
+            } else {
+              // Also limit matched methods shown per adapter
+              results.adapters.push({
+                name: adapter.name,
+                description: adapter.description || "No description",
+                matchedMethods: matchedMethods.slice(0, 10),
+              });
+              adapterCount++;
+            }
           }
         }
       }
 
       // Search skills
       if (searchType === "all" || searchType === "skills") {
+        let skillCount = 0;
         for (const [name, skill] of skills.entries()) {
           const matches =
             name.toLowerCase().includes(query) ||
             (skill.description?.toLowerCase().includes(query) ?? false);
 
           if (matches) {
-            results.skills.push({
-              name,
-              description: skill.description || "No description",
-            });
+            if (skillCount >= limit) {
+              results.pagination.skills_truncated++;
+            } else {
+              results.skills.push({
+                name,
+                description: skill.description || "No description",
+              });
+              skillCount++;
+            }
           }
         }
       }
 
       // Format output
       const totalMatches = results.adapters.length + results.methods.length + results.skills.length;
+      const totalTruncated = results.pagination.adapters_truncated + results.pagination.methods_truncated + results.pagination.skills_truncated;
 
       if (totalMatches === 0) {
         return {
@@ -682,7 +730,9 @@ Returns TypeScript type information for matching methods.`,
       }
 
       const output = [
-        `Found ${totalMatches} result(s) for "${params.query}":`,
+        totalTruncated > 0
+          ? `Found ${totalMatches} result(s) for "${params.query}" (${totalTruncated} more not shown, use limit param):`
+          : `Found ${totalMatches} result(s) for "${params.query}":`,
         "",
       ];
 
@@ -713,8 +763,11 @@ Returns TypeScript type information for matching methods.`,
         }
       }
 
+      // Enforce character limit
+      const { text: finalText } = enforceCharacterLimit(output.join("\n"));
+
       return {
-        content: [{ type: "text" as const, text: output.join("\n") }],
+        content: [{ type: "text" as const, text: finalText }],
         structuredContent: results,
       };
     }

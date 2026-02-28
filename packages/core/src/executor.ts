@@ -121,7 +121,7 @@ export class MCXExecutor {
    */
   registerAdapter(adapter: Adapter): void {
     if (this.adapters.has(adapter.name)) {
-      console.warn(`Adapter "${adapter.name}" is being overwritten`);
+      console.error(`[MCX] Adapter "${adapter.name}" is being overwritten`);
     }
     this.adapters.set(adapter.name, adapter);
   }
@@ -159,7 +159,7 @@ export class MCXExecutor {
    */
   registerSkill(skill: Skill): void {
     if (this.skills.has(skill.name)) {
-      console.warn(`Skill "${skill.name}" is being overwritten`);
+      console.error(`[MCX] Skill "${skill.name}" is being overwritten`);
     }
     this.skills.set(skill.name, skill);
   }
