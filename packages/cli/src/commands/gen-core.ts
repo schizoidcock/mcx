@@ -343,6 +343,19 @@ function escapeForSingleQuote(str: string): string {
 }
 
 /**
+ * SECURITY: Escape a string for safe use in template literals (backtick strings).
+ * Prevents code injection via backtick breakout and ${} interpolation.
+ */
+function escapeForTemplateLiteral(str: string): string {
+  return str
+    .replace(/\\/g, "\\\\")   // Escape backslashes first
+    .replace(/`/g, "\\`")     // Escape backticks
+    .replace(/\$\{/g, "\\${") // Escape ${} interpolation
+    .replace(/[\r\n]+/g, " ") // Remove newlines
+    .replace(/[\x00-\x1f\x7f]/g, ""); // Remove control characters
+}
+
+/**
  * SECURITY: Validate that a string is a safe JavaScript identifier.
  * Used for names that will be used as bare identifiers in generated code.
  */
@@ -857,7 +870,8 @@ function generateExecuteFunction(ep: ParsedEndpoint): string {
   const pathParams = params.filter((p) => p.in === "path" && isValidIdentifier(p.name));
 
   // Build URL expression with safe parameter substitution
-  let urlExpr = `\`${escapeForSingleQuote(pathStr)}\``;
+  // SECURITY: Use escapeForTemplateLiteral since the path is embedded in a template literal
+  let urlExpr = `\`${escapeForTemplateLiteral(pathStr)}\``;
   if (pathParams.length > 0) {
     // Only substitute params that are valid identifiers
     urlExpr = urlExpr.replace(/\{([^}]+)\}/g, (match, paramName) => {

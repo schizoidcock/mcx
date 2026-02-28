@@ -413,13 +413,22 @@ async function loadConfig(): Promise<MCXConfig | null> {
     console.error(pc.dim(`Loaded ${config?.adapters?.length || 0} adapter(s)`));
 
     // Copy config.env to process.env for adapters that read from process.env
+    // SECURITY: Apply same validation as .env files
     if (config?.env) {
+      let injected = 0;
       for (const [key, value] of Object.entries(config.env)) {
-        if (value !== undefined && value !== null) {
-          process.env[key] = String(value);
+        if (value === undefined || value === null) continue;
+
+        // SECURITY: Block dangerous environment variables from config.env
+        if (DANGEROUS_ENV_KEYS.has(key.toUpperCase()) || DANGEROUS_ENV_KEYS.has(key)) {
+          console.error(pc.yellow(`Warning: Skipped dangerous env key "${key}" in config.env`));
+          continue;
         }
+
+        process.env[key] = String(value);
+        injected++;
       }
-      console.error(pc.dim(`Injected ${Object.keys(config.env).length} env var(s)`));
+      console.error(pc.dim(`Injected ${injected} env var(s) from config.env`));
     }
 
     return config;
@@ -981,14 +990,27 @@ async function runHttp(port: number) {
         try {
           const body = await req.json();
 
+          // SECURITY: Maximum response body size (defense-in-depth)
+          // Tool handlers already enforce CHARACTER_LIMIT, but this prevents
+          // unbounded memory growth in edge cases
+          const MAX_RESPONSE_BODY = 100000; // 100KB
+
           // Per-request response mock (stateless JSON response mode)
           const mockRes = {
             statusCode: 200,
             headers: {} as Record<string, string>,
             body: "",
             setHeader(name: string, value: string) { this.headers[name] = value; },
-            end(data?: string) { if (data) this.body += data; },
-            write(data: string) { this.body += data; },
+            end(data?: string) {
+              if (data && this.body.length < MAX_RESPONSE_BODY) {
+                this.body += data.slice(0, MAX_RESPONSE_BODY - this.body.length);
+              }
+            },
+            write(data: string) {
+              if (this.body.length < MAX_RESPONSE_BODY) {
+                this.body += data.slice(0, MAX_RESPONSE_BODY - this.body.length);
+              }
+            },
             on() {},
           };
 

@@ -204,7 +204,7 @@ Object.defineProperty(globalThis, 'EventSource', {
   value: class {
     constructor() {
       throw new Error('EventSource is blocked in sandbox.');
-  }
+    }
   },
   writable: false,
   configurable: false

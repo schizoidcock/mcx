@@ -3,6 +3,8 @@
  */
 import * as path from "path";
 import * as readline from "readline";
+import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import pc from "picocolors";
 import { runGeneratorTUI } from "./gen-tui";
 import {
@@ -18,6 +20,42 @@ import {
   type FilterOptions,
 } from "./gen-core";
 import { getConfigPath } from "../utils/paths";
+
+// ============================================================================
+// Security: Path Validation
+// ============================================================================
+
+/**
+ * Validate that an output path is within allowed directories to prevent path traversal.
+ * Allowed: cwd, ~/.mcx/
+ */
+async function validateOutputPath(outputPath: string): Promise<string> {
+  const cwd = process.cwd();
+  const mcxDir = path.join(homedir(), ".mcx");
+  const allowedDirs = [cwd, mcxDir];
+
+  // Resolve to absolute path first
+  const absolutePath = path.resolve(outputPath);
+
+  // Get the parent directory (the file may not exist yet)
+  const parentDir = path.dirname(absolutePath);
+
+  // Resolve to real path (follows symlinks) - parent must exist
+  const realParent = await realpath(parentDir).catch(() => parentDir);
+
+  for (const dir of allowedDirs) {
+    const realDir = await realpath(dir).catch(() => dir);
+    // SECURITY: Check exact match OR path starts with dir + separator
+    // This prevents prefix collision (e.g., /home/.mcx-malicious matching /home/.mcx)
+    if (realParent === realDir || realParent.startsWith(realDir + "/") || realParent.startsWith(realDir + "\\")) {
+      return absolutePath;
+    }
+  }
+
+  throw new Error(
+    `Output path not allowed: ${outputPath}. Must be within current directory or ~/.mcx/`
+  );
+}
 
 // ============================================================================
 // Main Command
@@ -150,8 +188,11 @@ export async function genCommand(options: {
     ? generateSDKAdapter(name, endpoints, analysis.sdk)
     : generateAdapter(name, endpoints, detectedBaseUrl!, finalAuth);
 
+  // SECURITY: Validate output path before writing (prevents path traversal)
+  const validatedOutput = await validateOutputPath(output);
+
   // Write output
-  await Bun.write(output, adapterCode);
+  await Bun.write(validatedOutput, adapterCode);
 
   console.log(`\n${pc.green("✓")} Generated adapter: ${pc.cyan(output)}`);
   console.log(`\nAdapter "${name}" has ${endpoints.length} methods ready to use.`);

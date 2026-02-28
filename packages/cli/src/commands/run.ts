@@ -26,7 +26,9 @@ async function validatePath(filePath: string): Promise<string> {
 
   for (const dir of allowedDirs) {
     const realDir = await realpath(dir).catch(() => dir);
-    if (realPath.startsWith(realDir)) {
+    // SECURITY: Check exact match OR realPath starts with realDir + separator
+    // This prevents prefix collision (e.g., /home/.mcx-malicious matching /home/.mcx)
+    if (realPath === realDir || realPath.startsWith(realDir + "/") || realPath.startsWith(realDir + "\\")) {
       return realPath;
     }
   }
