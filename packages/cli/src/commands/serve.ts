@@ -240,8 +240,14 @@ const ListInputSchema = z.object({
 
 const SearchInputSchema = z.object({
   query: z.string()
-    .min(1, "Search query is required")
-    .describe("Search term to find adapters, methods, or skills (searches names and descriptions)"),
+    .optional()
+    .describe("Search term to find adapters, methods, or skills (searches names and descriptions). Optional if adapter is specified."),
+  adapter: z.string()
+    .optional()
+    .describe("Filter to a specific adapter by name (exact or partial match). Use this to list all methods of an adapter."),
+  method: z.string()
+    .optional()
+    .describe("Filter to a specific method by name (exact or partial match). Best used with adapter parameter."),
   type: z.enum(["all", "adapters", "methods", "skills"])
     .optional()
     .default("all")
@@ -753,7 +759,13 @@ ${skillList}`,
     {
       title: "Search MCX Adapters and Skills",
       description: `Search for adapters, methods, or skills by name or description.
-Use this to discover available functionality without loading everything.
+
+Examples:
+- mcx_search({ adapter: "stripe" }) - List all methods in stripe adapter
+- mcx_search({ adapter: "api", method: "get" }) - Find "get" methods in api adapter
+- mcx_search({ query: "invoice" }) - Search "invoice" across all adapters
+- mcx_search({ adapter: "stripe", method: "createCustomer" }) - Get specific method signature
+
 Returns TypeScript type information for matching methods.`,
       inputSchema: SearchInputSchema,
       annotations: {
@@ -764,9 +776,19 @@ Returns TypeScript type information for matching methods.`,
       },
     },
     async (params: SearchInput) => {
-      const query = params.query.toLowerCase();
+      const query = params.query?.toLowerCase();
+      const adapterFilter = params.adapter?.toLowerCase();
+      const methodFilter = params.method?.toLowerCase();
       const searchType = params.type || "all";
       const limit = params.limit || 20;
+
+      // Require at least one filter
+      if (!query && !adapterFilter && !methodFilter) {
+        return {
+          content: [{ type: "text" as const, text: "Please provide at least one of: query, adapter, or method parameter" }],
+          isError: true,
+        };
+      }
 
       const results: {
         adapters: Array<{ name: string; description: string; matchedMethods: string[] }>;
@@ -786,18 +808,38 @@ Returns TypeScript type information for matching methods.`,
         let adapterCount = 0;
 
         for (const adapter of adapters) {
-          const adapterMatches =
-            adapter.name.toLowerCase().includes(query) ||
-            (adapter.description?.toLowerCase().includes(query) ?? false);
+          // Filter by adapter name if specified
+          if (adapterFilter) {
+            const adapterNameLower = adapter.name.toLowerCase();
+            if (!adapterNameLower.includes(adapterFilter) && adapterNameLower !== adapterFilter) {
+              continue; // Skip this adapter entirely
+            }
+          }
+
+          const adapterMatchesQuery = query
+            ? (adapter.name.toLowerCase().includes(query) ||
+               (adapter.description?.toLowerCase().includes(query) ?? false))
+            : true; // If no query, adapter matches if it passed adapter filter
 
           const matchedMethods: string[] = [];
 
           for (const [methodName, method] of Object.entries(adapter.tools)) {
-            const methodMatches =
-              methodName.toLowerCase().includes(query) ||
-              (method.description?.toLowerCase().includes(query) ?? false);
+            const methodNameLower = methodName.toLowerCase();
 
-            if (methodMatches || adapterMatches) {
+            // Filter by method name if specified
+            if (methodFilter) {
+              if (!methodNameLower.includes(methodFilter) && methodNameLower !== methodFilter) {
+                continue; // Skip this method
+              }
+            }
+
+            const methodMatchesQuery = query
+              ? (methodNameLower.includes(query) ||
+                 (method.description?.toLowerCase().includes(query) ?? false))
+              : true; // If no query, method matches if it passed method filter
+
+            // Include method if it matches query OR if we're filtering by adapter/method without query
+            if (methodMatchesQuery || (adapterMatchesQuery && !methodFilter)) {
               matchedMethods.push(methodName);
 
               if (searchType === "all" || searchType === "methods") {
@@ -835,7 +877,7 @@ Returns TypeScript type information for matching methods.`,
             }
           }
 
-          if ((searchType === "all" || searchType === "adapters") && (adapterMatches || matchedMethods.length > 0)) {
+          if ((searchType === "all" || searchType === "adapters") && matchedMethods.length > 0) {
             // Enforce limit for adapters
             if (adapterCount >= limit) {
               results.pagination.adapters_truncated++;
@@ -852,13 +894,14 @@ Returns TypeScript type information for matching methods.`,
         }
       }
 
-      // Search skills
-      if (searchType === "all" || searchType === "skills") {
+      // Search skills (only if no adapter/method filter, since those are adapter-specific)
+      if ((searchType === "all" || searchType === "skills") && !adapterFilter && !methodFilter) {
         let skillCount = 0;
         for (const [name, skill] of skills.entries()) {
-          const matches =
-            name.toLowerCase().includes(query) ||
-            (skill.description?.toLowerCase().includes(query) ?? false);
+          const matches = query
+            ? (name.toLowerCase().includes(query) ||
+               (skill.description?.toLowerCase().includes(query) ?? false))
+            : true;
 
           if (matches) {
             if (skillCount >= limit) {
@@ -878,17 +921,24 @@ Returns TypeScript type information for matching methods.`,
       const totalMatches = results.adapters.length + results.methods.length + results.skills.length;
       const totalTruncated = results.pagination.adapters_truncated + results.pagination.methods_truncated + results.pagination.skills_truncated;
 
+      // Build filter description for output
+      const filters: string[] = [];
+      if (params.adapter) filters.push(`adapter="${params.adapter}"`);
+      if (params.method) filters.push(`method="${params.method}"`);
+      if (params.query) filters.push(`query="${params.query}"`);
+      const filterDesc = filters.join(", ");
+
       if (totalMatches === 0) {
         return {
-          content: [{ type: "text" as const, text: `No results found for "${params.query}"` }],
+          content: [{ type: "text" as const, text: `No results found for ${filterDesc}` }],
           structuredContent: results,
         };
       }
 
       const output = [
         totalTruncated > 0
-          ? `Found ${totalMatches} result(s) for "${params.query}" (${totalTruncated} more not shown, use limit param):`
-          : `Found ${totalMatches} result(s) for "${params.query}":`,
+          ? `Found ${totalMatches} result(s) for ${filterDesc} (${totalTruncated} more not shown, use limit param):`
+          : `Found ${totalMatches} result(s) for ${filterDesc}:`,
         "",
       ];
 

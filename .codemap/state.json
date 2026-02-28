@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-02-27T23:44:51.0206741-04:00",
+  "updated_at": "2026-02-28T08:11:40.8436734-04:00",
   "file_count": 67,
   "hubs": [
     "packages\\cli\\src\\utils\\paths.ts"
@@ -43,216 +43,6 @@
     ]
   },
   "recent_events": [
-    {
-      "time": "2026-02-27T23:23:29.4809841-04:00",
-      "op": "WRITE",
-      "path": "packages\\cli\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 55286,
-      "delta": -1,
-      "size_delta": -1886668
-    },
-    {
-      "time": "2026-02-27T23:23:29.6703012-04:00",
-      "op": "WRITE",
-      "path": "packages\\cli\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 55287,
-      "delta": 1,
-      "size_delta": 1886668
-    },
-    {
-      "time": "2026-02-27T23:23:29.8162853-04:00",
-      "op": "WRITE",
-      "path": "packages\\cli\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 55287
-    },
-    {
-      "time": "2026-02-27T23:42:43.9721528-04:00",
-      "op": "REMOVE",
-      "path": "packages\\cli\\src\\index.ts",
-      "lang": "typescript"
-    },
-    {
-      "time": "2026-02-27T23:42:53.2889517-04:00",
-      "op": "WRITE",
-      "path": "packages\\core\\dist\\index.d.ts",
-      "lang": "typescript",
-      "lines": 568
-    },
-    {
-      "time": "2026-02-27T23:42:53.3631971-04:00",
-      "op": "WRITE",
-      "path": "packages\\core\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 11191,
-      "size_delta": 362591
-    },
-    {
-      "time": "2026-02-27T23:42:53.3883892-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\alegra.d.ts",
-      "lang": "typescript",
-      "lines": 3974
-    },
-    {
-      "time": "2026-02-27T23:42:53.4204988-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\alegra.js",
-      "lang": "javascript",
-      "lines": 6957
-    },
-    {
-      "time": "2026-02-27T23:42:53.4541024-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\base.d.ts",
-      "lang": "typescript",
-      "lines": 149
-    },
-    {
-      "time": "2026-02-27T23:42:53.4902839-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\base.js",
-      "lang": "javascript",
-      "lines": 4039
-    },
-    {
-      "time": "2026-02-27T23:42:53.5198058-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\chunk-LCXF7OV2.js",
-      "lang": "javascript",
-      "lines": 75
-    },
-    {
-      "time": "2026-02-27T23:42:53.5533894-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\chunk-OYUQZNBC.js",
-      "lang": "javascript",
-      "lines": 411
-    },
-    {
-      "time": "2026-02-27T23:42:53.5851022-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\chunk-TO545YMN.js",
-      "lang": "javascript",
-      "lines": 338
-    },
-    {
-      "time": "2026-02-27T23:42:53.6145611-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\chunk-UIFS2L2T.js",
-      "lang": "javascript",
-      "lines": 412
-    },
-    {
-      "time": "2026-02-27T23:42:53.643148-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\chunk-VTFUT3T7.js",
-      "lang": "javascript",
-      "lines": 337
-    },
-    {
-      "time": "2026-02-27T23:42:53.6721128-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\chunk-X7PR77MC.js",
-      "lang": "javascript",
-      "lines": 372
-    },
-    {
-      "time": "2026-02-27T23:42:53.7060889-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\fetch.d.ts",
-      "lang": "typescript",
-      "lines": 156
-    },
-    {
-      "time": "2026-02-27T23:42:53.7401328-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\fetch.js",
-      "lang": "javascript",
-      "lines": 4387
-    },
-    {
-      "time": "2026-02-27T23:42:53.769552-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\generator.d.ts",
-      "lang": "typescript",
-      "lines": 107
-    },
-    {
-      "time": "2026-02-27T23:42:53.7969461-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\generator.js",
-      "lang": "javascript",
-      "lines": 7235
-    },
-    {
-      "time": "2026-02-27T23:42:53.8231932-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\github.d.ts",
-      "lang": "typescript",
-      "lines": 268
-    },
-    {
-      "time": "2026-02-27T23:42:53.8509208-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\github.js",
-      "lang": "javascript",
-      "lines": 4440
-    },
-    {
-      "time": "2026-02-27T23:42:53.8729826-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\index.d.ts",
-      "lang": "typescript",
-      "lines": 5
-    },
-    {
-      "time": "2026-02-27T23:42:53.8984764-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 11607,
-      "size_delta": 372831
-    },
-    {
-      "time": "2026-02-27T23:42:53.9244153-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\supabase.d.ts",
-      "lang": "typescript",
-      "lines": 197
-    },
-    {
-      "time": "2026-02-27T23:42:53.9504352-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\supabase.js",
-      "lang": "javascript",
-      "lines": 4406
-    },
-    {
-      "time": "2026-02-27T23:42:53.9759122-04:00",
-      "op": "WRITE",
-      "path": "packages\\cli\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 55344,
-      "delta": 57,
-      "size_delta": 1595
-    },
-    {
-      "time": "2026-02-27T23:44:50.3885499-04:00",
-      "op": "WRITE",
-      "path": "packages\\core\\dist\\index.d.ts",
-      "lang": "typescript",
-      "lines": 568
-    },
-    {
-      "time": "2026-02-27T23:44:50.4468998-04:00",
-      "op": "WRITE",
-      "path": "packages\\core\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 11191
-    },
     {
       "time": "2026-02-27T23:44:50.4726151-04:00",
       "op": "WRITE",
@@ -399,6 +189,213 @@
       "path": "packages\\cli\\dist\\index.js",
       "lang": "javascript",
       "lines": 55344
+    },
+    {
+      "time": "2026-02-28T08:10:32.3050337-04:00",
+      "op": "REMOVE",
+      "path": "packages\\cli\\src\\commands\\serve.ts",
+      "lang": "typescript",
+      "imports": 1
+    },
+    {
+      "time": "2026-02-28T08:10:58.9264477-04:00",
+      "op": "REMOVE",
+      "path": "packages\\cli\\src\\commands\\serve.ts",
+      "lang": "typescript",
+      "imports": 1
+    },
+    {
+      "time": "2026-02-28T08:11:07.9560901-04:00",
+      "op": "REMOVE",
+      "path": "packages\\cli\\src\\commands\\serve.ts",
+      "lang": "typescript",
+      "imports": 1
+    },
+    {
+      "time": "2026-02-28T08:11:20.9184298-04:00",
+      "op": "REMOVE",
+      "path": "packages\\cli\\src\\commands\\serve.ts",
+      "lang": "typescript",
+      "imports": 1
+    },
+    {
+      "time": "2026-02-28T08:11:37.6345015-04:00",
+      "op": "WRITE",
+      "path": "packages\\core\\dist\\index.d.ts",
+      "lang": "typescript",
+      "lines": 568
+    },
+    {
+      "time": "2026-02-28T08:11:37.7094329-04:00",
+      "op": "WRITE",
+      "path": "packages\\core\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 11191
+    },
+    {
+      "time": "2026-02-28T08:11:37.7497184-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\alegra.d.ts",
+      "lang": "typescript",
+      "lines": 3974
+    },
+    {
+      "time": "2026-02-28T08:11:37.7801939-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\alegra.js",
+      "lang": "javascript",
+      "lines": 6957
+    },
+    {
+      "time": "2026-02-28T08:11:37.8163938-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\base.d.ts",
+      "lang": "typescript",
+      "lines": 149
+    },
+    {
+      "time": "2026-02-28T08:11:37.8466947-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\base.js",
+      "lang": "javascript",
+      "lines": 4039
+    },
+    {
+      "time": "2026-02-28T08:11:37.8770368-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\chunk-LCXF7OV2.js",
+      "lang": "javascript",
+      "lines": 75
+    },
+    {
+      "time": "2026-02-28T08:11:37.901233-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\chunk-OYUQZNBC.js",
+      "lang": "javascript",
+      "lines": 411
+    },
+    {
+      "time": "2026-02-28T08:11:37.9338315-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\chunk-TO545YMN.js",
+      "lang": "javascript",
+      "lines": 338
+    },
+    {
+      "time": "2026-02-28T08:11:37.963977-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\chunk-UIFS2L2T.js",
+      "lang": "javascript",
+      "lines": 412
+    },
+    {
+      "time": "2026-02-28T08:11:37.9935592-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\chunk-VTFUT3T7.js",
+      "lang": "javascript",
+      "lines": 337
+    },
+    {
+      "time": "2026-02-28T08:11:38.020237-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\chunk-X7PR77MC.js",
+      "lang": "javascript",
+      "lines": 372
+    },
+    {
+      "time": "2026-02-28T08:11:38.0534357-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\fetch.d.ts",
+      "lang": "typescript",
+      "lines": 156
+    },
+    {
+      "time": "2026-02-28T08:11:38.0835574-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\fetch.js",
+      "lang": "javascript",
+      "lines": 4387
+    },
+    {
+      "time": "2026-02-28T08:11:38.1122304-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\generator.d.ts",
+      "lang": "typescript",
+      "lines": 107
+    },
+    {
+      "time": "2026-02-28T08:11:38.1379797-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\generator.js",
+      "lang": "javascript",
+      "lines": 7235
+    },
+    {
+      "time": "2026-02-28T08:11:38.16722-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\github.d.ts",
+      "lang": "typescript",
+      "lines": 268
+    },
+    {
+      "time": "2026-02-28T08:11:38.1951154-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\github.js",
+      "lang": "javascript",
+      "lines": 4440
+    },
+    {
+      "time": "2026-02-28T08:11:38.2232421-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\index.d.ts",
+      "lang": "typescript",
+      "lines": 5
+    },
+    {
+      "time": "2026-02-28T08:11:38.2559819-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 11607
+    },
+    {
+      "time": "2026-02-28T08:11:38.2860372-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\supabase.d.ts",
+      "lang": "typescript",
+      "lines": 197
+    },
+    {
+      "time": "2026-02-28T08:11:38.3157649-04:00",
+      "op": "WRITE",
+      "path": "packages\\adapters\\dist\\supabase.js",
+      "lang": "javascript",
+      "lines": 4406
+    },
+    {
+      "time": "2026-02-28T08:11:40.3861188-04:00",
+      "op": "WRITE",
+      "path": "packages\\cli\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 55379,
+      "delta": 35,
+      "size_delta": 1741
+    },
+    {
+      "time": "2026-02-28T08:11:40.6447372-04:00",
+      "op": "WRITE",
+      "path": "packages\\cli\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 55380,
+      "delta": 1,
+      "size_delta": 19
+    },
+    {
+      "time": "2026-02-28T08:11:40.8167234-04:00",
+      "op": "WRITE",
+      "path": "packages\\cli\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 55380
     }
   ]
 }
