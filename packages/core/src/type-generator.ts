@@ -83,7 +83,8 @@ export function generateTypes(
 
 /**
  * Generate a compact type summary for token-constrained contexts.
- * Returns a condensed one-liner per adapter.
+ * Only shows adapter names and method count to minimize context usage.
+ * Use mcx_search to discover specific methods.
  *
  * @param adapters - Array of adapters
  * @returns Compact summary string
@@ -91,8 +92,8 @@ export function generateTypes(
 export function generateTypesSummary(adapters: Adapter[]): string {
   return adapters
     .map((adapter) => {
-      const methods = Object.keys(adapter.tools).join(", ");
-      return `${adapter.name}: { ${methods} }`;
+      const count = Object.keys(adapter.tools).length;
+      return `- ${adapter.name} (${count} methods)`;
     })
     .join("\n");
 }
