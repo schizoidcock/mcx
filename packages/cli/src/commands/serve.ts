@@ -13,14 +13,15 @@
  * - Supports stdio and HTTP transports
  */
 
-import { join, dirname } from "node:path";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import pc from "picocolors";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
-import { getMcxCliDir, getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
+import { getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 
 // ============================================================================
 // .env Loading
@@ -136,13 +137,19 @@ const ExecuteInputSchema = z.object({
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
   maxItems: z.number()
+    .int()
+    .min(1)
+    .max(1000)
     .optional()
     .default(10)
-    .describe("Max array items to return when truncating (default: 10)"),
+    .describe("Max array items to return when truncating (default: 10, max: 1000)"),
   maxStringLength: z.number()
+    .int()
+    .min(10)
+    .max(10000)
     .optional()
     .default(500)
-    .describe("Max string length when truncating (default: 500)"),
+    .describe("Max string length when truncating (default: 500, max: 10000)"),
 }).strict();
 
 const RunSkillInputSchema = z.object({
@@ -158,13 +165,19 @@ const RunSkillInputSchema = z.object({
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
   maxItems: z.number()
+    .int()
+    .min(1)
+    .max(1000)
     .optional()
     .default(10)
-    .describe("Max array items to return when truncating (default: 10)"),
+    .describe("Max array items to return when truncating (default: 10, max: 1000)"),
   maxStringLength: z.number()
+    .int()
+    .min(10)
+    .max(10000)
     .optional()
     .default(500)
-    .describe("Max string length when truncating (default: 500)"),
+    .describe("Max string length when truncating (default: 500, max: 10000)"),
 }).strict();
 
 const ListInputSchema = z.object({
@@ -173,9 +186,12 @@ const ListInputSchema = z.object({
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
   maxItems: z.number()
+    .int()
+    .min(1)
+    .max(500)
     .optional()
     .default(20)
-    .describe("Max adapters/skills to return when truncating (default: 20)"),
+    .describe("Max adapters/skills to return when truncating (default: 20, max: 500)"),
 }).strict();
 
 const SearchInputSchema = z.object({
@@ -187,9 +203,12 @@ const SearchInputSchema = z.object({
     .default("all")
     .describe("Filter results by type"),
   limit: z.number()
+    .int()
+    .min(1)
+    .max(100)
     .optional()
     .default(20)
-    .describe("Max number of results per category (default: 20)"),
+    .describe("Max number of results per category (default: 20, max: 100)"),
 }).strict();
 
 type ExecuteInput = z.infer<typeof ExecuteInputSchema>;
@@ -323,7 +342,7 @@ async function loadConfig(): Promise<MCXConfig | null> {
 
     return config;
   } catch (error) {
-    console.error(pc.yellow("Warning: Failed to load mcx.config.ts:"), error);
+    console.error(pc.yellow(`Warning: Failed to load mcx.config.ts: ${error instanceof Error ? error.message : String(error)}`));
     return null;
   }
 }
@@ -332,7 +351,7 @@ async function loadSkills(): Promise<Map<string, Skill>> {
   const skills = new Map<string, Skill>();
   const skillsDir = join(process.cwd(), "skills");
 
-  if (!(await Bun.file(skillsDir).exists())) {
+  if (!existsSync(skillsDir)) {
     return skills;
   }
 
@@ -356,7 +375,7 @@ async function loadSkills(): Promise<Map<string, Skill>> {
         skills.set(skillName, skill);
       }
     } catch (error) {
-      console.error(pc.yellow(`Warning: Failed to load skill ${path}:`), error);
+      console.error(pc.yellow(`Warning: Failed to load skill ${path}: ${error instanceof Error ? error.message : String(error)}`));
     }
   }
 
@@ -698,7 +717,7 @@ Returns TypeScript type information for matching methods.`,
                 }
 
                 // Generate TypeScript signature for this method
-                const params = method.parameters
+                const methodParams = method.parameters
                   ? Object.entries(method.parameters)
                       .map(([name, def]) => {
                         const opt = def.required === false ? "?" : "";
@@ -710,8 +729,8 @@ Returns TypeScript type information for matching methods.`,
                       .join(", ")
                   : "";
 
-                const typescript = params
-                  ? `${adapter.name}.${methodName}({ ${params} }): Promise<unknown>`
+                const typescript = methodParams
+                  ? `${adapter.name}.${methodName}({ ${methodParams} }): Promise<unknown>`
                   : `${adapter.name}.${methodName}(): Promise<unknown>`;
 
                 results.methods.push({
