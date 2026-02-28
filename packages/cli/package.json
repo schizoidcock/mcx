@@ -1,6 +1,6 @@
 {
   "name": "@papicandela/mcx-cli",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "CLI for the MCX framework - MCP Code Execution",
   "author": "papicandela",
   "license": "MIT",

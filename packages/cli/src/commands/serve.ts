@@ -102,6 +102,7 @@ interface Skill {
 /** Compatible with @papicandela/mcx-core AdapterTool */
 interface AdapterMethod {
   description: string;
+  parameters?: Record<string, { type: string; description?: string; required?: boolean }>;
   execute: (params: unknown) => Promise<unknown>;
 }
 
@@ -458,8 +459,13 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           maxItems: params.maxItems,
           maxStringLength: params.maxStringLength,
         });
+        // Truncate logs on success too (same as error case)
+        const maxLogs = 20;
+        const truncatedLogs = result.logs.length > maxLogs
+          ? [...result.logs.slice(0, maxLogs), `... +${result.logs.length - maxLogs} more`]
+          : result.logs;
         const rawTextOutput = [
-          result.logs.length > 0 ? `Logs:\n${result.logs.join("\n")}\n` : "",
+          truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}\n` : "",
           summarized.truncated
             ? `Result (${summarized.originalSize}):\n${JSON.stringify(summarized.value, null, 2)}`
             : result.value !== undefined
@@ -474,7 +480,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           content: [{ type: "text" as const, text: textOutput }],
           structuredContent: {
             result: summarized.value,
-            logs: result.logs,
+            logs: truncatedLogs,
             executionTime: result.executionTime,
             truncated: summarized.truncated || charLimitTruncated,
           },
@@ -540,9 +546,13 @@ ${skillList}`,
           maxStringLength: 500,
         });
 
+        // Enforce character limit on skill output too
+        const rawText = summarized.value !== undefined ? JSON.stringify(summarized.value, null, 2) : "Skill executed successfully";
+        const { text: finalText, truncated: charLimitTruncated } = enforceCharacterLimit(rawText);
+
         return {
-          content: [{ type: "text" as const, text: summarized.value !== undefined ? JSON.stringify(summarized.value, null, 2) : "Skill executed successfully" }],
-          structuredContent: { result: summarized.value, truncated: summarized.truncated },
+          content: [{ type: "text" as const, text: finalText }],
+          structuredContent: { result: summarized.value, truncated: summarized.truncated || charLimitTruncated },
         };
       } catch (error) {
         if (timeoutId) clearTimeout(timeoutId);
