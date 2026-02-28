@@ -1,0 +1,9 @@
+{
+  "file_count": 63,
+  "hubs": [
+    {
+      "path": "packages\\cli\\src\\utils\\paths.ts",
+      "importers": 5
+    }
+  ]
+}

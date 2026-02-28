@@ -1,0 +1,10 @@
+{
+  "changed": [],
+  "risk_files": [],
+  "recent_events": [],
+  "next_steps": [],
+  "open_questions": [
+    "No changed files detected vs main. Confirm the base ref and branch state.",
+    "Live watch state was unavailable; timeline may be incomplete."
+  ]
+}

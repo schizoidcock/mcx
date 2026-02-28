@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-26T23:23:23.0014454-04:00",
+  "root": "D:\\Claude\\mcx",
+  "branch": "main",
+  "base_ref": "main",
+  "prefix": {
+    "file_count": 63,
+    "hubs": [
+      {
+        "path": "packages\\cli\\src\\utils\\paths.ts",
+        "importers": 5
+      }
+    ]
+  },
+  "delta": {
+    "changed": [],
+    "risk_files": [],
+    "recent_events": [],
+    "next_steps": [],
+    "open_questions": [
+      "No changed files detected vs main. Confirm the base ref and branch state.",
+      "Live watch state was unavailable; timeline may be incomplete."
+    ]
+  },
+  "prefix_hash": "ad22e07cada1a4b6a2bbae44091c0cfd524000837d7cea628ce40dd1f8db58e6",
+  "delta_hash": "b1d2564327f7e8a8d1579dbbfff4d09b6d80bd9ad70a22b4a4e102a417e0110c",
+  "combined_hash": "a9a6c8dcfb1a19161ee3e33a3fcfdb6d748b0e484b6f169264b4fc8acc91ba16",
+  "metrics": {
+    "prefix_bytes": 87,
+    "delta_bytes": 224,
+    "total_bytes": 311,
+    "unchanged_bytes": 0,
+    "reuse_ratio": 0,
+    "prefix_reused": false,
+    "delta_reused": false
+  },
+  "changed_files": [],
+  "risk_files": [],
+  "recent_events": [],
+  "next_steps": [],
+  "open_questions": [
+    "No changed files detected vs main. Confirm the base ref and branch state.",
+    "Live watch state was unavailable; timeline may be incomplete."
+  ]
+}

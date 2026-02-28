@@ -13,7 +13,11 @@ import { genCommand } from "./commands/gen.js";
 import { updateCommand } from "./commands/update.js";
 
 const CLI_PACKAGE = "@papicandela/mcx-cli";
-const CURRENT_VERSION = "0.2.7";
+
+// Read version from package.json at build time (injected by bundler)
+// Fallback to reading at runtime if not available
+import packageJson from "../package.json";
+const CURRENT_VERSION = packageJson.version;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 async function autoUpdate(): Promise<void> {
