@@ -1072,11 +1072,20 @@ async function runHttp(port: number) {
 
           await transport.handleRequest(req as never, mockRes as never, body);
 
+          // If MCP SDK set error status but no body, return a helpful message
+          if (mockRes.statusCode >= 400 && !mockRes.body) {
+            return Response.json(
+              { error: `MCP transport returned status ${mockRes.statusCode}`, jsonrpc: "2.0", id: body?.id },
+              { status: mockRes.statusCode, headers: mockRes.headers }
+            );
+          }
+
           return new Response(mockRes.body, {
             status: mockRes.statusCode,
             headers: mockRes.headers,
           });
         } catch (error) {
+          console.error("MCP request error:", error);
           return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
         }
       }
