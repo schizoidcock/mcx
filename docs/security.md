@@ -40,11 +40,11 @@ MCX analyzes code before execution to detect potential issues:
 
 | Rule | Severity | Detects |
 |------|----------|---------|
-| `no-infinite-loop` | error | `while(true)`, `for(;;)` without break |
+| `no-infinite-loop` | error | `while(true)`, `for(;;)`, `do...while(true)` without break/return/throw |
 | `no-nested-loops` | warn | Nested loops (O(n²) complexity) |
 | `no-adapter-in-loop` | warn | Adapter calls inside loops (rate limiting risk) |
 | `no-unhandled-async` | warn | `async` in `forEach`/`map` without `Promise.all` |
-| `no-dangerous-globals` | warn | `eval`, `require`, `process` usage |
+| `no-dangerous-globals` | error/warn | `eval`, `Function`, `AsyncFunction` constructor (error), `process` (warn) |
 
 **Errors block execution**, warnings are logged but execution continues.
 
@@ -91,6 +91,42 @@ LLM-generated code is automatically normalized:
                   │  └─────────────────────────────┘  │
                   └───────────────────────────────────┘
 ```
+
+## Additional Security Hardening
+
+### Path Traversal Protection
+
+The `mcx gen` command validates output paths to prevent writing files outside allowed directories:
+
+- Only `cwd` and `~/.mcx/` are allowed as output locations
+- Symlinks are resolved to prevent bypass attacks
+- Prefix collision attacks are blocked (e.g., `~/.mcx-malicious` won't match `~/.mcx`)
+
+### Environment Variable Protection
+
+Dangerous environment variables are blocked from `.env` files and `config.env`:
+
+```
+NODE_OPTIONS, NODE_PATH, LD_PRELOAD, PATH, SHELL, BASH_ENV, ...
+```
+
+This prevents privilege escalation and code injection via environment manipulation.
+
+### Code Generation Security
+
+Generated adapter code is protected against injection attacks:
+
+- All strings are properly escaped for their context (single quotes, template literals)
+- Identifier names are validated before use in generated code
+- Package names are validated against npm naming rules
+
+### Response Size Limits
+
+MCP responses are limited to prevent memory exhaustion:
+
+- Character limit: 25,000 chars per response (configurable via truncation params)
+- HTTP body limit: 100KB max response body
+- Array truncation: Default 10 items (configurable up to 1000)
 
 ## Runtime
 
