@@ -2,9 +2,12 @@
  * MCX Path Utilities
  * Shared helpers for resolving MCX directories
  */
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync, existsSync } from "node:fs";
+
+/** Max directory depth to traverse (prevents symlink loops) */
+const MAX_TRAVERSE_DEPTH = 100;
 
 /**
  * Get the global MCX home directory (~/.mcx)
@@ -22,15 +25,11 @@ export function ensureMcxHomeDir(): string {
   const adaptersDir = join(homeDir, "adapters");
   const skillsDir = join(homeDir, "skills");
 
-  if (!existsSync(homeDir)) {
-    mkdirSync(homeDir, { recursive: true });
-  }
-  if (!existsSync(adaptersDir)) {
-    mkdirSync(adaptersDir, { recursive: true });
-  }
-  if (!existsSync(skillsDir)) {
-    mkdirSync(skillsDir, { recursive: true });
-  }
+  // mkdirSync with recursive is idempotent - no need to check existence first
+  // This also avoids TOCTOU race conditions
+  mkdirSync(homeDir, { recursive: true });
+  mkdirSync(adaptersDir, { recursive: true });
+  mkdirSync(skillsDir, { recursive: true });
 
   return homeDir;
 }
@@ -41,17 +40,15 @@ export function ensureMcxHomeDir(): string {
 export function getMcxCliDir(): string {
   const currentDir = import.meta.dir;
   let dir = currentDir;
+  let depth = 0;
 
-  while (dir !== dirname(dir)) {
+  while (dir !== dirname(dir) && depth < MAX_TRAVERSE_DEPTH) {
     const pkgPath = join(dir, "package.json");
-    const file = Bun.file(pkgPath);
-    try {
-      const exists = file.size > 0;
-      if (exists) {
-        return dir;
-      }
-    } catch {}
+    if (existsSync(pkgPath)) {
+      return dir;
+    }
     dir = dirname(dir);
+    depth++;
   }
 
   return currentDir;
@@ -71,17 +68,17 @@ export function getMcxRootDir(): string {
  * Returns null if no mcx.config.ts found
  */
 export function findProjectRoot(startDir: string = process.cwd()): string | null {
-  let dir = startDir;
+  // Resolve to absolute path to normalize input
+  let dir = resolve(startDir);
+  let depth = 0;
 
-  while (dir !== dirname(dir)) {
+  while (dir !== dirname(dir) && depth < MAX_TRAVERSE_DEPTH) {
     const configPath = join(dir, "mcx.config.ts");
-    const configFile = Bun.file(configPath);
-    try {
-      if (configFile.size > 0) {
-        return dir;
-      }
-    } catch {}
+    if (existsSync(configPath)) {
+      return dir;
+    }
     dir = dirname(dir);
+    depth++;
   }
 
   return null;

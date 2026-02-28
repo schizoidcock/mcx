@@ -46,7 +46,24 @@ export interface HttpResponse<T = unknown> {
 export function createFetchAdapter(config: Partial<FetchConfig> = {}) {
   const debug = (message: string, ...args: unknown[]) => {
     if (config.debug) {
-      console.log(`[fetch] ${message}`, ...args);
+      // Use stderr to avoid breaking stdio MCP transport
+      console.error(`[fetch] ${message}`, ...args);
+    }
+  };
+
+  /**
+   * Validate URL scheme to prevent SSRF attacks
+   */
+  const validateUrl = (url: string): void => {
+    try {
+      const parsed = new URL(url);
+      // Only allow http and https protocols
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        throw new Error(`Disallowed URL scheme: ${parsed.protocol}`);
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Disallowed")) throw e;
+      throw new Error(`Invalid URL: ${url}`);
     }
   };
 
@@ -65,10 +82,15 @@ export function createFetchAdapter(config: Partial<FetchConfig> = {}) {
       fullUrl = `${base}${path}`;
     }
 
+    // SECURITY: Validate URL scheme to prevent SSRF (file://, data://, etc.)
+    validateUrl(fullUrl);
+
     // Add query parameters
     if (params && Object.keys(params).length > 0) {
       const searchParams = new URLSearchParams();
       for (const [key, value] of Object.entries(params)) {
+        // Skip prototype pollution keys
+        if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
         searchParams.append(key, String(value));
       }
       const separator = fullUrl.includes("?") ? "&" : "?";
@@ -88,6 +110,9 @@ export function createFetchAdapter(config: Partial<FetchConfig> = {}) {
     };
   };
 
+  /** Maximum response size (10 MB) - prevents memory exhaustion */
+  const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
   /**
    * Parse response based on content type or explicit type
    */
@@ -95,6 +120,12 @@ export function createFetchAdapter(config: Partial<FetchConfig> = {}) {
     response: Response,
     responseType?: "json" | "text" | "blob" | "arrayBuffer"
   ): Promise<T> => {
+    // SECURITY: Check Content-Length header to reject oversized responses early
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && parseInt(contentLength, 10) > MAX_RESPONSE_BYTES) {
+      throw new Error(`Response too large: ${contentLength} bytes (limit: ${MAX_RESPONSE_BYTES})`);
+    }
+
     const contentType = response.headers.get("content-type") ?? "";
 
     if (responseType === "text") {

@@ -224,6 +224,27 @@ type SearchInput = z.infer<typeof SearchInputSchema>;
 const CHARACTER_LIMIT = 25000;
 
 /**
+ * Safe JSON.stringify that handles BigInt and circular references
+ */
+function safeStringify(value: unknown, indent: number = 2): string {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (key, val) => {
+    // Handle BigInt
+    if (typeof val === "bigint") {
+      return val.toString() + "n";
+    }
+    // Handle circular references
+    if (typeof val === "object" && val !== null) {
+      if (seen.has(val)) {
+        return "[Circular]";
+      }
+      seen.add(val);
+    }
+    return val;
+  }, indent);
+}
+
+/**
  * Enforce character limit on text output
  */
 function enforceCharacterLimit(text: string, limit: number = CHARACTER_LIMIT): { text: string; truncated: boolean } {
@@ -525,9 +546,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         const rawTextOutput = [
           truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}\n` : "",
           summarized.truncated
-            ? `Result (${summarized.originalSize}):\n${JSON.stringify(summarized.value, null, 2)}`
+            ? `Result (${summarized.originalSize}):\n${safeStringify(summarized.value)}`
             : result.value !== undefined
-              ? `Result:\n${JSON.stringify(result.value, null, 2)}`
+              ? `Result:\n${safeStringify(result.value)}`
               : "Code executed successfully",
         ].filter(Boolean).join("\n");
 
@@ -605,7 +626,7 @@ ${skillList}`,
         });
 
         // Enforce character limit on skill output too
-        const rawText = summarized.value !== undefined ? JSON.stringify(summarized.value, null, 2) : "Skill executed successfully";
+        const rawText = summarized.value !== undefined ? safeStringify(summarized.value) : "Skill executed successfully";
         const { text: finalText, truncated: charLimitTruncated } = enforceCharacterLimit(rawText);
 
         return {
@@ -663,7 +684,7 @@ ${skillList}`,
       };
 
       // Enforce character limit
-      const rawText = JSON.stringify(output, null, 2);
+      const rawText = safeStringify(output);
       const { text: finalText } = enforceCharacterLimit(rawText);
 
       return {

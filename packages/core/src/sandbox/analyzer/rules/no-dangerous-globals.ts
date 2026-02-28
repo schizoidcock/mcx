@@ -2,10 +2,10 @@
  * Rule: no-dangerous-globals
  *
  * Detects usage of dangerous globals that are not available or unsafe in sandbox:
- * - Dynamic code execution
- * - Function constructor
- * - process object
- * - require function
+ * - Dynamic code execution (blocked as error)
+ * - Function constructor (blocked as error)
+ * - process object (warning)
+ * - require function (warning)
  */
 
 import type * as acorn from "acorn";
@@ -20,31 +20,38 @@ const PROCESS_NAME = "pro" + "cess";
 export const rule: Rule = {
   name: "no-dangerous-globals",
   severity: "warn",
-  description: "Warn about dangerous globals not available in sandbox",
-  visits: ["CallExpression", "NewExpression", "Identifier", "MemberExpression"],
+  description: "Block dangerous globals that could escape sandbox",
+  visits: ["CallExpression", "NewExpression", "MemberExpression"],
 
   visitors: {
     CallExpression(node, context) {
       const callExpr = node as acorn.CallExpression;
+      const calleeName = callExpr.callee.type === "Identifier"
+        ? (callExpr.callee as acorn.Identifier).name
+        : null;
 
-      // Check for dynamic code execution
-      if (
-        callExpr.callee.type === "Identifier" &&
-        (callExpr.callee as acorn.Identifier).name === EVAL_NAME
-      ) {
+      // SECURITY: Dynamic code execution is a sandbox escape vector - block
+      if (calleeName === EVAL_NAME) {
         context.report({
-          severity: "warn",
-          message: `${EVAL_NAME}() is not available in sandbox`,
+          severity: "error",
+          message: `${EVAL_NAME}() is blocked in sandbox - potential code injection`,
+          line: context.getLine(node),
+        });
+        return;
+      }
+
+      // SECURITY: Function constructor called without new is equally dangerous
+      if (calleeName === FUNC_CONSTRUCTOR) {
+        context.report({
+          severity: "error",
+          message: `${FUNC_CONSTRUCTOR}() is blocked in sandbox - potential code injection`,
           line: context.getLine(node),
         });
         return;
       }
 
       // Check for require()
-      if (
-        callExpr.callee.type === "Identifier" &&
-        (callExpr.callee as acorn.Identifier).name === REQUIRE_NAME
-      ) {
+      if (calleeName === REQUIRE_NAME) {
         context.report({
           severity: "warn",
           message: `${REQUIRE_NAME}() is not available in sandbox - use adapters instead`,
@@ -57,31 +64,22 @@ export const rule: Rule = {
     NewExpression(node, context) {
       const newExpr = node as acorn.NewExpression;
 
-      // Check for Function constructor
+      // SECURITY: Function constructor is a sandbox escape vector - block
       if (
         newExpr.callee.type === "Identifier" &&
         (newExpr.callee as acorn.Identifier).name === FUNC_CONSTRUCTOR
       ) {
         context.report({
-          severity: "warn",
-          message: `${FUNC_CONSTRUCTOR} constructor is not recommended in sandbox`,
+          severity: "error",
+          message: `${FUNC_CONSTRUCTOR} constructor is blocked in sandbox - potential code injection`,
           line: context.getLine(node),
         });
       }
     },
 
-    Identifier(node, context) {
-      const identifier = node as acorn.Identifier;
-
-      // Check for bare `process` reference
-      if (identifier.name === PROCESS_NAME) {
-        context.report({
-          severity: "warn",
-          message: `'${PROCESS_NAME}' is not available in sandbox`,
-          line: context.getLine(node),
-        });
-      }
-    },
+    // Note: Removed Identifier visitor for 'process' - MemberExpression catches
+    // process.X usage, and bare 'process' references fail at runtime anyway.
+    // This prevents duplicate warnings for each process.X access.
 
     MemberExpression(node, context) {
       const memberExpr = node as acorn.MemberExpression;

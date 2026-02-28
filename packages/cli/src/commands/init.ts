@@ -90,7 +90,13 @@ async function ensurePackageJson(cwd: string): Promise<boolean> {
     try {
       const content = await readFile(pkgPath, "utf-8");
       pkg = JSON.parse(content);
-    } catch {
+    } catch (parseErr) {
+      // Don't silently overwrite corrupted package.json - warn user
+      console.error(pc.red(`  Warning: package.json exists but is not valid JSON.`));
+      console.error(pc.dim(`  Error: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`));
+      console.error(pc.yellow(`  Creating backup and reinitializing...`));
+      // Create backup of corrupted file
+      await writeFile(pkgPath + ".bak", content);
       pkg = {};
     }
   } else {
@@ -139,10 +145,11 @@ async function runBunInstall(cwd: string): Promise<void> {
   console.log(pc.cyan("\n  Installing dependencies..."));
 
   return new Promise((resolve, reject) => {
+    // Note: Don't use shell: true - it causes issues on Windows with spaces in paths
+    // spawn can find executables on PATH without the shell
     const proc = spawn("bun", ["install"], {
       cwd,
       stdio: "inherit",
-      shell: true,
     });
 
     proc.on("close", (code) => {
@@ -153,7 +160,10 @@ async function runBunInstall(cwd: string): Promise<void> {
       }
     });
 
-    proc.on("error", reject);
+    proc.on("error", (err) => {
+      // Provide actionable error message
+      reject(new Error(`Failed to run 'bun install': ${err.message}. Is bun installed and in PATH?`));
+    });
   });
 }
 
@@ -217,7 +227,10 @@ export async function initCommand(): Promise<void> {
       await runBunInstall(mcxHome);
       console.log(pc.green("\n  Dependencies installed successfully"));
     } catch (error) {
-      console.log(pc.yellow("\n  Failed to install dependencies. Run 'bun install' in ~/.mcx/ manually."));
+      // Include actual error for debugging
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.log(pc.yellow(`\n  Failed to install dependencies: ${errMsg}`));
+      console.log(pc.dim("  Run 'bun install' in ~/.mcx/ manually."));
     }
   }
 

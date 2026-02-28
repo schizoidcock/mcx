@@ -38,12 +38,16 @@ function createParameterValidator(
         schema = z.unknown();
     }
 
-    if (param.default !== undefined) {
-      schema = schema.default(param.default);
-    }
-
+    // IMPORTANT: Order matters in Zod!
+    // .optional() must come BEFORE .default() so that:
+    // - absent input resolves to the default (not undefined)
+    // - z.string().optional().default("x") = ZodDefault<ZodOptional<...>>
     if (!param.required) {
       schema = schema.optional();
+    }
+
+    if (param.default !== undefined) {
+      schema = schema.default(param.default);
     }
 
     shape[param.name] = schema;

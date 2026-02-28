@@ -1,7 +1,10 @@
 import type { Adapter, MCXConfig, SandboxConfig, Skill } from "./types.js";
+import { DEFAULT_NETWORK_POLICY } from "./sandbox/network-policy.js";
+import { DEFAULT_ANALYSIS_CONFIG } from "./sandbox/analyzer/index.js";
 
 /**
  * Default MCX configuration values.
+ * Must include all sandbox fields to ensure network isolation is always enabled.
  */
 const DEFAULT_CONFIG: Required<Omit<MCXConfig, "adapters" | "skills" | "env">> = {
   sandbox: {
@@ -9,6 +12,9 @@ const DEFAULT_CONFIG: Required<Omit<MCXConfig, "adapters" | "skills" | "env">> =
     memoryLimit: 128,
     allowAsync: true,
     globals: {},
+    networkPolicy: DEFAULT_NETWORK_POLICY,
+    normalizeCode: true,
+    analysis: DEFAULT_ANALYSIS_CONFIG,
   },
   adaptersDir: "./adapters",
   skillsDir: "./skills",

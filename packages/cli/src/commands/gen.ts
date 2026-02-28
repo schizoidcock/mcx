@@ -63,6 +63,14 @@ export async function genCommand(options: {
     name = getDefaultName(source);
   }
 
+  // SECURITY: Validate adapter name to prevent code injection and path traversal
+  // Must be a valid JS identifier (letters, digits, underscores, not starting with digit)
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    throw new Error(
+      `Invalid adapter name "${name}". Must be a valid JS identifier (letters, digits, underscores, not starting with a digit).`
+    );
+  }
+
   // Default output - always save to MCX adapters directory
   if (!output) {
     output = getDefaultOutput(name);

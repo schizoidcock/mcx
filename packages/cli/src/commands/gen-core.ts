@@ -506,7 +506,15 @@ function extractNameFromUrl(urlString: string): string | null {
 
 export function getDefaultOutput(name: string): string {
   const adaptersDir = getAdaptersDir();
-  return path.join(adaptersDir, `${name}.ts`);
+  const resolved = path.resolve(adaptersDir, `${name}.ts`);
+
+  // SECURITY: Ensure output path stays within adapters directory (prevent path traversal)
+  const normalizedAdaptersDir = path.resolve(adaptersDir);
+  if (!resolved.startsWith(normalizedAdaptersDir + path.sep) && resolved !== normalizedAdaptersDir) {
+    throw new Error(`Invalid adapter name: path traversal detected`);
+  }
+
+  return resolved;
 }
 
 export function getDefaultName(source: string): string {
@@ -671,9 +679,12 @@ function generateMethod(methodName: string, ep: ParsedEndpoint): string {
   const lines: string[] = [];
   const indent = "    ";
 
+  // SECURITY: Escape backslashes BEFORE single quotes to prevent injection
   const desc = (ep.operation.summary || ep.operation.description || ep.path)
+    .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
-    .replace(/[\r\n]+/g, " ");
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 200);
 
   lines.push(`${indent}${methodName}: {`);
   lines.push(`${indent}  description: '${desc}',`);
@@ -694,9 +705,12 @@ function generateSDKMethod(methodName: string, ep: ParsedEndpoint): string {
   const lines: string[] = [];
   const indent = "    ";
 
+  // SECURITY: Escape backslashes BEFORE single quotes to prevent injection
   const desc = (ep.operation.summary || ep.operation.description || ep.path)
+    .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
-    .replace(/[\r\n]+/g, " ");
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 200);
 
   lines.push(`${indent}${methodName}: {`);
   lines.push(`${indent}  description: '${desc}',`);

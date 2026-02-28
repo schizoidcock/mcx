@@ -100,8 +100,9 @@ async function getProjectVersion(pkg: string, cwd: string): Promise<string | nul
 
 function runCommand(cmd: string, args: string[], silent = false, cwd?: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    // SECURITY: Don't use shell: true - it enables command injection via metacharacters
+    // spawn can find executables on PATH without the shell
     const proc = spawn(cmd, args, {
-      shell: true,
       stdio: silent ? "pipe" : "inherit",
       cwd,
     });

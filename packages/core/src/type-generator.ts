@@ -48,7 +48,8 @@ export function generateTypes(
     // Generate input interface for each tool with parameters
     for (const [toolName, tool] of Object.entries(adapter.tools)) {
       if (tool.parameters && Object.keys(tool.parameters).length > 0) {
-        const inputTypeName = `${capitalize(safeName)}_${capitalize(toolName)}_Input`;
+        const safeToolNameForType = sanitizeIdentifier(toolName);
+        const inputTypeName = `${capitalize(safeName)}_${capitalize(safeToolNameForType)}_Input`;
         lines.push(generateInputInterface(inputTypeName, tool.parameters, includeDescriptions));
         lines.push("");
       }
@@ -56,17 +57,18 @@ export function generateTypes(
 
     // Generate adapter declaration
     if (includeDescriptions && adapter.description) {
-      lines.push(`/** ${adapter.description} */`);
+      lines.push(`/** ${sanitizeJSDoc(adapter.description)} */`);
     }
     lines.push(`declare const ${safeName}: {`);
 
     for (const [toolName, tool] of Object.entries(adapter.tools)) {
       const safeToolName = sanitizeIdentifier(toolName);
       const hasParams = tool.parameters && Object.keys(tool.parameters).length > 0;
-      const inputTypeName = `${capitalize(safeName)}_${capitalize(toolName)}_Input`;
+      // Use sanitized tool name in type name to ensure consistency
+      const inputTypeName = `${capitalize(safeName)}_${capitalize(safeToolName)}_Input`;
 
       if (includeDescriptions && tool.description) {
-        lines.push(`  /** ${tool.description} */`);
+        lines.push(`  /** ${sanitizeJSDoc(tool.description)} */`);
       }
 
       const paramStr = hasParams ? `params: ${inputTypeName}` : "";
@@ -109,13 +111,16 @@ function generateInputInterface(
   const lines: string[] = [`interface ${typeName} {`];
 
   for (const [paramName, param] of Object.entries(parameters)) {
+    // Sanitize parameter name to prevent injection
+    const safeParamName = sanitizeIdentifier(paramName);
+
     if (includeDescriptions && param.description) {
-      lines.push(`  /** ${param.description} */`);
+      lines.push(`  /** ${sanitizeJSDoc(param.description)} */`);
     }
 
     const tsType = paramTypeToTS(param.type);
     const optional = param.required === false ? "?" : "";
-    lines.push(`  ${paramName}${optional}: ${tsType};`);
+    lines.push(`  ${safeParamName}${optional}: ${tsType};`);
   }
 
   lines.push("}");
@@ -170,4 +175,12 @@ export function sanitizeIdentifier(name: string): string {
  */
 function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+/**
+ * Sanitize text for use in JSDoc comments.
+ * Prevents comment injection via `*​/` sequences.
+ */
+function sanitizeJSDoc(text: string): string {
+  return text.replace(/\*\//g, "* /").replace(/[\r\n]+/g, " ");
 }

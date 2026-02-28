@@ -75,12 +75,16 @@ export function generateNetworkIsolationCode(policy: NetworkPolicy): string {
   }
 
   if (policy.mode === "blocked") {
+    // SECURITY: Wrap in IIFE to prevent user code from accessing __original_fetch
     return `
 // Network isolation: BLOCKED
-const __original_fetch = globalThis.fetch;
-globalThis.fetch = async function(url, options) {
-  throw new Error('Network access is blocked in sandbox. Use adapters instead.');
-};
+(function() {
+  const _real_fetch = globalThis.fetch;
+  globalThis.fetch = async function() {
+    throw new Error('Network access is blocked in sandbox. Use adapters instead.');
+  };
+  // _real_fetch is not reachable from user code
+})();
 
 // Block XMLHttpRequest
 globalThis.XMLHttpRequest = class {
@@ -91,14 +95,14 @@ globalThis.XMLHttpRequest = class {
 
 // Block WebSocket
 globalThis.WebSocket = class {
-  constructor(url) {
+  constructor() {
     throw new Error('WebSocket is blocked in sandbox.');
   }
 };
 
 // Block EventSource (SSE)
 globalThis.EventSource = class {
-  constructor(url) {
+  constructor() {
     throw new Error('EventSource is blocked in sandbox.');
   }
 };
@@ -106,29 +110,49 @@ globalThis.EventSource = class {
   }
 
   // mode === 'allowed' - whitelist specific domains
+  // SECURITY: Wrap in IIFE to prevent user code from accessing internals
   const domainsJson = JSON.stringify(policy.domains);
   return `
 // Network isolation: ALLOWED (whitelist)
-const __allowed_domains = ${domainsJson};
-const __original_fetch = globalThis.fetch;
+(function() {
+  const _domains = ${domainsJson};
+  const _real_fetch = globalThis.fetch;
 
-function __isUrlAllowed(url) {
-  try {
-    const hostname = new URL(url).hostname;
-    return __allowed_domains.some(d => hostname === d || hostname.endsWith('.' + d));
-  } catch {
-    return false;
+  // Block private/link-local IPs to prevent DNS rebinding attacks
+  function _isPrivateIp(hostname) {
+    return /^(localhost|127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2\\d|3[01])\\.|169\\.254\\.|\\[::1\\]|\\[fc|\\[fd)/.test(hostname);
   }
-}
 
-globalThis.fetch = async function(url, options) {
-  const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
-  if (!__isUrlAllowed(urlStr)) {
-    const hostname = new URL(urlStr).hostname;
-    throw new Error(\`Network access blocked: \${hostname} not in allowed domains: \${__allowed_domains.join(', ')}\`);
+  function _isUrlAllowed(url) {
+    try {
+      const parsed = new URL(url);
+      // Only allow http/https protocols
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+      const hostname = parsed.hostname;
+      if (!hostname || _isPrivateIp(hostname)) return false;
+      return _domains.some(d => d && (hostname === d || hostname.endsWith('.' + d)));
+    } catch {
+      return false;
+    }
   }
-  return __original_fetch(url, options);
-};
+
+  globalThis.fetch = async function(url, options) {
+    // Safely extract URL string from various input types
+    let urlStr;
+    try {
+      if (typeof url === 'string') urlStr = url;
+      else if (url instanceof URL) urlStr = url.toString();
+      else if (url && typeof url.url === 'string') urlStr = url.url;
+      else throw new Error('Invalid URL type');
+    } catch {
+      throw new Error('Network access blocked: could not determine request URL.');
+    }
+    if (!_isUrlAllowed(urlStr)) {
+      throw new Error('Network access blocked: domain not in allowed list.');
+    }
+    return _real_fetch(url, options);
+  };
+})();
 
 // Block XMLHttpRequest (not easily whitelistable)
 globalThis.XMLHttpRequest = class {
@@ -137,19 +161,16 @@ globalThis.XMLHttpRequest = class {
   }
 };
 
-// Block WebSocket (would need separate whitelist)
+// Block WebSocket - opaque error to prevent allowlist enumeration
 globalThis.WebSocket = class {
-  constructor(url) {
-    if (!__isUrlAllowed(url)) {
-      throw new Error('WebSocket blocked: domain not in allowed list.');
-    }
-    throw new Error('WebSocket not supported in sandbox even for allowed domains.');
+  constructor() {
+    throw new Error('WebSocket is not supported in sandbox.');
   }
 };
 
 // Block EventSource
 globalThis.EventSource = class {
-  constructor(url) {
+  constructor() {
     throw new Error('EventSource is blocked in sandbox.');
   }
 };

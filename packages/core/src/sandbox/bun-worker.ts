@@ -120,16 +120,19 @@ export class BunWorkerSandbox implements ISandbox {
       const worker = new Worker(url);
 
       let resolved = false;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
       const cleanup = () => {
         if (!resolved) {
           resolved = true;
+          if (timeoutId) clearTimeout(timeoutId);
           worker.terminate();
           URL.revokeObjectURL(url);
         }
       };
 
       // Timeout handler
-      const timeoutId = setTimeout(() => {
+      timeoutId = setTimeout(() => {
         if (!resolved) {
           cleanup();
           resolve({
@@ -142,6 +145,9 @@ export class BunWorkerSandbox implements ISandbox {
       }, this.config.timeout);
 
       worker.onmessage = async (event: MessageEvent) => {
+        // Guard against stale messages after resolution
+        if (resolved) return;
+
         const { type, ...data } = event.data;
 
         if (type === "ready") {
@@ -164,7 +170,6 @@ export class BunWorkerSandbox implements ISandbox {
         }
 
         else if (type === "result") {
-          clearTimeout(timeoutId);
           cleanup();
           resolve({
             success: data.success,
@@ -177,7 +182,6 @@ export class BunWorkerSandbox implements ISandbox {
       };
 
       worker.onerror = (error: ErrorEvent) => {
-        clearTimeout(timeoutId);
         cleanup();
         resolve({
           success: false,
@@ -211,11 +215,27 @@ export class BunWorkerSandbox implements ISandbox {
       const pendingCalls = new Map();
       let callId = 0;
 
+      // Safe stringify that handles BigInt and circular refs
+      const safeStr = (val) => {
+        if (typeof val !== 'object' || val === null) return String(val);
+        try {
+          const seen = new WeakSet();
+          return JSON.stringify(val, (k, v) => {
+            if (typeof v === 'bigint') return v.toString() + 'n';
+            if (typeof v === 'object' && v !== null) {
+              if (seen.has(v)) return '[Circular]';
+              seen.add(v);
+            }
+            return v;
+          });
+        } catch { return String(val); }
+      };
+
       const console = {
-        log: (...args) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
-        warn: (...args) => logs.push('[WARN] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
-        error: (...args) => logs.push('[ERROR] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
-        info: (...args) => logs.push('[INFO] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
+        log: (...args) => logs.push(args.map(safeStr).join(' ')),
+        warn: (...args) => logs.push('[WARN] ' + args.map(safeStr).join(' ')),
+        error: (...args) => logs.push('[ERROR] ' + args.map(safeStr).join(' ')),
+        info: (...args) => logs.push('[INFO] ' + args.map(safeStr).join(' ')),
       };
       globalThis.console = console;
 
