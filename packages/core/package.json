@@ -1,6 +1,6 @@
 {
   "name": "@papicandela/mcx-core",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "MCX Core - MCP Code Execution Framework",
   "author": "papicandela",
   "license": "MIT",
@@ -8,7 +8,13 @@
     "type": "git",
     "url": "https://github.com/schizoidcock/mcx"
   },
-  "keywords": ["mcp", "claude", "ai", "code-execution", "sandbox"],
+  "keywords": [
+    "mcp",
+    "claude",
+    "ai",
+    "code-execution",
+    "sandbox"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
