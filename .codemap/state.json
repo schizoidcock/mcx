@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-02-28T08:15:52.7112804-04:00",
+  "updated_at": "2026-02-28T08:41:03.1166988-04:00",
   "file_count": 67,
   "hubs": [
     "packages\\cli\\src\\utils\\paths.ts"
@@ -43,34 +43,6 @@
     ]
   },
   "recent_events": [
-    {
-      "time": "2026-02-28T08:11:37.6958104-04:00",
-      "op": "WRITE",
-      "path": "packages\\core\\dist\\index.js",
-      "lang": "javascript",
-      "lines": 11191
-    },
-    {
-      "time": "2026-02-28T08:11:37.7396355-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\alegra.d.ts",
-      "lang": "typescript",
-      "lines": 3974
-    },
-    {
-      "time": "2026-02-28T08:11:37.7676573-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\alegra.js",
-      "lang": "javascript",
-      "lines": 6957
-    },
-    {
-      "time": "2026-02-28T08:11:37.8022933-04:00",
-      "op": "WRITE",
-      "path": "packages\\adapters\\dist\\base.d.ts",
-      "lang": "typescript",
-      "lines": 149
-    },
     {
       "time": "2026-02-28T08:11:37.8371557-04:00",
       "op": "WRITE",
@@ -400,6 +372,38 @@
       "path": "packages\\cli\\dist\\index.js",
       "lang": "javascript",
       "lines": 55380
+    },
+    {
+      "time": "2026-02-28T08:40:13.4974339-04:00",
+      "op": "REMOVE",
+      "path": "packages\\cli\\src\\commands\\serve.ts",
+      "lang": "typescript",
+      "imports": 1
+    },
+    {
+      "time": "2026-02-28T08:41:02.7250207-04:00",
+      "op": "WRITE",
+      "path": "packages\\cli\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 55385,
+      "delta": 5,
+      "size_delta": -1890023
+    },
+    {
+      "time": "2026-02-28T08:41:02.9281844-04:00",
+      "op": "WRITE",
+      "path": "packages\\cli\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 55386,
+      "delta": 1,
+      "size_delta": 1890218
+    },
+    {
+      "time": "2026-02-28T08:41:03.0896329-04:00",
+      "op": "WRITE",
+      "path": "packages\\cli\\dist\\index.js",
+      "lang": "javascript",
+      "lines": 55386
     }
   ]
 }

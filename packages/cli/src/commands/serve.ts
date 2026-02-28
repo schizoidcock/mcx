@@ -1051,6 +1051,12 @@ async function runHttp(port: number) {
             headers: {} as Record<string, string>,
             body: "",
             setHeader(name: string, value: string) { this.headers[name] = value; },
+            writeHead(status: number, headers?: Record<string, string>) {
+              this.statusCode = status;
+              if (headers) {
+                Object.assign(this.headers, headers);
+              }
+            },
             end(data?: string) {
               if (data && this.body.length < MAX_RESPONSE_BODY) {
                 this.body += data.slice(0, MAX_RESPONSE_BODY - this.body.length);
