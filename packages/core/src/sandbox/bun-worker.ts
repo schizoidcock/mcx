@@ -322,10 +322,12 @@ export class BunWorkerSandbox implements ISandbox {
             const result = await fn();
             self.postMessage({ type: 'result', success: true, value: result, logs });
           } catch (err) {
+            // Truncate stack to 5 lines to prevent context bloat
+            const stack = err.stack ? err.stack.split('\\n').slice(0, 5).join('\\n') : undefined;
             self.postMessage({
               type: 'result',
               success: false,
-              error: { name: err.name, message: err.message, stack: err.stack },
+              error: { name: err.name, message: err.message, stack },
               logs
             });
           }

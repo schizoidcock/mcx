@@ -424,8 +424,13 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           const errorMsg = result.error
             ? `${result.error.name}: ${result.error.message}`
             : "Unknown error";
+          // Limit logs to prevent context bloat
+          const maxLogs = 20;
+          const truncatedLogs = result.logs.length > maxLogs
+            ? [...result.logs.slice(0, maxLogs), `... +${result.logs.length - maxLogs} more`]
+            : result.logs;
           return {
-            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}\n\nLogs:\n${result.logs.join("\n")}` }],
+            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}\n\nLogs:\n${truncatedLogs.join("\n")}` }],
             isError: true,
           };
         }
@@ -507,9 +512,16 @@ ${skillList}`,
         // Clear timeout to prevent memory leak
         clearTimeout(timeoutId);
 
+        // Truncate skill result to prevent context bloat
+        const summarized = summarizeResult(result, {
+          enabled: true,
+          maxItems: 10,
+          maxStringLength: 500,
+        });
+
         return {
-          content: [{ type: "text" as const, text: result !== undefined ? JSON.stringify(result, null, 2) : "Skill executed successfully" }],
-          structuredContent: { result },
+          content: [{ type: "text" as const, text: summarized.value !== undefined ? JSON.stringify(summarized.value, null, 2) : "Skill executed successfully" }],
+          structuredContent: { result: summarized.value, truncated: summarized.truncated },
         };
       } catch (error) {
         if (timeoutId) clearTimeout(timeoutId);
@@ -537,17 +549,18 @@ ${skillList}`,
       },
     },
     async () => {
+      // Only show method count, not all method names (use mcx_search for details)
       const output = {
         adapters: adapters.map((a) => ({
           name: a.name,
           description: a.description || "No description",
-          methods: Object.keys(a.tools),
+          methodCount: Object.keys(a.tools).length,
         })),
         skills: Array.from(skills.entries()).map(([name, skill]) => ({
           name,
           description: skill.description || "No description",
-          inputs: skill.inputs,
         })),
+        hint: "Use mcx_search(query) to see method details and TypeScript signatures",
       };
 
       return {

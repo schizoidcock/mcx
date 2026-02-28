@@ -288,12 +288,14 @@ export class MCXExecutor {
         };
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
+        // Truncate stack to 5 lines to prevent context bloat
+        const stack = err.stack ? err.stack.split("\n").slice(0, 5).join("\n") : undefined;
         return {
           success: false,
           error: {
             name: err.name,
             message: err.message,
-            stack: err.stack,
+            stack,
           },
           logs: [],
           executionTime: performance.now() - startTime,

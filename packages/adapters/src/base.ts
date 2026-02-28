@@ -142,10 +142,11 @@ export abstract class BaseAdapter<
 
   /**
    * Log debug message if debug mode is enabled
+   * Uses stderr to avoid breaking stdio MCP transport
    */
   protected debug(message: string, ...args: unknown[]): void {
     if (this.config && "debug" in this.config && this.config.debug) {
-      console.log(`[${this.name}] ${message}`, ...args);
+      console.error(`[${this.name}] ${message}`, ...args);
     }
   }
 
