@@ -1,9 +1,10 @@
 /**
  * Rule: no-infinite-loop
  *
- * Detects infinite loops without break statements:
- * - while(true) { ... } without break
- * - for(;;) { ... } without break
+ * Detects infinite loops without exit statements:
+ * - while(true) { ... } without break/return/throw
+ * - for(;;) { ... } without break/return/throw
+ * - do { ... } while(true) without break/return/throw
  */
 
 import type * as acorn from "acorn";
@@ -18,12 +19,17 @@ function isLiteralTrue(node: acorn.Node | null | undefined): boolean {
 }
 
 /**
- * Check if a block contains a break statement (at any depth)
+ * Check if a block contains an exit statement (break, return, throw)
+ * These all terminate or exit the loop, so they prevent infinite loops.
  */
-function hasBreak(node: acorn.Node): boolean {
+function hasExitStatement(node: acorn.Node): boolean {
+  // Exit statements
   if (node.type === "BreakStatement") return true;
+  if (node.type === "ReturnStatement") return true;
+  if (node.type === "ThrowStatement") return true;
 
   // Don't descend into nested loops or switches (break would apply to them)
+  // But DO descend for return/throw since they exit the function entirely
   if (
     node.type === "WhileStatement" ||
     node.type === "ForStatement" ||
@@ -35,6 +41,15 @@ function hasBreak(node: acorn.Node): boolean {
     return false;
   }
 
+  // Don't descend into nested functions (return/throw would apply to them)
+  if (
+    node.type === "FunctionDeclaration" ||
+    node.type === "FunctionExpression" ||
+    node.type === "ArrowFunctionExpression"
+  ) {
+    return false;
+  }
+
   // Check children
   for (const key of Object.keys(node)) {
     const child = (node as unknown as Record<string, unknown>)[key];
@@ -42,11 +57,11 @@ function hasBreak(node: acorn.Node): boolean {
       if (Array.isArray(child)) {
         for (const item of child) {
           if (item && typeof item === "object" && "type" in item) {
-            if (hasBreak(item as acorn.Node)) return true;
+            if (hasExitStatement(item as acorn.Node)) return true;
           }
         }
       } else if ("type" in child) {
-        if (hasBreak(child as acorn.Node)) return true;
+        if (hasExitStatement(child as acorn.Node)) return true;
       }
     }
   }
@@ -57,17 +72,17 @@ function hasBreak(node: acorn.Node): boolean {
 export const rule: Rule = {
   name: "no-infinite-loop",
   severity: "error",
-  description: "Disallow infinite loops without break statements",
-  visits: ["WhileStatement", "ForStatement"],
+  description: "Disallow infinite loops without exit statements",
+  visits: ["WhileStatement", "ForStatement", "DoWhileStatement"],
 
   visitors: {
     WhileStatement(node, context) {
       const whileNode = node as acorn.WhileStatement;
 
-      if (isLiteralTrue(whileNode.test) && !hasBreak(whileNode.body)) {
+      if (isLiteralTrue(whileNode.test) && !hasExitStatement(whileNode.body)) {
         context.report({
           severity: "error",
-          message: "Infinite loop: while(true) without break",
+          message: "Infinite loop: while(true) without break/return/throw",
           line: context.getLine(node),
         });
       }
@@ -77,10 +92,22 @@ export const rule: Rule = {
       const forNode = node as acorn.ForStatement;
 
       // for(;;) without test condition
-      if (!forNode.test && !hasBreak(forNode.body)) {
+      if (!forNode.test && !hasExitStatement(forNode.body)) {
         context.report({
           severity: "error",
-          message: "Infinite loop: for(;;) without break",
+          message: "Infinite loop: for(;;) without break/return/throw",
+          line: context.getLine(node),
+        });
+      }
+    },
+
+    DoWhileStatement(node, context) {
+      const doWhileNode = node as acorn.DoWhileStatement;
+
+      if (isLiteralTrue(doWhileNode.test) && !hasExitStatement(doWhileNode.body)) {
+        context.report({
+          severity: "error",
+          message: "Infinite loop: do...while(true) without break/return/throw",
           line: context.getLine(node),
         });
       }

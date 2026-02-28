@@ -28,9 +28,38 @@ import { getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths
 // ============================================================================
 
 
+// SECURITY: Environment variables that must never be overwritten from .env files
+// These could enable privilege escalation, code injection, or other attacks
+const DANGEROUS_ENV_KEYS = new Set([
+  // Node.js/Bun runtime flags that could inject code or change behavior
+  "NODE_OPTIONS",
+  "NODE_EXTRA_CA_CERTS",
+  "NODE_PATH",
+  "NODE_REPL_HISTORY",
+  "BUN_OPTIONS",
+  // System path manipulation
+  "PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  // Shell injection vectors
+  "SHELL",
+  "BASH_ENV",
+  "ENV",
+  "PROMPT_COMMAND",
+  // Other dangerous variables
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "PWD",
+  "OLDPWD",
+]);
+
 /**
  * Load environment variables from a .env file
  * Returns the number of variables loaded
+ * SECURITY: Validates key names and blocks dangerous variable overwrites
  */
 async function loadEnvFromPath(envPath: string, label: string): Promise<number> {
   const file = Bun.file(envPath);
@@ -42,6 +71,7 @@ async function loadEnvFromPath(envPath: string, label: string): Promise<number> 
   try {
     const content = await file.text();
     let loaded = 0;
+    let skipped = 0;
 
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
@@ -54,6 +84,20 @@ async function loadEnvFromPath(envPath: string, label: string): Promise<number> 
       const key = trimmed.slice(0, eqIndex).trim();
       let value = trimmed.slice(eqIndex + 1).trim();
 
+      // SECURITY: Validate key is a safe identifier pattern
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        console.error(pc.yellow(`Warning: Skipped invalid env key "${key}" in ${label}`));
+        skipped++;
+        continue;
+      }
+
+      // SECURITY: Block dangerous environment variables
+      if (DANGEROUS_ENV_KEYS.has(key.toUpperCase()) || DANGEROUS_ENV_KEYS.has(key)) {
+        console.error(pc.yellow(`Warning: Skipped dangerous env key "${key}" in ${label}`));
+        skipped++;
+        continue;
+      }
+
       // Remove surrounding quotes if present
       if ((value.startsWith('"') && value.endsWith('"')) ||
           (value.startsWith("'") && value.endsWith("'"))) {
@@ -65,7 +109,7 @@ async function loadEnvFromPath(envPath: string, label: string): Promise<number> 
     }
 
     if (loaded > 0) {
-      console.error(pc.dim(`Loaded ${loaded} env var(s) from ${label}`));
+      console.error(pc.dim(`Loaded ${loaded} env var(s) from ${label}${skipped > 0 ? ` (${skipped} skipped)` : ""}`));
     }
     return loaded;
   } catch (error) {
@@ -912,6 +956,16 @@ async function runHttp(port: number) {
   const adapters = config?.adapters || [];
   console.error(pc.dim(`Loaded ${adapters.length} adapter(s), ${skills.size} skill(s)`));
 
+  // PERFORMANCE: Create server and transport ONCE, reuse for all requests
+  // This prevents resource exhaustion from creating new instances per request
+  const server = await createMcxServerWithDeps(config, adapters, skills);
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  await server.connect(transport);
+  console.error(pc.dim("MCP server and transport initialized"));
+
   Bun.serve({
     port,
     hostname: "127.0.0.1",
@@ -926,15 +980,8 @@ async function runHttp(port: number) {
       if (req.method === "POST" && url.pathname === "/mcp") {
         try {
           const body = await req.json();
-          const server = await createMcxServerWithDeps(config, adapters, skills);
 
-          const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: undefined,
-            enableJsonResponse: true,
-          });
-
-          await server.connect(transport);
-
+          // Per-request response mock (stateless JSON response mode)
           const mockRes = {
             statusCode: 200,
             headers: {} as Record<string, string>,

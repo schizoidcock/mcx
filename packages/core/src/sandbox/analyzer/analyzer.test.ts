@@ -179,10 +179,10 @@ describe("analyze", () => {
       )).toBe(true);
     });
 
-    it("warns about require", () => {
+    it("errors on require (security: could access dangerous modules)", () => {
       const result = analyze("const fs = require('fs');");
-      expect(result.warnings.some(w =>
-        w.rule === "no-dangerous-globals" && w.message.includes("require")
+      expect(result.errors.some(e =>
+        e.rule === "no-dangerous-globals" && e.message.includes("require")
       )).toBe(true);
     });
 

@@ -76,41 +76,58 @@ export function generateNetworkIsolationCode(policy: NetworkPolicy): string {
 
   if (policy.mode === "blocked") {
     // SECURITY: Wrap in IIFE to prevent user code from accessing __original_fetch
+    // Use Object.defineProperty with writable:false to prevent user code from overwriting
     return `
 // Network isolation: BLOCKED
 (function() {
-  const _real_fetch = globalThis.fetch;
-  globalThis.fetch = async function() {
+  const blockedFetch = async function() {
     throw new Error('Network access is blocked in sandbox. Use adapters instead.');
   };
-  // _real_fetch is not reachable from user code
+  Object.defineProperty(globalThis, 'fetch', {
+    value: blockedFetch,
+    writable: false,
+    configurable: false
+  });
 })();
 
 // Block XMLHttpRequest
-globalThis.XMLHttpRequest = class {
-  constructor() {
-    throw new Error('XMLHttpRequest is blocked in sandbox.');
-  }
-};
+Object.defineProperty(globalThis, 'XMLHttpRequest', {
+  value: class {
+    constructor() {
+      throw new Error('XMLHttpRequest is blocked in sandbox.');
+    }
+  },
+  writable: false,
+  configurable: false
+});
 
 // Block WebSocket
-globalThis.WebSocket = class {
-  constructor() {
-    throw new Error('WebSocket is blocked in sandbox.');
-  }
-};
+Object.defineProperty(globalThis, 'WebSocket', {
+  value: class {
+    constructor() {
+      throw new Error('WebSocket is blocked in sandbox.');
+    }
+  },
+  writable: false,
+  configurable: false
+});
 
 // Block EventSource (SSE)
-globalThis.EventSource = class {
-  constructor() {
-    throw new Error('EventSource is blocked in sandbox.');
-  }
-};
+Object.defineProperty(globalThis, 'EventSource', {
+  value: class {
+    constructor() {
+      throw new Error('EventSource is blocked in sandbox.');
+    }
+  },
+  writable: false,
+  configurable: false
+});
 `;
   }
 
   // mode === 'allowed' - whitelist specific domains
   // SECURITY: Wrap in IIFE to prevent user code from accessing internals
+  // Use Object.defineProperty with writable:false to prevent user code from overwriting
   const domainsJson = JSON.stringify(policy.domains);
   return `
 // Network isolation: ALLOWED (whitelist)
@@ -136,7 +153,7 @@ globalThis.EventSource = class {
     }
   }
 
-  globalThis.fetch = async function(url, options) {
+  const whitelistedFetch = async function(url, options) {
     // Safely extract URL string from various input types
     let urlStr;
     try {
@@ -152,27 +169,45 @@ globalThis.EventSource = class {
     }
     return _real_fetch(url, options);
   };
+
+  Object.defineProperty(globalThis, 'fetch', {
+    value: whitelistedFetch,
+    writable: false,
+    configurable: false
+  });
 })();
 
 // Block XMLHttpRequest (not easily whitelistable)
-globalThis.XMLHttpRequest = class {
-  constructor() {
-    throw new Error('XMLHttpRequest is blocked. Use fetch() with allowed domains.');
-  }
-};
+Object.defineProperty(globalThis, 'XMLHttpRequest', {
+  value: class {
+    constructor() {
+      throw new Error('XMLHttpRequest is blocked. Use fetch() with allowed domains.');
+    }
+  },
+  writable: false,
+  configurable: false
+});
 
 // Block WebSocket - opaque error to prevent allowlist enumeration
-globalThis.WebSocket = class {
-  constructor() {
-    throw new Error('WebSocket is not supported in sandbox.');
-  }
-};
+Object.defineProperty(globalThis, 'WebSocket', {
+  value: class {
+    constructor() {
+      throw new Error('WebSocket is not supported in sandbox.');
+    }
+  },
+  writable: false,
+  configurable: false
+});
 
 // Block EventSource
-globalThis.EventSource = class {
-  constructor() {
-    throw new Error('EventSource is blocked in sandbox.');
+Object.defineProperty(globalThis, 'EventSource', {
+  value: class {
+    constructor() {
+      throw new Error('EventSource is blocked in sandbox.');
   }
-};
+  },
+  writable: false,
+  configurable: false
+});
 `;
 }

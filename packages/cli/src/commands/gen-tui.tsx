@@ -1437,7 +1437,9 @@ function GeneratorWizard({ onComplete }: { onComplete: (result: GeneratorResult 
       const configContent = await configFile.text();
 
       // Check if adapter name already exists in imports
-      const nameExistsRegex = new RegExp(`import\\s*\\{[^}]*\\b${adapterName}\\b[^}]*\\}`, "m");
+      // SECURITY: Escape adapterName for regex to prevent ReDoS
+      const escapedName = adapterName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const nameExistsRegex = new RegExp(`import\\s*\\{[^}]*\\b${escapedName}\\b[^}]*\\}`, "m");
       if (nameExistsRegex.test(configContent)) {
         toast.error(`Adapter "${adapterName}" already exists in config. Rename the adapter first.`);
         return;

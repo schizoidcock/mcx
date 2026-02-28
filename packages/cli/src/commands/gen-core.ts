@@ -247,9 +247,11 @@ export function detectAuthFromSpec(spec: OpenAPISpec): DetectedAuth | null {
 
 export function detectSDKFromMarkdown(content: string): DetectedSDK | null {
   // Look for TypeScript SDK examples
-  const tsMatch = content.match(/```typescript\s*([\s\S]*?)\s*```/);
+  // SECURITY: Use non-greedy match without trailing \s* to prevent ReDoS
+  // The pattern matches until the first ``` fence on its own line
+  const tsMatch = content.match(/```typescript[^\n]*\n([\s\S]*?)\n```/);
   if (tsMatch) {
-    const tsCode = tsMatch[1];
+    const tsCode = tsMatch[1].trim();
     const importMatch = tsCode.match(/import\s+(?:\{\s*(\w+)\s*\}|(\w+))\s+from\s+["']([^"']+)["']/);
     if (importMatch) {
       const importName = importMatch[1] || importMatch[2];
@@ -267,9 +269,10 @@ export function detectSDKFromMarkdown(content: string): DetectedSDK | null {
   }
 
   // Look for Python SDK examples
-  const pyMatch = content.match(/```python\s*([\s\S]*?)\s*```/);
+  // SECURITY: Use non-greedy match without trailing \s* to prevent ReDoS
+  const pyMatch = content.match(/```python[^\n]*\n([\s\S]*?)\n```/);
   if (pyMatch) {
-    const pyCode = pyMatch[1];
+    const pyCode = pyMatch[1].trim();
     const importMatch = pyCode.match(/from\s+(\S+)\s+import\s+(\w+)/);
     if (importMatch) {
       const packageName = importMatch[1];
@@ -325,6 +328,34 @@ function generateMethodName(method: string, pathStr: string, _operation: OpenAPI
 
 export function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+/**
+ * SECURITY: Escape a string for safe use in single-quoted JavaScript strings.
+ * Prevents code injection via quote/backslash breakout.
+ */
+function escapeForSingleQuote(str: string): string {
+  return str
+    .replace(/\\/g, "\\\\")  // Escape backslashes first
+    .replace(/'/g, "\\'")     // Escape single quotes
+    .replace(/[\r\n]+/g, " ") // Remove newlines
+    .replace(/[\x00-\x1f\x7f]/g, ""); // Remove control characters
+}
+
+/**
+ * SECURITY: Validate that a string is a safe JavaScript identifier.
+ * Used for names that will be used as bare identifiers in generated code.
+ */
+function isValidIdentifier(str: string): boolean {
+  return /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(str);
+}
+
+/**
+ * SECURITY: Validate npm package name format to prevent injection in import statements.
+ */
+function isValidPackageName(str: string): boolean {
+  // npm package names: lowercase, can have @scope/, hyphens, underscores
+  return /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(str);
 }
 
 export function groupByCategory(endpoints: ParsedEndpoint[]): Record<string, ParsedEndpoint[]> {
@@ -526,8 +557,16 @@ export function getDefaultName(source: string): string {
 // ============================================================================
 
 export function generateAdapter(name: string, endpoints: ParsedEndpoint[], baseUrl: string, auth?: DetectedAuth | string | null): string {
+  // SECURITY: Validate name is a safe identifier
+  if (!isValidIdentifier(name)) {
+    throw new Error(`Invalid adapter name "${name}": must be a valid JavaScript identifier`);
+  }
+
   const lines: string[] = [];
   const envPrefix = name.toUpperCase();
+
+  // SECURITY: Escape baseUrl for safe use in single-quoted string
+  const safeBaseUrl = escapeForSingleQuote(baseUrl);
 
   // Normalize auth to DetectedAuth
   let authConfig: DetectedAuth | null = null;
@@ -549,7 +588,7 @@ export function generateAdapter(name: string, endpoints: ParsedEndpoint[], baseU
   lines.push(``);
   lines.push(`import { defineAdapter } from '@papicandela/mcx-adapters';`);
   lines.push(``);
-  lines.push(`const BASE_URL = process.env.${envPrefix}_API_URL || '${baseUrl}';`);
+  lines.push(`const BASE_URL = process.env.${envPrefix}_API_URL || '${safeBaseUrl}';`);
   lines.push(``);
 
   // Auth helper
@@ -560,7 +599,8 @@ export function generateAdapter(name: string, endpoints: ParsedEndpoint[], baseU
     lines.push(`  return \`Bearer \${token}\`;`);
     lines.push(`}`);
   } else if (authConfig?.type === "apiKey") {
-    const headerName = authConfig.headerName || "X-API-Key";
+    // SECURITY: Escape headerName for safe use in single-quoted string
+    const headerName = escapeForSingleQuote(authConfig.headerName || "X-API-Key");
     lines.push(`function getAuthHeader(): string {`);
     lines.push(`  const apiKey = process.env.${envPrefix}_API_KEY;`);
     lines.push(`  if (!apiKey) throw new Error('${envPrefix}_API_KEY environment variable is required');`);
@@ -631,6 +671,21 @@ export function generateAdapter(name: string, endpoints: ParsedEndpoint[], baseU
 }
 
 export function generateSDKAdapter(name: string, endpoints: ParsedEndpoint[], sdk: DetectedSDK): string {
+  // SECURITY: Validate name is a safe identifier
+  if (!isValidIdentifier(name)) {
+    throw new Error(`Invalid adapter name "${name}": must be a valid JavaScript identifier`);
+  }
+
+  // SECURITY: Validate sdk.importName is a safe identifier
+  if (!isValidIdentifier(sdk.importName)) {
+    throw new Error(`Invalid SDK import name "${sdk.importName}": must be a valid JavaScript identifier`);
+  }
+
+  // SECURITY: Validate sdk.packageName is a valid npm package name
+  if (!isValidPackageName(sdk.packageName)) {
+    throw new Error(`Invalid SDK package name "${sdk.packageName}": must be a valid npm package name`);
+  }
+
   const lines: string[] = [];
   const envPrefix = name.toUpperCase();
 
@@ -798,14 +853,27 @@ function generateExecuteFunction(ep: ParsedEndpoint): string {
   const { method, path: pathStr } = ep;
   const params = ep.operation.parameters || [];
 
-  let urlExpr = `\`${pathStr}\``;
-  const pathParams = params.filter((p) => p.in === "path");
+  // SECURITY: Only use path params that are valid identifiers
+  const pathParams = params.filter((p) => p.in === "path" && isValidIdentifier(p.name));
+
+  // Build URL expression with safe parameter substitution
+  let urlExpr = `\`${escapeForSingleQuote(pathStr)}\``;
   if (pathParams.length > 0) {
-    urlExpr = urlExpr.replace(/\{([^}]+)\}/g, "${params.$1}");
+    // Only substitute params that are valid identifiers
+    urlExpr = urlExpr.replace(/\{([^}]+)\}/g, (match, paramName) => {
+      if (isValidIdentifier(paramName)) {
+        return `\${params.${paramName}}`;
+      }
+      // Keep original placeholder if not a valid identifier (will fail at runtime, but safely)
+      return match;
+    });
   }
 
-  const queryParams = params.filter((p) => p.in === "query");
-  const queryObj = queryParams.length > 0 ? `{ ${queryParams.map((p) => `${p.name}: params.${p.name}`).join(", ")} }` : "";
+  // SECURITY: Only use query params that are valid identifiers
+  const queryParams = params.filter((p) => p.in === "query" && isValidIdentifier(p.name));
+  const queryObj = queryParams.length > 0
+    ? `{ ${queryParams.map((p) => `${p.name}: params.${p.name}`).join(", ")} }`
+    : "";
 
   if (method === "get") {
     return queryParams.length > 0 ? `return apiFetch(${urlExpr}, ${queryObj});` : `return apiFetch(${urlExpr});`;

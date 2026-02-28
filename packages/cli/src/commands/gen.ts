@@ -193,7 +193,9 @@ async function promptImportAdapter(adapterName: string, adapterPath: string): Pr
   const importStatement = `import { ${adapterName} } from '${importPath}';`;
 
   // Check if adapter name already exists (different file, same name)
-  const nameExistsRegex = new RegExp(`import\\s*\\{[^}]*\\b${adapterName}\\b[^}]*\\}`, "m");
+  // SECURITY: Escape adapterName for regex to prevent ReDoS
+  const escapedName = adapterName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const nameExistsRegex = new RegExp(`import\\s*\\{[^}]*\\b${escapedName}\\b[^}]*\\}`, "m");
   if (nameExistsRegex.test(configContent)) {
     console.log(pc.yellow(`\nAdapter "${adapterName}" already exists in config. Rename the adapter first.`));
     return;

@@ -67,7 +67,8 @@ async function autoUpdate(): Promise<void> {
 }
 
 // Run auto-update check in background (non-blocking)
-autoUpdate();
+// SECURITY: Explicitly catch to prevent unhandled rejection crash
+autoUpdate().catch(() => {});
 
 const program = new Command();
 

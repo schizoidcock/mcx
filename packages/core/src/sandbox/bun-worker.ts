@@ -285,21 +285,41 @@ export class BunWorkerSandbox implements ISandbox {
         return arr.slice(0, n);
       };
 
+      // SECURITY: Reserved keys that must not be overwritten by user-provided variables/globals
+      const RESERVED_KEYS = new Set([
+        'onmessage', 'postMessage', 'close', 'terminate', 'self',
+        'constructor', 'prototype', '__proto__',
+        'pendingCalls', 'callId', 'logs', 'console', 'adapters',
+        'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource',
+        'pick', 'table', 'count', 'sum', 'first', 'safeStr'
+      ]);
+
       self.onmessage = async (event) => {
         const { type, data } = event.data;
 
         if (type === 'init') {
           const { variables, adapterMethods, globals } = data;
 
+          // Inject user variables (skip reserved keys to prevent internal state corruption)
           for (const [key, value] of Object.entries(variables || {})) {
+            if (RESERVED_KEYS.has(key)) {
+              logs.push('[WARN] Skipped reserved variable key: ' + key);
+              continue;
+            }
             globalThis[key] = value;
           }
 
+          // Inject sandbox globals (skip reserved keys)
           for (const [key, value] of Object.entries(globals || {})) {
+            if (RESERVED_KEYS.has(key)) {
+              logs.push('[WARN] Skipped reserved globals key: ' + key);
+              continue;
+            }
             globalThis[key] = value;
           }
 
-          globalThis.adapters = {};
+          // Create adapter proxies and freeze them to prevent user code modification
+          const adaptersObj = {};
           for (const [adapterName, methods] of Object.entries(adapterMethods)) {
             const adapterObj = {};
             for (const methodName of methods) {
@@ -317,9 +337,23 @@ export class BunWorkerSandbox implements ISandbox {
                 });
               };
             }
-            globalThis.adapters[adapterName] = adapterObj;
-            globalThis[adapterName] = adapterObj;
+            // Freeze individual adapter to prevent method tampering
+            Object.freeze(adapterObj);
+            adaptersObj[adapterName] = adapterObj;
+            // Also expose at top level but as non-writable
+            Object.defineProperty(globalThis, adapterName, {
+              value: adapterObj,
+              writable: false,
+              configurable: false
+            });
           }
+          // Freeze the adapters namespace and make it non-writable
+          Object.freeze(adaptersObj);
+          Object.defineProperty(globalThis, 'adapters', {
+            value: adaptersObj,
+            writable: false,
+            configurable: false
+          });
 
           self.postMessage({ type: 'ready' });
         }
