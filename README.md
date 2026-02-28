@@ -103,7 +103,7 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 | **Control Flow** | Loops, conditionals, retries run as native code |
 | **Privacy** | Intermediate data stays in sandbox |
 | **Skills** | Reusable operations combining multiple adapter calls |
-| **Security** | Network isolation, pre-execution analysis, code normalization |
+| **Security** | Network isolation, pre-execution analysis, path traversal protection, env injection prevention |
 
 ## CLI Commands
 
