@@ -255,19 +255,22 @@ function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResul
     return { value, truncated: false };
   }
 
+  // Create a shared seen set for circular reference detection
+  const seen = new WeakSet<object>();
+
   if (Array.isArray(value)) {
     if (value.length > opts.maxItems) {
       return {
-        value: value.slice(0, opts.maxItems).map(v => summarizeObject(v, opts)),
+        value: value.slice(0, opts.maxItems).map(v => summarizeObject(v, opts, 0, seen)),
         truncated: true,
         originalSize: `${value.length} items, showing first ${opts.maxItems}`,
       };
     }
-    return { value: value.map(v => summarizeObject(v, opts)), truncated: false };
+    return { value: value.map(v => summarizeObject(v, opts, 0, seen)), truncated: false };
   }
 
   if (typeof value === "object") {
-    return { value: summarizeObject(value, opts), truncated: false };
+    return { value: summarizeObject(value, opts, 0, seen), truncated: false };
   }
 
   if (typeof value === "string" && value.length > opts.maxStringLength) {
@@ -281,7 +284,10 @@ function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResul
   return { value, truncated: false };
 }
 
-function summarizeObject(obj: unknown, opts: TruncateOptions): unknown {
+/** Max recursion depth to prevent stack overflow on deeply nested objects */
+const MAX_SUMMARIZE_DEPTH = 10;
+
+function summarizeObject(obj: unknown, opts: TruncateOptions, depth: number = 0, seen: WeakSet<object> = new WeakSet()): unknown {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") {
     if (typeof obj === "string" && obj.length > opts.maxStringLength) {
@@ -290,21 +296,32 @@ function summarizeObject(obj: unknown, opts: TruncateOptions): unknown {
     return obj;
   }
 
+  // Guard against circular references
+  if (seen.has(obj as object)) {
+    return "[Circular]";
+  }
+  seen.add(obj as object);
+
+  // Guard against deep nesting
+  if (depth >= MAX_SUMMARIZE_DEPTH) {
+    return "[Max depth exceeded]";
+  }
+
   if (Array.isArray(obj)) {
     if (obj.length > opts.maxItems) {
-      return [...obj.slice(0, opts.maxItems).map(v => summarizeObject(v, opts)), `... +${obj.length - opts.maxItems} more`];
+      return [...obj.slice(0, opts.maxItems).map(v => summarizeObject(v, opts, depth + 1, seen)), `... +${obj.length - opts.maxItems} more`];
     }
-    return obj.map(v => summarizeObject(v, opts));
+    return obj.map(v => summarizeObject(v, opts, depth + 1, seen));
   }
 
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
     if (Array.isArray(val) && val.length > opts.maxItems) {
-      result[key] = [...val.slice(0, opts.maxItems).map(v => summarizeObject(v, opts)), `... +${val.length - opts.maxItems} more`];
+      result[key] = [...val.slice(0, opts.maxItems).map(v => summarizeObject(v, opts, depth + 1, seen)), `... +${val.length - opts.maxItems} more`];
     } else if (typeof val === "string" && val.length > opts.maxStringLength) {
       result[key] = `${val.slice(0, opts.maxStringLength)}... [${val.length} chars]`;
     } else if (typeof val === "object" && val !== null) {
-      result[key] = summarizeObject(val, opts);
+      result[key] = summarizeObject(val, opts, depth + 1, seen);
     } else {
       result[key] = val;
     }
@@ -902,7 +919,7 @@ async function runHttp(port: number) {
             headers: {} as Record<string, string>,
             body: "",
             setHeader(name: string, value: string) { this.headers[name] = value; },
-            end(data?: string) { this.body = data || ""; },
+            end(data?: string) { if (data) this.body += data; },
             write(data: string) { this.body += data; },
             on() {},
           };
