@@ -153,9 +153,30 @@ const RunSkillInputSchema = z.object({
     .optional()
     .default({})
     .describe("Input parameters for the skill"),
+  truncate: z.boolean()
+    .optional()
+    .default(true)
+    .describe("Whether to truncate large results (default: true)"),
+  maxItems: z.number()
+    .optional()
+    .default(10)
+    .describe("Max array items to return when truncating (default: 10)"),
+  maxStringLength: z.number()
+    .optional()
+    .default(500)
+    .describe("Max string length when truncating (default: 500)"),
 }).strict();
 
-const ListInputSchema = z.object({}).strict();
+const ListInputSchema = z.object({
+  truncate: z.boolean()
+    .optional()
+    .default(true)
+    .describe("Whether to truncate large results (default: true)"),
+  maxItems: z.number()
+    .optional()
+    .default(20)
+    .describe("Max adapters/skills to return when truncating (default: 20)"),
+}).strict();
 
 const SearchInputSchema = z.object({
   query: z.string()
@@ -173,6 +194,7 @@ const SearchInputSchema = z.object({
 
 type ExecuteInput = z.infer<typeof ExecuteInputSchema>;
 type RunSkillInput = z.infer<typeof RunSkillInputSchema>;
+type ListInput = z.infer<typeof ListInputSchema>;
 type SearchInput = z.infer<typeof SearchInputSchema>;
 
 // ============================================================================
@@ -541,9 +563,9 @@ ${skillList}`,
 
         // Truncate skill result to prevent context bloat
         const summarized = summarizeResult(result, {
-          enabled: true,
-          maxItems: 10,
-          maxStringLength: 500,
+          enabled: params.truncate,
+          maxItems: params.maxItems,
+          maxStringLength: params.maxStringLength,
         });
 
         // Enforce character limit on skill output too
@@ -579,23 +601,37 @@ ${skillList}`,
         openWorldHint: false,
       },
     },
-    async () => {
-      // Only show method count, not all method names (use mcx_search for details)
-      const output = {
-        adapters: adapters.map((a) => ({
-          name: a.name,
-          description: a.description || "No description",
-          methodCount: Object.keys(a.tools).length,
-        })),
-        skills: Array.from(skills.entries()).map(([name, skill]) => ({
+    async (params: ListInput) => {
+      // Apply truncation if enabled
+      const maxItems = params.truncate ? params.maxItems : Infinity;
+
+      const adaptersList = adapters.slice(0, maxItems).map((a) => ({
+        name: a.name,
+        description: a.description || "No description",
+        methodCount: Object.keys(a.tools).length,
+      }));
+
+      const skillsList = Array.from(skills.entries())
+        .slice(0, maxItems)
+        .map(([name, skill]) => ({
           name,
           description: skill.description || "No description",
-        })),
+        }));
+
+      const output = {
+        adapters: adaptersList,
+        skills: skillsList,
+        truncated: params.truncate && (adapters.length > maxItems || skills.size > maxItems),
+        total: { adapters: adapters.length, skills: skills.size },
         hint: "Use mcx_search(query) to see method details and TypeScript signatures",
       };
 
+      // Enforce character limit
+      const rawText = JSON.stringify(output, null, 2);
+      const { text: finalText } = enforceCharacterLimit(rawText);
+
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
+        content: [{ type: "text" as const, text: finalText }],
         structuredContent: output,
       };
     }
