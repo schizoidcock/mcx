@@ -1,10 +1,11 @@
 /**
  * MCX MCP Server
  *
- * Exposes three MCP tools:
+ * Exposes four MCP tools:
  * - mcx_execute: Execute code in sandboxed environment with adapter access
  * - mcx_run_skill: Run a named skill with optional inputs
  * - mcx_list: List available adapters and skills
+ * - mcx_search: Search adapters, methods, and skills (shows detailed params on exact match)
  *
  * Features:
  * - Auto-loads adapters from ~/.mcx/adapters/
@@ -761,12 +762,12 @@ ${skillList}`,
       description: `Search for adapters, methods, or skills by name or description.
 
 Examples:
-- mcx_search({ adapter: "stripe" }) - List all methods in stripe adapter
-- mcx_search({ adapter: "api", method: "get" }) - Find "get" methods in api adapter
-- mcx_search({ query: "invoice" }) - Search "invoice" across all adapters
-- mcx_search({ adapter: "stripe", method: "createCustomer" }) - Get specific method signature
+- mcx_search({ adapter: "stripe" }) - List all methods (compact)
+- mcx_search({ adapter: "stripe", method: "create" }) - Find methods containing "create" (compact)
+- mcx_search({ adapter: "stripe", method: "createCustomer" }) - EXACT match → detailed params
 
-Returns TypeScript type information for matching methods.`,
+Shows detailed parameter info (types, required, defaults) ONLY on exact method name match.
+Use exact method name BEFORE mcx_execute to know exact parameters.`,
       inputSchema: SearchInputSchema,
       annotations: {
         readOnlyHint: true,
@@ -792,7 +793,14 @@ Returns TypeScript type information for matching methods.`,
 
       const results: {
         adapters: Array<{ name: string; description: string; matchedMethods: string[] }>;
-        methods: Array<{ adapter: string; method: string; description: string; typescript: string }>;
+        methods: Array<{
+          adapter: string;
+          method: string;
+          description: string;
+          typescript: string;
+          parameters?: Record<string, { type: string; description?: string; required: boolean; default?: unknown }>;
+          example?: string;
+        }>;
         skills: Array<{ name: string; description: string }>;
         pagination: { adapters_truncated: number; methods_truncated: number; skills_truncated: number };
       } = {
@@ -849,14 +857,17 @@ Returns TypeScript type information for matching methods.`,
                   continue;
                 }
 
-                // Generate TypeScript signature for this method
+                // Check if this is an EXACT method name match (for detailed output)
+                const isExactMatch = methodFilter && methodNameLower === methodFilter;
+
+                // Generate TypeScript signature
                 const methodParams = method.parameters
                   ? Object.entries(method.parameters)
                       .map(([name, def]) => {
                         const opt = def.required === false ? "?" : "";
                         const type = def.type === "object" ? "Record<string, unknown>"
                                    : def.type === "array" ? "unknown[]"
-                                   : def.type;
+                                   : def.type || "unknown";
                         return `${name}${opt}: ${type}`;
                       })
                       .join(", ")
@@ -866,11 +877,35 @@ Returns TypeScript type information for matching methods.`,
                   ? `${adapter.name}.${methodName}({ ${methodParams} }): Promise<unknown>`
                   : `${adapter.name}.${methodName}(): Promise<unknown>`;
 
+                // Only include detailed params and example for EXACT matches (saves tokens)
+                let detailedParams: Record<string, { type: string; description?: string; required: boolean; default?: unknown }> | undefined;
+                let example: string | undefined;
+
+                if (isExactMatch && method.parameters) {
+                  detailedParams = {};
+                  for (const [paramName, paramDef] of Object.entries(method.parameters)) {
+                    detailedParams[paramName] = {
+                      type: paramDef.type === "object" ? "Record<string, unknown>"
+                          : paramDef.type === "array" ? "unknown[]"
+                          : paramDef.type || "unknown",
+                      description: paramDef.description,
+                      required: paramDef.required !== false,
+                      default: (paramDef as { default?: unknown }).default,
+                    };
+                  }
+                  const requiredParams = Object.entries(detailedParams).filter(([, d]) => d.required);
+                  example = requiredParams.length > 0
+                    ? `await ${adapter.name}.${methodName}({ ${requiredParams.map(([n]) => `${n}: ...`).join(", ")} })`
+                    : `await ${adapter.name}.${methodName}()`;
+                }
+
                 results.methods.push({
                   adapter: adapter.name,
                   method: methodName,
                   description: method.description || "No description",
                   typescript,
+                  parameters: detailedParams,
+                  example,
                 });
                 methodCount++;
               }
@@ -954,12 +989,50 @@ Returns TypeScript type information for matching methods.`,
       }
 
       if (results.methods.length > 0) {
-        output.push("## Methods (TypeScript)");
-        for (const m of results.methods) {
-          output.push(`- \`${m.typescript}\``);
-          output.push(`  ${m.description}`);
+        // Show detailed view ONLY for exact method name match (saves tokens on partial searches)
+        const isExactMethodMatch = results.methods.length === 1 &&
+          methodFilter &&
+          results.methods[0].method.toLowerCase() === methodFilter;
+
+        if (isExactMethodMatch) {
+          const m = results.methods[0];
+          output.push(`## ${m.adapter}.${m.method}`);
+          output.push("");
+          output.push(m.description);
+          output.push("");
+          output.push("### Signature");
+          output.push("```typescript");
+          output.push(m.typescript);
+          output.push("```");
+          output.push("");
+
+          if (m.parameters && Object.keys(m.parameters).length > 0) {
+            output.push("### Parameters");
+            output.push("");
+            for (const [name, def] of Object.entries(m.parameters)) {
+              const req = def.required ? "(required)" : "(optional)";
+              const defaultVal = def.default !== undefined ? ` = ${JSON.stringify(def.default)}` : "";
+              output.push(`- **${name}**: \`${def.type}\` ${req}${defaultVal}`);
+              if (def.description) {
+                output.push(`  ${def.description}`);
+              }
+            }
+            output.push("");
+          }
+
+          output.push("### Example");
+          output.push("```typescript");
+          output.push(m.example || `await ${m.adapter}.${m.method}()`);
+          output.push("```");
+        } else {
+          // Multiple methods - show compact list
+          output.push("## Methods (TypeScript)");
+          for (const m of results.methods) {
+            output.push(`- \`${m.typescript}\``);
+            output.push(`  ${m.description}`);
+          }
+          output.push("");
         }
-        output.push("");
       }
 
       if (results.skills.length > 0) {
@@ -999,7 +1072,7 @@ async function runStdio() {
   await server.connect(transport);
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_run_skill, mcx_list"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_run_skill, mcx_list, mcx_search"));
 }
 
 async function runHttp(port: number) {
