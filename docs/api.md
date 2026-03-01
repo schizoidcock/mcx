@@ -61,15 +61,32 @@ MCX exposes four tools to the AI agent:
 
 ### mcx_search
 
-Use `mcx_search` to discover adapter APIs without loading full type definitions:
+Use `mcx_search` to discover adapter APIs and get exact parameter info:
 
 ```typescript
-// Search by adapter name
-mcx_search({ query: "supabase" })
+// List all methods in an adapter
+mcx_search({ adapter: "stripe" })
 
-// Search by method
-mcx_search({ query: "execute_sql", type: "methods" })
+// Search methods by partial name (compact output)
+mcx_search({ adapter: "stripe", method: "create" })
+
+// Get DETAILED params for exact method match
+mcx_search({ adapter: "stripe", method: "createCustomer" })
+// → Returns: parameters, types, required, defaults, example
+
+// Search across all adapters
+mcx_search({ query: "invoice" })
 ```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `adapter` | string | Filter by adapter name (exact or partial) |
+| `method` | string | Filter by method name (exact or partial) |
+| `query` | string | Search term for names/descriptions |
+| `type` | string | Filter: "all", "adapters", "methods", "skills" |
+| `limit` | number | Max results per category (default: 20) |
+
+**Token optimization:** Detailed parameter info (types, required, defaults) only appears on exact method name match. Partial matches return compact TypeScript signatures only.
 
 ## Built-in Helpers
 
