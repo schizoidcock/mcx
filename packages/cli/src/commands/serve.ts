@@ -359,6 +359,13 @@ function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResul
 /** Max recursion depth to prevent stack overflow on deeply nested objects */
 const MAX_SUMMARIZE_DEPTH = 10;
 
+/** Map MCX parameter types to TypeScript types */
+function mapMcxType(type: string | undefined): string {
+  if (type === "object") return "Record<string, unknown>";
+  if (type === "array") return "unknown[]";
+  return type || "unknown";
+}
+
 function summarizeObject(obj: unknown, opts: TruncateOptions, depth: number = 0, seen: WeakSet<object> = new WeakSet()): unknown {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") {
@@ -865,10 +872,7 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
                   ? Object.entries(method.parameters)
                       .map(([name, def]) => {
                         const opt = def.required === false ? "?" : "";
-                        const type = def.type === "object" ? "Record<string, unknown>"
-                                   : def.type === "array" ? "unknown[]"
-                                   : def.type || "unknown";
-                        return `${name}${opt}: ${type}`;
+                        return `${name}${opt}: ${mapMcxType(def.type)}`;
                       })
                       .join(", ")
                   : "";
@@ -885,9 +889,7 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
                   detailedParams = {};
                   for (const [paramName, paramDef] of Object.entries(method.parameters)) {
                     detailedParams[paramName] = {
-                      type: paramDef.type === "object" ? "Record<string, unknown>"
-                          : paramDef.type === "array" ? "unknown[]"
-                          : paramDef.type || "unknown",
+                      type: mapMcxType(paramDef.type),
                       description: paramDef.description,
                       required: paramDef.required !== false,
                       default: (paramDef as { default?: unknown }).default,
