@@ -3,13 +3,10 @@
  * View and manage MCX log files
  */
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { open, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import pc from "picocolors";
-
-const LOG_DIR = join(homedir(), ".mcx", "logs");
-const LOG_FILE = join(LOG_DIR, "mcx.log");
+import { LOG_DIR, LOG_FILE } from "../utils/logger";
 
 export interface LogsOptions {
   lines?: number;
@@ -17,11 +14,87 @@ export interface LogsOptions {
   clear?: boolean;
 }
 
+/**
+ * Read last N lines efficiently by reading from the end of the file
+ */
+async function readLastLines(filePath: string, numLines: number): Promise<{ lines: string[]; totalLines: number }> {
+  const stats = await stat(filePath);
+  const fileSize = stats.size;
+
+  // For small files, just read the whole thing
+  if (fileSize < 65536) {
+    const file = await open(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(fileSize);
+      await file.read(buffer, 0, fileSize, 0);
+      const content = buffer.toString("utf-8").trim();
+      const allLines = content.split("\n");
+      return {
+        lines: allLines.slice(-numLines),
+        totalLines: allLines.length,
+      };
+    } finally {
+      await file.close();
+    }
+  }
+
+  // For large files, read chunks from the end
+  const chunkSize = Math.min(65536, fileSize); // 64KB chunks
+  const file = await open(filePath, "r");
+  try {
+    let collectedLines: string[] = [];
+    let position = fileSize;
+    let partialLine = "";
+
+    while (collectedLines.length < numLines && position > 0) {
+      const readSize = Math.min(chunkSize, position);
+      position -= readSize;
+
+      const buffer = Buffer.alloc(readSize);
+      await file.read(buffer, 0, readSize, position);
+      const chunk = buffer.toString("utf-8");
+
+      // Prepend partial line from previous chunk
+      const lines = (chunk + partialLine).split("\n");
+      partialLine = lines.shift() || ""; // First line may be partial
+
+      // Add lines in reverse order (we're reading backwards)
+      collectedLines = [...lines.filter(Boolean), ...collectedLines];
+    }
+
+    // Don't forget the final partial line
+    if (partialLine) {
+      collectedLines = [partialLine, ...collectedLines];
+    }
+
+    return {
+      lines: collectedLines.slice(-numLines),
+      totalLines: collectedLines.length,
+    };
+  } finally {
+    await file.close();
+  }
+}
+
+function printColoredLine(line: string): void {
+  if (line.includes("[ERROR]")) {
+    console.log(pc.red(line));
+  } else if (line.includes("[WARN]")) {
+    console.log(pc.yellow(line));
+  } else if (line.includes("[INFO]")) {
+    console.log(pc.cyan(line));
+  } else if (line.includes("[DEBUG]")) {
+    console.log(pc.dim(line));
+  } else {
+    // Stack trace or continuation lines
+    console.log(pc.dim(line));
+  }
+}
+
 export async function logsCommand(options: LogsOptions = {}): Promise<void> {
   const lines = options.lines ?? 50;
 
   if (options.clear) {
-    const { unlink } = await import("node:fs/promises");
     try {
       const files = await readdir(LOG_DIR);
       for (const file of files) {
@@ -37,30 +110,16 @@ export async function logsCommand(options: LogsOptions = {}): Promise<void> {
   }
 
   try {
-    const content = await readFile(LOG_FILE, "utf-8");
-    const allLines = content.trim().split("\n");
-    const lastLines = allLines.slice(-lines);
+    const { lines: lastLines, totalLines } = await readLastLines(LOG_FILE, lines);
 
     console.log(pc.dim(`=== ${LOG_FILE} (last ${lines} lines) ===\n`));
 
     for (const line of lastLines) {
-      // Color-code by log level
-      if (line.includes("[ERROR]")) {
-        console.log(pc.red(line));
-      } else if (line.includes("[WARN]")) {
-        console.log(pc.yellow(line));
-      } else if (line.includes("[INFO]")) {
-        console.log(pc.cyan(line));
-      } else if (line.includes("[DEBUG]")) {
-        console.log(pc.dim(line));
-      } else {
-        // Stack trace or continuation lines
-        console.log(pc.dim(line));
-      }
+      printColoredLine(line);
     }
 
-    if (allLines.length > lines) {
-      console.log(pc.dim(`\n... ${allLines.length - lines} earlier lines not shown`));
+    if (totalLines > lines) {
+      console.log(pc.dim(`\n... ${totalLines - lines} earlier lines not shown`));
     }
 
     // Show log file stats
@@ -70,10 +129,7 @@ export async function logsCommand(options: LogsOptions = {}): Promise<void> {
 
     if (options.follow) {
       console.log(pc.dim("\nFollowing logs (Ctrl+C to stop)...\n"));
-      // Use tail -f equivalent
-      const { spawn } = await import("node:child_process");
-      const tail = spawn("tail", ["-f", LOG_FILE], { stdio: "inherit" });
-      await new Promise((resolve) => tail.on("close", resolve));
+      await followLogs(LOG_FILE);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -83,4 +139,50 @@ export async function logsCommand(options: LogsOptions = {}): Promise<void> {
       throw error;
     }
   }
+}
+
+/**
+ * Cross-platform log following using file watching
+ */
+async function followLogs(filePath: string): Promise<void> {
+  const { watch } = await import("node:fs");
+  let lastSize = (await stat(filePath)).size;
+
+  const watcher = watch(filePath, async (eventType) => {
+    if (eventType === "change") {
+      try {
+        const stats = await stat(filePath);
+        if (stats.size > lastSize) {
+          // Read new content
+          const file = await open(filePath, "r");
+          try {
+            const newBytes = stats.size - lastSize;
+            const buffer = Buffer.alloc(newBytes);
+            await file.read(buffer, 0, newBytes, lastSize);
+            const newContent = buffer.toString("utf-8");
+            for (const line of newContent.split("\n").filter(Boolean)) {
+              printColoredLine(line);
+            }
+          } finally {
+            await file.close();
+          }
+          lastSize = stats.size;
+        } else if (stats.size < lastSize) {
+          // File was rotated/truncated
+          console.log(pc.dim("--- log rotated ---"));
+          lastSize = stats.size;
+        }
+      } catch {
+        // File might have been deleted during rotation
+      }
+    }
+  });
+
+  // Wait forever (until Ctrl+C)
+  await new Promise<void>(() => {
+    process.on("SIGINT", () => {
+      watcher.close();
+      process.exit(0);
+    });
+  });
 }

@@ -31,19 +31,15 @@ process.on("unhandledRejection", (reason, promise) => {
   // Don't exit - try to keep the server running
 });
 
-process.on("exit", (code) => {
-  // Sync log on exit (can't await here)
-  logger.shutdown(`exit code ${code}`);
-});
+// Note: No "exit" handler - it's sync-only and async logger won't complete.
+// SIGINT/SIGTERM handlers below log shutdown before exiting.
 
 process.on("SIGINT", () => {
-  logger.shutdown("SIGINT");
-  process.exit(0);
+  logger.shutdown("SIGINT").finally(() => process.exit(0));
 });
 
 process.on("SIGTERM", () => {
-  logger.shutdown("SIGTERM");
-  process.exit(0);
+  logger.shutdown("SIGTERM").finally(() => process.exit(0));
 });
 
 const CLI_PACKAGE = "@papicandela/mcx-cli";

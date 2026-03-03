@@ -7,14 +7,16 @@ import { appendFile, mkdir, stat, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const LOG_DIR = join(homedir(), ".mcx", "logs");
-const LOG_FILE = join(LOG_DIR, "mcx.log");
+export const LOG_DIR = join(homedir(), ".mcx", "logs");
+export const LOG_FILE = join(LOG_DIR, "mcx.log");
 const MAX_LOG_SIZE = 1024 * 1024; // 1MB
 const MAX_OLD_LOGS = 3; // Keep mcx.log.1, mcx.log.2, mcx.log.3
 
 type LogLevel = "INFO" | "WARN" | "ERROR" | "DEBUG";
 
 let initialized = false;
+let bytesWrittenSinceCheck = 0;
+const CHECK_ROTATION_EVERY_BYTES = 50000; // Check rotation every ~50KB written
 
 async function ensureLogDir(): Promise<void> {
   if (initialized) return;
@@ -70,7 +72,12 @@ function formatError(error: unknown): string {
 
 async function writeLog(level: LogLevel, message: string, error?: unknown): Promise<void> {
   await ensureLogDir();
-  await rotateIfNeeded();
+
+  // Only check rotation periodically to avoid stat() on every write
+  if (bytesWrittenSinceCheck >= CHECK_ROTATION_EVERY_BYTES) {
+    await rotateIfNeeded();
+    bytesWrittenSinceCheck = 0;
+  }
 
   const timestamp = formatTimestamp();
   let line = `[${timestamp}] [${level}] ${message}`;
@@ -81,6 +88,7 @@ async function writeLog(level: LogLevel, message: string, error?: unknown): Prom
 
   try {
     await appendFile(LOG_FILE, line);
+    bytesWrittenSinceCheck += line.length;
   } catch {
     // Best effort - don't crash on log failure
   }
