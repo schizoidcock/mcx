@@ -1071,6 +1071,23 @@ async function runStdio() {
 
   const server = await createMcxServer();
   const transport = new StdioServerTransport();
+
+  // Handle transport errors to prevent crashes
+  transport.onerror = (error) => {
+    console.error(pc.red("[MCX] Transport error:"), error);
+  };
+
+  // Handle stdin close gracefully (e.g., when Claude closes the connection)
+  process.stdin.on("close", () => {
+    console.error(pc.dim("[MCX] stdin closed, exiting gracefully"));
+    process.exit(0);
+  });
+
+  process.stdin.on("error", (error) => {
+    console.error(pc.red("[MCX] stdin error:"), error);
+    // Don't crash - wait for stdin close
+  });
+
   await server.connect(transport);
 
   console.error(pc.green("MCX MCP server running"));

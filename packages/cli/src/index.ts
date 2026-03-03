@@ -12,6 +12,21 @@ import { listCommand } from "./commands/list.js";
 import { genCommand } from "./commands/gen.js";
 import { updateCommand } from "./commands/update.js";
 
+// ============================================================================
+// Global Error Handlers (prevent silent crashes)
+// ============================================================================
+
+process.on("uncaughtException", (error) => {
+  console.error(pc.red("[MCX] Uncaught exception:"), error);
+  // Don't exit - try to keep the server running
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error(pc.red("[MCX] Unhandled rejection at:"), promise);
+  console.error(pc.red("[MCX] Reason:"), reason);
+  // Don't exit - try to keep the server running
+});
+
 const CLI_PACKAGE = "@papicandela/mcx-cli";
 
 // Read version from package.json at build time (injected by bundler)
