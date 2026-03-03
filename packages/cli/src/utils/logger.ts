@@ -12,7 +12,15 @@ export const LOG_FILE = join(LOG_DIR, "mcx.log");
 const MAX_LOG_SIZE = 1024 * 1024; // 1MB
 const MAX_OLD_LOGS = 3; // Keep mcx.log.1, mcx.log.2, mcx.log.3
 
-type LogLevel = "INFO" | "WARN" | "ERROR" | "DEBUG";
+/** Log levels as constants for type-safe matching */
+export const LOG_LEVELS = {
+  INFO: "INFO",
+  WARN: "WARN",
+  ERROR: "ERROR",
+  DEBUG: "DEBUG",
+} as const;
+
+export type LogLevel = (typeof LOG_LEVELS)[keyof typeof LOG_LEVELS];
 
 let initialized = false;
 let bytesWrittenSinceCheck = 0;
@@ -95,10 +103,10 @@ async function writeLog(level: LogLevel, message: string, error?: unknown): Prom
 }
 
 export const logger = {
-  info: (message: string) => writeLog("INFO", message),
+  info: (message: string, error?: unknown) => writeLog("INFO", message, error),
   warn: (message: string, error?: unknown) => writeLog("WARN", message, error),
   error: (message: string, error?: unknown) => writeLog("ERROR", message, error),
-  debug: (message: string) => writeLog("DEBUG", message),
+  debug: (message: string, error?: unknown) => writeLog("DEBUG", message, error),
 
   /** Log process startup */
   startup: (version: string, transport: string) =>

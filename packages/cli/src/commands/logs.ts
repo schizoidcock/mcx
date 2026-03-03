@@ -6,7 +6,7 @@
 import { open, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import pc from "picocolors";
-import { LOG_DIR, LOG_FILE } from "../utils/logger";
+import { LOG_DIR, LOG_FILE, LOG_LEVELS } from "../utils/logger";
 
 export interface LogsOptions {
   lines?: number;
@@ -77,13 +77,13 @@ async function readLastLines(filePath: string, numLines: number): Promise<{ line
 }
 
 function printColoredLine(line: string): void {
-  if (line.includes("[ERROR]")) {
+  if (line.includes(`[${LOG_LEVELS.ERROR}]`)) {
     console.log(pc.red(line));
-  } else if (line.includes("[WARN]")) {
+  } else if (line.includes(`[${LOG_LEVELS.WARN}]`)) {
     console.log(pc.yellow(line));
-  } else if (line.includes("[INFO]")) {
+  } else if (line.includes(`[${LOG_LEVELS.INFO}]`)) {
     console.log(pc.cyan(line));
-  } else if (line.includes("[DEBUG]")) {
+  } else if (line.includes(`[${LOG_LEVELS.DEBUG}]`)) {
     console.log(pc.dim(line));
   } else {
     // Stack trace or continuation lines

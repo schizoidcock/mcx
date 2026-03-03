@@ -50,6 +50,25 @@ import packageJson from "../package.json";
 const CURRENT_VERSION = packageJson.version;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
+// ============================================================================
+// Command Error Handler
+// ============================================================================
+
+/** Wrap command action with consistent error handling */
+function handleCommand<T extends unknown[]>(
+  name: string,
+  fn: (...args: T) => Promise<void>
+): (...args: T) => Promise<void> {
+  return async (...args: T) => {
+    try {
+      await fn(...args);
+    } catch (error) {
+      console.error(pc.red(`${name} failed:`), error);
+      process.exit(1);
+    }
+  };
+}
+
 async function autoUpdate(): Promise<void> {
   try {
     const mcxDir = join(homedir(), ".mcx");
@@ -114,27 +133,13 @@ program
 program
   .command("init")
   .description("Initialize a new MCX project in the current directory")
-  .action(async () => {
-    try {
-      await initCommand();
-    } catch (error) {
-      console.error(pc.red("Init failed:"), error);
-      process.exit(1);
-    }
-  });
+  .action(handleCommand("Init", initCommand));
 
 program
   .command("run <target>")
   .description("Run a script file or skill")
   .argument("[args...]", "Arguments to pass to the skill (key=value format)")
-  .action(async (target: string, args: string[]) => {
-    try {
-      await runCommand(target, args);
-    } catch (error) {
-      console.error(pc.red("Run failed:"), error);
-      process.exit(1);
-    }
-  });
+  .action(handleCommand("Run", runCommand));
 
 program
   .command("serve")
@@ -142,31 +147,19 @@ program
   .option("-t, --transport <type>", "Transport type: stdio (default) or http", "stdio")
   .option("-p, --port <number>", "HTTP port (only for http transport)", "3100")
   .option("-c, --cwd <path>", "Working directory for config and adapters")
-  .action(async (options: { transport: string; port: string; cwd?: string }) => {
-    try {
-      await serveCommand({
-        transport: options.transport as "stdio" | "http",
-        port: parseInt(options.port, 10),
-        cwd: options.cwd,
-      });
-    } catch (error) {
-      console.error(pc.red("Serve failed:"), error);
-      process.exit(1);
-    }
-  });
+  .action(handleCommand("Serve", async (options: { transport: string; port: string; cwd?: string }) => {
+    await serveCommand({
+      transport: options.transport as "stdio" | "http",
+      port: parseInt(options.port, 10),
+      cwd: options.cwd,
+    });
+  }));
 
 program
   .command("list")
   .alias("ls")
   .description("List available skills and adapters")
-  .action(async () => {
-    try {
-      await listCommand();
-    } catch (error) {
-      console.error(pc.red("List failed:"), error);
-      process.exit(1);
-    }
-  });
+  .action(handleCommand("List", listCommand));
 
 program
   .command("gen")
@@ -180,24 +173,19 @@ program
   .option("--read-only", "Only generate GET methods")
   .option("--include <patterns>", "Include only endpoints matching patterns (comma-separated)")
   .option("--exclude <patterns>", "Exclude endpoints matching patterns (comma-separated)")
-  .action(async (source: string | undefined, options: { output?: string; name?: string; baseUrl?: string; auth?: string; readOnly?: boolean; include?: string; exclude?: string }) => {
-    try {
-      await genCommand({
-        source,
-        output: options.output,
-        name: options.name,
-        baseUrl: options.baseUrl,
-        auth: options.auth,
-        readOnly: options.readOnly,
-        include: options.include,
-        exclude: options.exclude,
-        interactive: !source, // Interactive mode if no source provided
-      });
-    } catch (error) {
-      console.error(pc.red("Gen failed:"), error);
-      process.exit(1);
-    }
-  });
+  .action(handleCommand("Gen", async (source: string | undefined, options: { output?: string; name?: string; baseUrl?: string; auth?: string; readOnly?: boolean; include?: string; exclude?: string }) => {
+    await genCommand({
+      source,
+      output: options.output,
+      name: options.name,
+      baseUrl: options.baseUrl,
+      auth: options.auth,
+      readOnly: options.readOnly,
+      include: options.include,
+      exclude: options.exclude,
+      interactive: !source,
+    });
+  }));
 
 program
   .command("update")
@@ -207,14 +195,7 @@ program
   .option("-g, --global", "Clean and update global ~/.mcx/ installation only")
   .option("-p, --project", "Update project dependencies only (legacy)")
   .option("--check", "Check versions without updating")
-  .action(async (options: { cli?: boolean; global?: boolean; project?: boolean; check?: boolean }) => {
-    try {
-      await updateCommand(options);
-    } catch (error) {
-      console.error(pc.red("Update failed:"), error);
-      process.exit(1);
-    }
-  });
+  .action(handleCommand("Update", updateCommand));
 
 program
   .command("logs")
@@ -222,18 +203,13 @@ program
   .option("-n, --lines <number>", "Number of lines to show", "50")
   .option("-f, --follow", "Follow log output (like tail -f)")
   .option("--clear", "Clear all log files")
-  .action(async (options: { lines: string; follow?: boolean; clear?: boolean }) => {
-    try {
-      await logsCommand({
-        lines: parseInt(options.lines, 10),
-        follow: options.follow,
-        clear: options.clear,
-      });
-    } catch (error) {
-      console.error(pc.red("Logs failed:"), error);
-      process.exit(1);
-    }
-  });
+  .action(handleCommand("Logs", async (options: { lines: string; follow?: boolean; clear?: boolean }) => {
+    await logsCommand({
+      lines: parseInt(options.lines, 10),
+      follow: options.follow,
+      clear: options.clear,
+    });
+  }));
 
 // Default to serve if no command provided
 if (process.argv.length === 2) {
