@@ -23,6 +23,7 @@ import { z } from "zod";
 import pc from "picocolors";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
 import { getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
+import { logger } from "../utils/logger";
 
 // ============================================================================
 // .env Loading
@@ -1075,23 +1076,31 @@ async function runStdio() {
   // Handle transport errors to prevent crashes
   transport.onerror = (error) => {
     console.error(pc.red("[MCX] Transport error:"), error);
+    logger.error("Transport error", error);
   };
 
   // Handle stdin close gracefully (e.g., when Claude closes the connection)
   process.stdin.on("close", () => {
     console.error(pc.dim("[MCX] stdin closed, exiting gracefully"));
+    logger.shutdown("stdin closed");
     process.exit(0);
   });
 
   process.stdin.on("error", (error) => {
     console.error(pc.red("[MCX] stdin error:"), error);
+    logger.error("stdin error", error);
     // Don't crash - wait for stdin close
   });
 
   await server.connect(transport);
 
+  // Log startup
+  const pkg = await import("../../package.json");
+  logger.startup(pkg.version, "stdio");
+
   console.error(pc.green("MCX MCP server running"));
   console.error(pc.dim("Tools: mcx_execute, mcx_run_skill, mcx_list, mcx_search"));
+  console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
 async function runHttp(port: number) {
@@ -1116,6 +1125,10 @@ async function runHttp(port: number) {
   });
   await server.connect(transport);
   console.error(pc.dim("MCP server and transport initialized"));
+
+  // Log startup
+  const pkg = await import("../../package.json");
+  logger.startup(pkg.version, `http:${port}`);
 
   Bun.serve({
     port,

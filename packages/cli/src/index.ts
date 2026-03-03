@@ -11,6 +11,8 @@ import { serveCommand } from "./commands/serve.js";
 import { listCommand } from "./commands/list.js";
 import { genCommand } from "./commands/gen.js";
 import { updateCommand } from "./commands/update.js";
+import { logsCommand } from "./commands/logs.js";
+import { logger } from "./utils/logger.js";
 
 // ============================================================================
 // Global Error Handlers (prevent silent crashes)
@@ -18,13 +20,30 @@ import { updateCommand } from "./commands/update.js";
 
 process.on("uncaughtException", (error) => {
   console.error(pc.red("[MCX] Uncaught exception:"), error);
+  logger.uncaughtException(error);
   // Don't exit - try to keep the server running
 });
 
 process.on("unhandledRejection", (reason, promise) => {
   console.error(pc.red("[MCX] Unhandled rejection at:"), promise);
   console.error(pc.red("[MCX] Reason:"), reason);
+  logger.unhandledRejection(reason);
   // Don't exit - try to keep the server running
+});
+
+process.on("exit", (code) => {
+  // Sync log on exit (can't await here)
+  logger.shutdown(`exit code ${code}`);
+});
+
+process.on("SIGINT", () => {
+  logger.shutdown("SIGINT");
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  logger.shutdown("SIGTERM");
+  process.exit(0);
 });
 
 const CLI_PACKAGE = "@papicandela/mcx-cli";
@@ -197,6 +216,25 @@ program
       await updateCommand(options);
     } catch (error) {
       console.error(pc.red("Update failed:"), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("logs")
+  .description("View MCX server logs")
+  .option("-n, --lines <number>", "Number of lines to show", "50")
+  .option("-f, --follow", "Follow log output (like tail -f)")
+  .option("--clear", "Clear all log files")
+  .action(async (options: { lines: string; follow?: boolean; clear?: boolean }) => {
+    try {
+      await logsCommand({
+        lines: parseInt(options.lines, 10),
+        follow: options.follow,
+        clear: options.clear,
+      });
+    } catch (error) {
+      console.error(pc.red("Logs failed:"), error);
       process.exit(1);
     }
   });
