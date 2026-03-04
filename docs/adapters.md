@@ -109,6 +109,45 @@ mcx_execute({
 
 **Note:** Adapters return raw data. Truncation is applied by the MCP server before returning results.
 
+## Native Image Support
+
+For token-efficient image handling, adapters can return images as native MCP `ImageContent` instead of base64 text. This reduces token usage by ~75% for screenshots.
+
+### Returning Native Images
+
+```typescript
+// Return native image marker - MCX server converts to MCP ImageContent
+return {
+  __mcx_image__: true,
+  mimeType: "image/png",  // or image/jpeg, image/webp
+  data: base64String,
+};
+```
+
+### Token Comparison
+
+| Format | 1280×720 Screenshot | Tokens |
+|--------|---------------------|--------|
+| Base64 as text | ~20,000 chars | ~5,000 |
+| Native MCP image | Binary | ~1,200 |
+
+**Savings: ~75%**
+
+### Example: Screenshot Adapter
+
+```typescript
+screenshot: {
+  execute: async (params) => {
+    const result = await captureScreenshot();
+    return {
+      __mcx_image__: true,
+      mimeType: "image/png",
+      data: result.base64,
+    };
+  },
+},
+```
+
 ## TypeScript Types for LLM
 
 Adapter types are available via `mcx_search("adapter_name")`. The `mcx_execute` tool description shows a summary of available adapters, and the LLM can query specific adapter APIs on demand.

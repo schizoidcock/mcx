@@ -275,6 +275,68 @@ type SearchInput = z.infer<typeof SearchInputSchema>;
 /** Maximum characters in a single response (MCP best practice) */
 const CHARACTER_LIMIT = 25000;
 
+// ============================================================================
+// Native Image Support
+// ============================================================================
+
+/** Marker interface for native MCP images - adapters return this for efficient image handling */
+interface McxImageContent {
+  __mcx_image__: true;
+  mimeType: string;
+  data: string; // base64
+}
+
+/** Check if a value is an MCX image marker */
+function isMcxImage(value: unknown): value is McxImageContent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as McxImageContent).__mcx_image__ === true &&
+    typeof (value as McxImageContent).mimeType === "string" &&
+    typeof (value as McxImageContent).data === "string"
+  );
+}
+
+/** Extract images from result, returning remaining value and extracted images */
+function extractImages(value: unknown): { value: unknown; images: Array<{ type: "image"; mimeType: string; data: string }> } {
+  const images: Array<{ type: "image"; mimeType: string; data: string }> = [];
+
+  // Direct image
+  if (isMcxImage(value)) {
+    images.push({ type: "image", mimeType: value.mimeType, data: value.data });
+    return { value: { _imageAttached: true }, images };
+  }
+
+  // Array with images
+  if (Array.isArray(value)) {
+    const nonImages: unknown[] = [];
+    for (const item of value) {
+      if (isMcxImage(item)) {
+        images.push({ type: "image", mimeType: item.mimeType, data: item.data });
+      } else {
+        nonImages.push(item);
+      }
+    }
+    return { value: nonImages.length > 0 ? nonImages : { _imagesAttached: images.length }, images };
+  }
+
+  // Object with image property
+  if (typeof value === "object" && value !== null) {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (isMcxImage(val)) {
+        images.push({ type: "image", mimeType: val.mimeType, data: val.data });
+        result[key] = { _imageAttached: true };
+      } else {
+        result[key] = val;
+      }
+    }
+    return { value: result, images };
+  }
+
+  return { value, images };
+}
+
 /**
  * Safe JSON.stringify that handles BigInt and circular references
  */
@@ -601,7 +663,10 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           };
         }
 
-        const summarized = summarizeResult(result.value, {
+        // Extract native images before summarization
+        const { value: valueWithoutImages, images } = extractImages(result.value);
+
+        const summarized = summarizeResult(valueWithoutImages, {
           enabled: params.truncate,
           maxItems: params.maxItems,
           maxStringLength: params.maxStringLength,
@@ -613,23 +678,31 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           : result.logs;
         const rawTextOutput = [
           truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}\n` : "",
+          images.length > 0 ? `Images: ${images.length} attached\n` : "",
           summarized.truncated
             ? `Result (${summarized.originalSize}):\n${safeStringify(summarized.value)}`
-            : result.value !== undefined
-              ? `Result:\n${safeStringify(result.value)}`
+            : valueWithoutImages !== undefined
+              ? `Result:\n${safeStringify(summarized.value)}`
               : "Code executed successfully",
         ].filter(Boolean).join("\n");
 
         // Enforce character limit as safety net
         const { text: textOutput, truncated: charLimitTruncated } = enforceCharacterLimit(rawTextOutput);
 
+        // Build content array with text first, then images
+        const content: Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string }> = [
+          { type: "text" as const, text: textOutput },
+          ...images,
+        ];
+
         return {
-          content: [{ type: "text" as const, text: textOutput }],
+          content,
           structuredContent: {
             result: summarized.value,
             logs: truncatedLogs,
             executionTime: result.executionTime,
             truncated: summarized.truncated || charLimitTruncated,
+            imagesAttached: images.length,
           },
         };
       } catch (error) {
