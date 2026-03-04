@@ -297,18 +297,30 @@ function isMcxImage(value: unknown): value is McxImageContent {
   );
 }
 
-/** Extract images from result, returning remaining value and extracted images */
-function extractImages(value: unknown): { value: unknown; images: Array<{ type: "image"; mimeType: string; data: string }> } {
-  const images: Array<{ type: "image"; mimeType: string; data: string }> = [];
+/** MCP image content type */
+type ImageContent = { type: "image"; mimeType: string; data: string };
 
-  // Direct image
-  if (isMcxImage(value)) {
-    images.push({ type: "image", mimeType: value.mimeType, data: value.data });
-    return { value: { _imageAttached: true }, images };
+/** Extract images from result, returning remaining value and extracted images */
+function extractImages(value: unknown): { value: unknown; images: ImageContent[] } {
+  // Early return for primitives (most common case)
+  if (value === null || typeof value !== "object") {
+    return { value, images: [] };
   }
 
-  // Array with images
+  // Direct image - replace with null (cleaner than sentinel object)
+  if (isMcxImage(value)) {
+    return {
+      value: null,
+      images: [{ type: "image", mimeType: value.mimeType, data: value.data }],
+    };
+  }
+
+  // Array - fast path if no images
   if (Array.isArray(value)) {
+    if (!value.some(isMcxImage)) {
+      return { value, images: [] };
+    }
+    const images: ImageContent[] = [];
     const nonImages: unknown[] = [];
     for (const item of value) {
       if (isMcxImage(item)) {
@@ -317,24 +329,31 @@ function extractImages(value: unknown): { value: unknown; images: Array<{ type: 
         nonImages.push(item);
       }
     }
-    return { value: nonImages.length > 0 ? nonImages : { _imagesAttached: images.length }, images };
+    return { value: nonImages, images };
   }
 
-  // Object with image property
-  if (typeof value === "object" && value !== null) {
-    const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      if (isMcxImage(val)) {
-        images.push({ type: "image", mimeType: val.mimeType, data: val.data });
-        result[key] = { _imageAttached: true };
-      } else {
-        result[key] = val;
-      }
+  // Object - fast path if no image properties
+  const obj = value as Record<string, unknown>;
+  let hasImage = false;
+  for (const val of Object.values(obj)) {
+    if (isMcxImage(val)) { hasImage = true; break; }
+  }
+  if (!hasImage) {
+    return { value, images: [] };
+  }
+
+  // Extract images from object properties
+  const images: ImageContent[] = [];
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (isMcxImage(val)) {
+      images.push({ type: "image", mimeType: val.mimeType, data: val.data });
+      // Omit the image property entirely instead of sentinel
+    } else {
+      result[key] = val;
     }
-    return { value: result, images };
   }
-
-  return { value, images };
+  return { value: result, images };
 }
 
 /**
@@ -678,12 +697,13 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           : result.logs;
         const rawTextOutput = [
           truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}\n` : "",
-          images.length > 0 ? `Images: ${images.length} attached\n` : "",
           summarized.truncated
             ? `Result (${summarized.originalSize}):\n${safeStringify(summarized.value)}`
-            : valueWithoutImages !== undefined
+            : valueWithoutImages !== undefined && valueWithoutImages !== null
               ? `Result:\n${safeStringify(summarized.value)}`
-              : "Code executed successfully",
+              : images.length > 0
+                ? "Image(s) attached"
+                : "Code executed successfully",
         ].filter(Boolean).join("\n");
 
         // Enforce character limit as safety net
