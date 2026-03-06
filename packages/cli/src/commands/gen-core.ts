@@ -25,6 +25,22 @@ export interface OpenAPIParameter {
   };
 }
 
+export interface ResponseSchema {
+  type?: string;
+  items?: ResponseSchema;
+  properties?: Record<string, ResponseSchema>;
+  $ref?: string;
+}
+
+interface OpenAPIResponse {
+  description?: string;
+  content?: {
+    "application/json"?: {
+      schema?: ResponseSchema;
+    };
+  };
+}
+
 export interface OpenAPIOperation {
   summary?: string;
   description?: string;
@@ -37,7 +53,7 @@ export interface OpenAPIOperation {
       };
     };
   };
-  responses?: Record<string, unknown>;
+  responses?: Record<string, OpenAPIResponse>;
 }
 
 export interface OpenAPIPath {
@@ -91,6 +107,7 @@ export interface ParsedEndpoint {
   operation: OpenAPIOperation;
   methodName: string;
   category: string;
+  responseSchema?: ResponseSchema;
 }
 
 export interface ParseResult {
@@ -205,12 +222,22 @@ export function parseMarkdownDoc(content: string, filePath: string): ParseResult
       const operation = pathObj[method];
       if (!operation) continue;
 
+      // Extract response schema from 200/201 response
+      let responseSchema: ResponseSchema | undefined;
+      if (operation.responses) {
+        const successResponse = operation.responses['200'] || operation.responses['201'];
+        if (successResponse?.content?.['application/json']?.schema) {
+          responseSchema = successResponse.content['application/json'].schema;
+        }
+      }
+
       endpoints.push({
         path: pathStr,
         method,
         operation,
         methodName: generateMethodName(method, pathStr, operation),
         category,
+        responseSchema,
       });
     }
   }
@@ -371,6 +398,29 @@ function isValidIdentifier(str: string): boolean {
 function isValidPackageName(str: string): boolean {
   // npm package names: lowercase, can have @scope/, hyphens, underscores
   return /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(str);
+}
+
+/**
+ * Simplify a response schema for display.
+ * Keeps type, items, and top-level property names.
+ */
+function simplifySchema(schema: ResponseSchema, depth = 0): Record<string, unknown> {
+  if (depth > 2) return { type: '...' }; // Prevent deep nesting
+
+  const result: Record<string, unknown> = {};
+
+  if (schema.type) result.type = schema.type;
+  if (schema.$ref) result.$ref = schema.$ref.split('/').pop(); // Just the name
+
+  if (schema.type === 'array' && schema.items) {
+    result.items = simplifySchema(schema.items, depth + 1);
+  }
+
+  if (schema.properties) {
+    result.properties = Object.keys(schema.properties).slice(0, 10); // First 10 keys only
+  }
+
+  return result;
 }
 
 export function groupByCategory(endpoints: ParsedEndpoint[]): Record<string, ParsedEndpoint[]> {
@@ -759,6 +809,11 @@ function generateMethod(methodName: string, ep: ParsedEndpoint): string {
   lines.push(`${indent}${methodName}: {`);
   lines.push(`${indent}  description: '${desc}',`);
   lines.push(`${indent}  parameters: ${generateParametersObject(ep)},`);
+
+  // Include response schema if available
+  if (ep.responseSchema) {
+    lines.push(`${indent}  responseSchema: ${JSON.stringify(simplifySchema(ep.responseSchema))},`);
+  }
 
   const hasParams = (ep.operation.parameters || []).length > 0 || !!ep.operation.requestBody;
   const paramName = hasParams ? "params" : "_params";
