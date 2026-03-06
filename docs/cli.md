@@ -170,3 +170,25 @@ mcx run daily-summary date=2024-01-15
 # Run a script file
 mcx run ./scripts/migrate.ts
 ```
+
+## `mcx logs`
+
+View server logs.
+
+```bash
+# Show recent logs (default: 50 lines)
+mcx logs
+
+# Follow logs in real-time
+mcx logs -f
+mcx logs --follow
+
+# Show more lines
+mcx logs -n 100
+mcx logs --lines 100
+
+# Show log file path
+mcx logs --path
+```
+
+Logs are stored in `~/.mcx/logs/` with daily rotation.

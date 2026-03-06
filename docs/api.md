@@ -41,52 +41,117 @@ const skillResult = await executor.runSkill('daily-summary', {
 
 ## MCP Tools
 
-MCX exposes four tools to the AI agent:
+MCX exposes eight tools to the AI agent:
 
 | Tool | Description |
 |------|-------------|
-| `mcx_execute` | Execute JavaScript/TypeScript code in sandbox with adapter access |
+| `mcx_execute` | Execute code in sandbox, auto-stores result as `$result` |
+| `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
+| `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
+| `mcx_file` | Process local files with `$file` variable injection |
+| `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing |
+| `mcx_list` | List available adapters and skills |
+| `mcx_stats` | Session statistics (indexed content, variables) |
 | `mcx_run_skill` | Run a named skill with optional inputs |
-| `mcx_list` | List available adapters and skills (read-only) |
-| `mcx_search` | Search adapters/methods and get TypeScript API signatures |
 
 ### mcx_execute Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `code` | string | required | JavaScript/TypeScript code to execute |
+| `storeAs` | string | - | Store result as variable (e.g., `"invoices"` → `$invoices`) |
+| `intent` | string | - | Auto-index large outputs (>5KB) and search with this intent |
 | `truncate` | boolean | `true` | Enable/disable result truncation |
 | `maxItems` | number | `10` | Max array items when truncating |
 | `maxStringLength` | number | `500` | Max string length when truncating |
 
+### Variable Persistence
+
+Results are automatically stored and accessible in subsequent executions:
+
+```javascript
+// First execution - auto-stored as $result
+mcx_execute({ code: "supabase.list_projects()", storeAs: "projects" })
+
+// Later - access stored variables
+mcx_execute({ code: "$projects.filter(p => p.status === 'ACTIVE_HEALTHY')" })
+
+// Special commands
+mcx_execute({ code: "$clear" })           // Clear all variables
+mcx_execute({ code: "delete $projects" }) // Delete specific variable
+```
+
 ### mcx_search
 
-Use `mcx_search` to discover adapter APIs and get exact parameter info:
+Three search modes for different use cases:
 
+**Mode 1: Spec Exploration** - Query the cached OpenAPI spec with JavaScript:
 ```typescript
-// List all methods in an adapter
-mcx_search({ adapter: "stripe" })
+mcx_search({ code: "Object.keys($spec.adapters)" })
+mcx_search({ code: "$spec.adapters.supabase.tools.list_tables" })
+```
 
-// Search methods by partial name (compact output)
-mcx_search({ adapter: "stripe", method: "create" })
+**Mode 2: FTS5 Content Search** - Search indexed content from executions:
+```typescript
+mcx_search({ queries: ["error", "timeout"] })
+mcx_search({ queries: ["invoice"], source: "exec_1" })
+```
 
-// Get DETAILED params for exact method match
-mcx_search({ adapter: "stripe", method: "createCustomer" })
-// → Returns: parameters, types, required, defaults, example
-
-// Search across all adapters
-mcx_search({ query: "invoice" })
+**Mode 3: Adapter/Method Search** - Discover APIs:
+```typescript
+mcx_search({ adapter: "supabase" })                    // List all methods
+mcx_search({ adapter: "supabase", method: "list" })    // Partial match
+mcx_search({ adapter: "supabase", method: "list_tables" }) // Exact → detailed params
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `adapter` | string | Filter by adapter name (exact or partial) |
-| `method` | string | Filter by method name (exact or partial) |
+| `code` | string | Mode 1: JS code to explore `$spec` |
+| `queries` | string[] | Mode 2: FTS5 search queries |
+| `adapter` | string | Mode 3: Filter by adapter name |
+| `method` | string | Mode 3: Filter by method name |
 | `query` | string | Search term for names/descriptions |
-| `type` | string | Filter: "all", "adapters", "methods", "skills" |
+| `storeAs` | string | Store results as variable, return summary only |
 | `limit` | number | Max results per category (default: 20) |
 
-**Token optimization:** Detailed parameter info (types, required, defaults) only appears on exact method name match. Partial matches return compact TypeScript signatures only.
+**Token optimization:** Results auto-stored in `$search`. Use `storeAs` to get minimal response.
+
+### mcx_batch
+
+Execute multiple operations in one call, bypassing throttling:
+
+```typescript
+mcx_batch({
+  executions: [
+    { code: "supabase.list_projects()", storeAs: "projects" },
+    { code: "supabase.list_organizations()", storeAs: "orgs" }
+  ],
+  queries: ["error"]  // Optional FTS5 searches
+})
+```
+
+### mcx_file
+
+Process local files with `$file` variable injection:
+
+```typescript
+mcx_file({
+  path: "package.json",
+  code: "({ name: $file.name, deps: Object.keys($file.dependencies) })"
+})
+// $file is parsed JSON for .json files, { text, lines } for others
+```
+
+### mcx_fetch
+
+Fetch URLs with automatic HTML-to-markdown conversion:
+
+```typescript
+mcx_fetch({
+  url: "https://docs.example.com/api",
+  code: "$content.split('## ').length"  // $content is markdown
+})
+```
 
 ## Built-in Helpers
 

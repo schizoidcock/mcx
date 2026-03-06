@@ -128,6 +128,28 @@ MCP responses are limited to prevent memory exhaustion:
 - HTTP body limit: 100KB max response body
 - Array truncation: Default 10 items (configurable up to 1000)
 
+### Search Throttling
+
+FTS5 searches are throttled to prevent abuse:
+
+- First 3 calls: Normal (full results)
+- Calls 4-8: Reduced limits
+- Calls 9+: Blocked until window resets (60s)
+
+Use `mcx_batch` to bypass throttling for legitimate batch operations.
+
+### File Access (mcx_file)
+
+- Only files within `cwd` or explicitly allowed paths
+- Path traversal attempts are blocked
+- Symlinks are resolved before validation
+
+### URL Fetching (mcx_fetch)
+
+- Only HTTP/HTTPS protocols allowed
+- Response size limited to prevent memory exhaustion
+- HTML automatically converted to markdown (scripts/styles stripped)
+
 ## Runtime
 
 MCX is **100% Bun-native**:

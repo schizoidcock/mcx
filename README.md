@@ -67,13 +67,19 @@ mcx serve
 
 ```
 ~/.mcx/
-├── adapters/           # All your adapters
-│   ├── stripe.ts
-│   └── myapi.ts
+├── adapters/           # Your adapters
+│   ├── supabase.ts     # Supabase Management API
+│   ├── chrome-devtools.ts  # Chrome DevTools Protocol
+│   └── myapi.ts        # Generated from OpenAPI
 ├── skills/             # Reusable skills
 ├── mcx.config.ts       # Auto-loads all adapters
 ├── .env                # API credentials
 └── package.json        # Dependencies
+
+# Runtime (created automatically)
+~/.mcx/
+├── logs/               # Server logs (mcx logs to view)
+└── .cache/             # FTS5 search index
 ```
 
 ## Claude Code Integration
