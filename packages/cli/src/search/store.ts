@@ -1,0 +1,293 @@
+import { Database } from 'bun:sqlite';
+import type { Chunk, SearchResult, Source, SearchOptions, IndexOptions } from './types.js';
+import { chunkContent } from './chunker.js';
+import { extractSnippet } from './snippets.js';
+
+/**
+ * FTS5 Content Store with BM25 ranking.
+ *
+ * Uses SQLite FTS5 for full-text search with:
+ * - Porter stemming (running -> run)
+ * - BM25 ranking (relevance scoring)
+ * - Trigram index for substring matching
+ */
+export class ContentStore {
+  private db: Database;
+  private vocabulary: Set<string>;
+
+  constructor(dbPath = ':memory:') {
+    this.db = new Database(dbPath);
+    this.vocabulary = new Set();
+    this.initialize();
+  }
+
+  private initialize(): void {
+    // Sources metadata
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        chunk_count INTEGER DEFAULT 0,
+        code_chunk_count INTEGER DEFAULT 0,
+        indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // FTS5 with Porter stemming
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
+        title, content, source_id UNINDEXED, content_type UNINDEXED,
+        tokenize='porter unicode61'
+      )
+    `);
+
+    // FTS5 with trigram for substring matching
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
+        title, content, source_id UNINDEXED,
+        tokenize='trigram'
+      )
+    `);
+
+    // Vocabulary for fuzzy correction
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS vocabulary (
+        word TEXT PRIMARY KEY
+      )
+    `);
+  }
+
+  /**
+   * Index content and return source ID.
+   */
+  index(content: string, label: string, options: IndexOptions = {}): number {
+    const chunks = chunkContent(content, options.contentType, options.linesPerChunk);
+    return this.indexChunks(chunks, label);
+  }
+
+  /**
+   * Index pre-chunked content.
+   */
+  indexChunks(chunks: Chunk[], label: string): number {
+    // Create source
+    const sourceResult = this.db.prepare(
+      'INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, ?, ?)'
+    ).run(label, chunks.length, chunks.filter(c => c.hasCode).length);
+
+    const sourceId = Number(sourceResult.lastInsertRowid);
+
+    // Insert chunks
+    const insertChunk = this.db.prepare(
+      'INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)'
+    );
+    const insertTrigram = this.db.prepare(
+      'INSERT INTO chunks_trigram (title, content, source_id) VALUES (?, ?, ?)'
+    );
+    const insertWord = this.db.prepare(
+      'INSERT OR IGNORE INTO vocabulary (word) VALUES (?)'
+    );
+
+    const tx = this.db.transaction(() => {
+      for (const chunk of chunks) {
+        const contentType = chunk.hasCode ? 'code' : 'text';
+        insertChunk.run(chunk.title, chunk.content, sourceId, contentType);
+        insertTrigram.run(chunk.title, chunk.content, sourceId);
+
+        // Build vocabulary
+        const words = chunk.content.toLowerCase().match(/\b[a-z_][a-z0-9_]*\b/g) || [];
+        for (const word of words) {
+          if (word.length >= 3) {
+            insertWord.run(word);
+            this.vocabulary.add(word);
+          }
+        }
+      }
+    });
+
+    tx();
+    return sourceId;
+  }
+
+  /**
+   * Search using Porter stemming (Layer 1).
+   */
+  search(query: string, options: SearchOptions = {}): SearchResult[] {
+    return this.searchFts('chunks', this.buildFtsQuery(query), 'porter', options);
+  }
+
+  /**
+   * Search using trigram (Layer 2).
+   */
+  searchTrigram(query: string, options: SearchOptions = {}): SearchResult[] {
+    return this.searchFts('chunks_trigram', query, 'trigram', options);
+  }
+
+  /**
+   * Internal FTS search - shared by Porter and Trigram.
+   */
+  private searchFts(
+    table: string,
+    query: string,
+    matchType: 'porter' | 'trigram',
+    options: SearchOptions
+  ): SearchResult[] {
+    const limit = options.limit ?? 10;
+    const sourceFilter = options.sourceId ? 'AND source_id = ?' : '';
+    const bm25Args = table === 'chunks' ? '1.0, 0.75' : '';
+
+    const sql = `
+      SELECT
+        title,
+        snippet(${table}, 1, '**', '**', '...', 64) as snippet,
+        bm25(${table}${bm25Args ? ', ' + bm25Args : ''}) as score,
+        source_id,
+        (SELECT label FROM sources WHERE id = source_id) as source_label
+      FROM ${table}
+      WHERE ${table} MATCH ?
+      ${sourceFilter}
+      ORDER BY score
+      LIMIT ?
+    `;
+
+    const params = options.sourceId ? [query, options.sourceId, limit] : [query, limit];
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      title: string;
+      snippet: string;
+      score: number;
+      source_id: number;
+      source_label: string;
+    }>;
+
+    return rows.map(row => ({
+      title: row.title,
+      snippet: row.snippet,
+      score: Math.abs(row.score),
+      sourceId: row.source_id,
+      sourceLabel: row.source_label,
+      matchType,
+    }));
+  }
+
+  /**
+   * Get vocabulary for fuzzy correction.
+   */
+  getVocabulary(): Set<string> {
+    if (this.vocabulary.size > 0) return this.vocabulary;
+
+    const rows = this.db.prepare('SELECT word FROM vocabulary').all() as Array<{ word: string }>;
+    for (const row of rows) {
+      this.vocabulary.add(row.word);
+    }
+
+    return this.vocabulary;
+  }
+
+  /**
+   * Get all sources.
+   */
+  getSources(): Source[] {
+    const rows = this.db.prepare(`
+      SELECT id, label, chunk_count, code_chunk_count, indexed_at
+      FROM sources ORDER BY indexed_at DESC
+    `).all() as Array<{
+      id: number;
+      label: string;
+      chunk_count: number;
+      code_chunk_count: number;
+      indexed_at: string;
+    }>;
+
+    return rows.map(row => ({
+      id: row.id,
+      label: row.label,
+      chunkCount: row.chunk_count,
+      codeChunkCount: row.code_chunk_count,
+      indexedAt: new Date(row.indexed_at),
+    }));
+  }
+
+  /**
+   * Get chunk count for a source.
+   */
+  getChunkCount(sourceId: number): number {
+    const row = this.db.prepare(
+      'SELECT chunk_count FROM sources WHERE id = ?'
+    ).get(sourceId) as { chunk_count: number } | undefined;
+
+    return row?.chunk_count ?? 0;
+  }
+
+  /**
+   * Get chunks for a source (for vocabulary extraction).
+   */
+  getChunks(sourceId: number): Chunk[] {
+    const rows = this.db.prepare(
+      'SELECT title, content FROM chunks WHERE source_id = ?'
+    ).all(sourceId) as Array<{ title: string; content: string }>;
+
+    return rows.map(row => ({
+      title: row.title,
+      content: row.content,
+    }));
+  }
+
+  /**
+   * Delete a source and its chunks.
+   */
+  deleteSource(sourceId: number): void {
+    this.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(sourceId);
+    this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?').run(sourceId);
+    this.db.prepare('DELETE FROM sources WHERE id = ?').run(sourceId);
+  }
+
+  /**
+   * Clear all data.
+   */
+  clear(): void {
+    this.db.run('DELETE FROM chunks');
+    this.db.run('DELETE FROM chunks_trigram');
+    this.db.run('DELETE FROM sources');
+    this.db.run('DELETE FROM vocabulary');
+    this.vocabulary.clear();
+  }
+
+  /**
+   * Close the database connection.
+   */
+  close(): void {
+    this.db.close();
+  }
+
+  /**
+   * Build FTS5 query from user input.
+   * Handles special characters and multi-word queries.
+   */
+  private buildFtsQuery(query: string): string {
+    // Split into terms and escape special chars
+    const terms = query
+      .split(/\s+/)
+      .filter(t => t.length >= 2)
+      .map(t => `"${t.replace(/"/g, '""')}"`)
+      .join(' OR ');
+
+    return terms || `"${query.replace(/"/g, '""')}"`;
+  }
+}
+
+// Singleton instance
+let instance: ContentStore | null = null;
+
+export function getContentStore(): ContentStore {
+  if (!instance) {
+    instance = new ContentStore();
+  }
+  return instance;
+}
+
+export function resetContentStore(): void {
+  if (instance) {
+    instance.close();
+    instance = null;
+  }
+}

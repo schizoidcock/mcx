@@ -1,11 +1,15 @@
 /**
  * MCX MCP Server
  *
- * Exposes four MCP tools:
+ * Exposes MCP tools:
  * - mcx_execute: Execute code in sandboxed environment with adapter access
  * - mcx_run_skill: Run a named skill with optional inputs
  * - mcx_list: List available adapters and skills
- * - mcx_search: Search adapters, methods, and skills (shows detailed params on exact match)
+ * - mcx_search: Search adapters, methods, and indexed content (FTS5)
+ * - mcx_batch: Batch executions and searches (bypasses throttling)
+ * - mcx_file: Process local files with code ($file)
+ * - mcx_fetch: Fetch URL and index content
+ * - mcx_stats: Session statistics
  *
  * Features:
  * - Auto-loads adapters from ~/.mcx/adapters/
@@ -14,8 +18,9 @@
  * - Supports stdio and HTTP transports
  */
 
-import { join } from "node:path";
+import { join, basename, extname } from "node:path";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -24,6 +29,9 @@ import pc from "picocolors";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
 import { getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 import { logger } from "../utils/logger";
+import { getContentStore, searchWithFallback, getDistinctiveTerms, batchSearch, htmlToMarkdown, isHtml } from "../search";
+import { getSandboxState } from "../sandbox";
+import { loadSpecsFromAdapters } from "../spec";
 
 // ============================================================================
 // .env Loading
@@ -196,6 +204,12 @@ const ExecuteInputSchema = z.object({
     .optional()
     .default(500)
     .describe("Max string length when truncating (default: 500, max: 10000)"),
+  intent: z.string()
+    .optional()
+    .describe("Search intent for large outputs (>5KB). Auto-indexes result and returns relevant snippets."),
+  storeAs: z.string()
+    .optional()
+    .describe("Variable name to store result for use in subsequent executions (e.g., 'invoices' → access as $invoices)"),
 }).strict();
 
 const RunSkillInputSchema = z.object({
@@ -241,6 +255,18 @@ const ListInputSchema = z.object({
 }).strict();
 
 const SearchInputSchema = z.object({
+  // Mode 1: Spec exploration (code)
+  code: z.string()
+    .optional()
+    .describe("JS code to explore $spec. Example: Object.keys($spec.adapters) or $spec.adapters.stripe.tools"),
+  // Mode 2: FTS5 content search (queries)
+  queries: z.array(z.string())
+    .optional()
+    .describe("FTS5 search queries for indexed content (from mcx_execute with intent)"),
+  source: z.string()
+    .optional()
+    .describe("Filter FTS5 search to specific source label"),
+  // Mode 3: Adapter/method search (existing)
   query: z.string()
     .optional()
     .describe("Search term to find adapters, methods, or skills (searches names and descriptions). Optional if adapter is specified."),
@@ -261,12 +287,31 @@ const SearchInputSchema = z.object({
     .optional()
     .default(20)
     .describe("Max number of results per category (default: 20, max: 100)"),
+  storeAs: z.string()
+    .optional()
+    .describe("Store result as variable (e.g., 'methods' → access as $methods). Returns summary instead of full result."),
+}).strict();
+
+const BatchInputSchema = z.object({
+  executions: z.array(z.object({
+    code: z.string().describe("Code to execute"),
+    storeAs: z.string().optional().describe("Variable name to store result"),
+  }))
+    .optional()
+    .describe("Array of code executions to run sequentially"),
+  queries: z.array(z.string())
+    .optional()
+    .describe("FTS5 search queries to run on indexed content"),
+  source: z.string()
+    .optional()
+    .describe("Filter searches to specific source label"),
 }).strict();
 
 type ExecuteInput = z.infer<typeof ExecuteInputSchema>;
 type RunSkillInput = z.infer<typeof RunSkillInputSchema>;
 type ListInput = z.infer<typeof ListInputSchema>;
 type SearchInput = z.infer<typeof SearchInputSchema>;
+type BatchInput = z.infer<typeof BatchInputSchema>;
 
 // ============================================================================
 // Result Summarization (per Anthropic's code execution article)
@@ -274,6 +319,30 @@ type SearchInput = z.infer<typeof SearchInputSchema>;
 
 /** Maximum characters in a single response (MCP best practice) */
 const CHARACTER_LIMIT = 25000;
+/** Threshold for auto-indexing large outputs when intent is specified */
+const INTENT_THRESHOLD = 5000;
+/** Threshold for auto-indexing file content in mcx_file (10KB) */
+const FILE_INDEX_THRESHOLD = 10_000;
+/** Search throttling: normal results up to this many calls */
+const THROTTLE_AFTER = 3;
+/** Search throttling: block after this many calls */
+const BLOCK_AFTER = 8;
+/** Search throttling window in ms */
+const THROTTLE_WINDOW_MS = 60_000;
+/** Max params to show in full (above this, truncate) */
+const MAX_PARAMS_FULL = 10;
+/** Max params to show when truncating */
+const MAX_PARAMS_TRUNCATED = 8;
+/** Max description length before truncating */
+const MAX_DESC_LENGTH = 80;
+/** Max log lines to show */
+const MAX_LOGS = 20;
+
+/** Truncate logs array with "... +N more" message */
+function truncateLogs(logs: string[]): string[] {
+  if (logs.length <= MAX_LOGS) return logs;
+  return [...logs.slice(0, MAX_LOGS), `... +${logs.length - MAX_LOGS} more`];
+}
 
 // ============================================================================
 // Native Image Support
@@ -392,6 +461,46 @@ interface TruncateOptions {
   enabled: boolean;
   maxItems: number;
   maxStringLength: number;
+}
+
+/** Format "Stored as $name" message consistently */
+function formatStoredAs(name: string | undefined, suffix = ''): string {
+  return name ? `Stored as $${name}${suffix}` : '';
+}
+
+/** Generate rich metadata about a stored value */
+function getValueMetadata(value: unknown): { type: string; count?: number; keys?: string[]; sample?: unknown } {
+  if (value === null) return { type: 'null' };
+  if (value === undefined) return { type: 'undefined' };
+
+  const type = Array.isArray(value) ? 'array' : typeof value;
+
+  if (Array.isArray(value)) {
+    const sample = value.length > 0 ? value[0] : undefined;
+    const sampleKeys = sample && typeof sample === 'object' && sample !== null
+      ? Object.keys(sample).slice(0, 10)
+      : undefined;
+    return { type: 'array', count: value.length, keys: sampleKeys, sample: sampleKeys ? undefined : sample };
+  }
+
+  if (type === 'object' && value !== null) {
+    const keys = Object.keys(value as object).slice(0, 20);
+    return { type: 'object', count: keys.length, keys };
+  }
+
+  return { type };
+}
+
+/** Format metadata as readable string */
+function formatMetadata(meta: ReturnType<typeof getValueMetadata>): string {
+  if (meta.type === 'array') {
+    const keysStr = meta.keys ? ` [${meta.keys.join(', ')}]` : '';
+    return `array(${meta.count})${keysStr}`;
+  }
+  if (meta.type === 'object') {
+    return `object{${meta.keys?.join(', ')}}`;
+  }
+  return meta.type;
 }
 
 interface SummarizedResult {
@@ -623,7 +732,8 @@ function buildAdapterContext(adapters: Adapter[]): Record<string, Record<string,
   for (const adapter of adapters) {
     ctx[adapter.name] = {};
     for (const [methodName, method] of Object.entries(adapter.tools)) {
-      ctx[adapter.name][methodName] = method.execute;
+      // Wrap execute to ensure params is always an object (prevents destructuring errors)
+      ctx[adapter.name][methodName] = (params: unknown) => method.execute((params ?? {}) as Record<string, unknown>);
     }
   }
 
@@ -675,6 +785,36 @@ async function createMcxServerCore(
     ? generateTypesSummary(adapters as Parameters<typeof generateTypesSummary>[0])
     : "none";
 
+  // Cache spec for mcx_search Mode 1 (adapters don't change after startup)
+  const cachedSpec = loadSpecsFromAdapters(adapters);
+
+  // Search throttling state
+  let searchCallCount = 0;
+  let searchWindowStart = Date.now();
+
+  function checkAndConsumeThrottle(): { calls: number; blocked: boolean; reducedLimit: boolean } {
+    const now = Date.now();
+    if (now - searchWindowStart > THROTTLE_WINDOW_MS) {
+      searchCallCount = 0;
+      searchWindowStart = now;
+    }
+    searchCallCount++;
+    return {
+      calls: searchCallCount,
+      blocked: searchCallCount > BLOCK_AFTER,
+      reducedLimit: searchCallCount > THROTTLE_AFTER,
+    };
+  }
+
+  // Execution counter (instance-scoped like searchCallCount)
+  let executionCounter = 0;
+
+  function generateExecutionLabel(storeAs?: string): string {
+    if (storeAs) return storeAs;
+    executionCounter++;
+    return `exec_${executionCounter}`;
+  }
+
   const server = new McpServer({
     name: "mcx-mcp-server",
     version: "0.1.0",
@@ -699,6 +839,17 @@ Use mcx_search("adapter_name") to see TypeScript API for specific adapters.
 - sum(arr, 'field') - Sum numeric field
 - table(arr) - Format as markdown table
 
+## Variable Management
+- Results auto-stored as $result (always available)
+- storeAs: Also save as custom name (e.g., storeAs: "inv" → $inv)
+- $clear: Clear all variables
+- delete $varname: Delete specific variable
+
+## Large Output Handling
+- intent: Auto-index output >5KB and search. Returns snippets instead of full data.
+
+Example: { code: "alegra.getInvoices()", storeAs: "invoices", intent: "find overdue" }
+
 IMPORTANT: Always filter/transform data before returning to minimize context.`,
       inputSchema: ExecuteInputSchema,
       annotations: {
@@ -710,8 +861,33 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
     },
     async (params: ExecuteInput) => {
       try {
-        const result = await sandbox.execute(params.code, {
+        const state = getSandboxState();
+        const code = params.code.trim();
+
+        // Handle special variable commands
+        if (code === '$clear') {
+          const count = state.keys().length;
+          state.clear();
+          return {
+            content: [{ type: "text" as const, text: `Cleared ${count} variables.` }],
+            structuredContent: { cleared: count },
+          };
+        }
+
+        const deleteMatch = code.match(/^delete\s+\$(\w+)$/);
+        if (deleteMatch) {
+          const varName = deleteMatch[1];
+          const deleted = state.delete(varName);
+          return {
+            content: [{ type: "text" as const, text: deleted ? `Deleted $${varName}` : `Variable $${varName} not found` }],
+            structuredContent: { deleted: deleted ? varName : null },
+          };
+        }
+
+        // Execute code in sandbox
+        const result = await sandbox.execute(code, {
           adapters: adapterContext,
+          variables: state.getAllPrefixed(),
           env: config?.env || {},
         });
 
@@ -719,13 +895,10 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           const errorMsg = result.error
             ? `${result.error.name}: ${result.error.message}`
             : "Unknown error";
-          // Limit logs to prevent context bloat
-          const maxLogs = 20;
-          const truncatedLogs = result.logs.length > maxLogs
-            ? [...result.logs.slice(0, maxLogs), `... +${result.logs.length - maxLogs} more`]
-            : result.logs;
+          const truncatedLogs = truncateLogs(result.logs);
+          const logsSection = truncatedLogs.length > 0 ? `\n\nLogs:\n${truncatedLogs.join("\n")}` : "";
           return {
-            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}\n\nLogs:\n${truncatedLogs.join("\n")}` }],
+            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}${logsSection}` }],
             isError: true,
           };
         }
@@ -733,18 +906,75 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         // Extract native images before summarization
         const { value: valueWithoutImages, images } = extractImages(result.value);
 
+        // Auto-store in $result + custom name if specified
+        state.set('result', result.value);
+        if (params.storeAs && params.storeAs !== 'result') {
+          state.set(params.storeAs, result.value);
+        }
+
+        // Generate rich metadata about stored value
+        const metadata = getValueMetadata(result.value);
+        const metaStr = formatMetadata(metadata);
+
+        // Intent auto-index: if output is large and intent specified, index and search
+        if (params.intent) {
+          const serialized = safeStringify(valueWithoutImages);
+
+          if (serialized.length > INTENT_THRESHOLD) {
+            try {
+              const store = getContentStore();
+              const sourceLabel = generateExecutionLabel(params.storeAs);
+              const sourceId = store.index(serialized, sourceLabel, { contentType: 'plaintext' });
+              const chunks = store.getChunks(sourceId);
+              const searchResults = searchWithFallback(store, params.intent, { limit: 5, sourceId });
+              const terms = getDistinctiveTerms(chunks);
+
+              const indexedOutput = [
+                `Indexed ${chunks.length} sections as "${sourceLabel}"`,
+                formatStoredAs(params.storeAs),
+                '',
+                `Search results for "${params.intent}":`,
+                ...searchResults.map(r => `- ${r.title}: ${r.snippet.slice(0, 200)}...`),
+                '',
+                `Distinctive terms: ${terms.slice(0, 15).join(', ')}`,
+                '',
+                'Use mcx_search to query this indexed content.',
+              ].filter(Boolean).join('\n');
+
+              return {
+                content: [{ type: "text" as const, text: indexedOutput }, ...images],
+                structuredContent: {
+                  indexed: true,
+                  sourceId,
+                  chunks: chunks.length,
+                  searchResults: searchResults.length,
+                  metadata,
+                  storedAs: params.storeAs && params.storeAs !== 'result' ? ['result', params.storeAs] : ['result'],
+                },
+              };
+            } catch (indexError) {
+              // Indexing failed - fall through to normal summarization
+              console.error(`Intent indexing failed: ${indexError instanceof Error ? indexError.message : indexError}`);
+            }
+          }
+        }
+
         const summarized = summarizeResult(valueWithoutImages, {
           enabled: params.truncate,
           maxItems: params.maxItems,
           maxStringLength: params.maxStringLength,
         });
-        // Truncate logs on success too (same as error case)
-        const maxLogs = 20;
-        const truncatedLogs = result.logs.length > maxLogs
-          ? [...result.logs.slice(0, maxLogs), `... +${result.logs.length - maxLogs} more`]
-          : result.logs;
+        const truncatedLogs = truncateLogs(result.logs);
+
+        // Build store message with metadata
+        const storedVars = params.storeAs && params.storeAs !== 'result'
+          ? `$result, $${params.storeAs}`
+          : '$result';
+        const storeMsg = `Stored as ${storedVars} (${metaStr})`;
+
         const rawTextOutput = [
-          truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}\n` : "",
+          storeMsg,
+          truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}` : "",
           summarized.truncated
             ? `Result (${summarized.originalSize}):\n${safeStringify(summarized.value)}`
             : valueWithoutImages !== undefined && valueWithoutImages !== null
@@ -752,7 +982,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               : images.length > 0
                 ? "Image(s) attached"
                 : "Code executed successfully",
-        ].filter(Boolean).join("\n");
+        ].filter(Boolean).join("\n\n");
 
         // Enforce character limit as safety net
         const { text: textOutput, truncated: charLimitTruncated } = enforceCharacterLimit(rawTextOutput);
@@ -763,16 +993,12 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           ...images,
         ];
 
-        return {
-          content,
-          structuredContent: {
-            result: summarized.value,
-            logs: truncatedLogs,
-            executionTime: result.executionTime,
-            truncated: summarized.truncated || charLimitTruncated,
-            imagesAttached: images.length,
-          },
-        };
+        // Minimal structuredContent - only include non-default values
+        const structured: Record<string, unknown> = { result: summarized.value };
+        if (summarized.truncated || charLimitTruncated) structured.truncated = true;
+        if (params.storeAs && params.storeAs !== 'result') structured.storedAs = params.storeAs;
+
+        return { content, structuredContent: structured };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -889,16 +1115,28 @@ ${skillList}`,
         skills: skillsList,
         truncated: params.truncate && (adapters.length > maxItems || skills.size > maxItems),
         total: { adapters: adapters.length, skills: skills.size },
-        hint: "Use mcx_search(query) to see method details and TypeScript signatures",
       };
 
-      // Enforce character limit
-      const rawText = safeStringify(output);
-      const { text: finalText } = enforceCharacterLimit(rawText);
+      // Store in $list
+      const state = getSandboxState();
+      state.set('list', output);
+
+      // Return compact summary
+      const summary = [
+        `${output.total.adapters} adapters, ${output.total.skills} skills`,
+        `Adapters: ${adaptersList.map(a => `${a.name}(${a.methodCount})`).join(', ')}`,
+        output.total.skills > 0 ? `Skills: ${skillsList.map(s => s.name).join(', ')}` : '',
+        '',
+        'Stored as $list. Use mcx_search(adapter: "name") for details.',
+      ].filter(Boolean).join('\n');
 
       return {
-        content: [{ type: "text" as const, text: finalText }],
-        structuredContent: output,
+        content: [{ type: "text" as const, text: summary }],
+        structuredContent: {
+          storedAs: ['list'],
+          counts: output.total,
+          truncated: output.truncated,
+        },
       };
     }
   );
@@ -907,16 +1145,27 @@ ${skillList}`,
   server.registerTool(
     "mcx_search",
     {
-      title: "Search MCX Adapters and Skills",
-      description: `Search for adapters, methods, or skills by name or description.
+      title: "Search MCX Adapters, Specs, and Indexed Content",
+      description: `Three search modes:
 
-Examples:
-- mcx_search({ adapter: "stripe" }) - List all methods (compact)
-- mcx_search({ adapter: "stripe", method: "create" }) - Find methods containing "create" (compact)
-- mcx_search({ adapter: "stripe", method: "createCustomer" }) - EXACT match → detailed params
+## Mode 1: Spec Exploration (code param)
+Query $spec with JS. All $refs pre-resolved.
+- mcx_search({ code: "Object.keys($spec.adapters)" })
+- mcx_search({ code: "$spec.adapters.stripe.tools.createCustomer" })
 
-Shows detailed parameter info (types, required, defaults) ONLY on exact method name match.
-Use exact method name BEFORE mcx_execute to know exact parameters.`,
+## Mode 2: Content Search (queries param)
+FTS5 search on indexed content (from mcx_execute with intent).
+- mcx_search({ queries: ["error", "timeout"] })
+- mcx_search({ queries: ["invoice"], source: "exec_1" })
+
+## Mode 3: Adapter/Method Search (query/adapter/method params)
+- mcx_search({ adapter: "stripe" }) - List all methods
+- mcx_search({ adapter: "stripe", method: "createCustomer" }) - EXACT → detailed params
+
+## Token Saving: storeAs
+Use storeAs to save results and return summary only:
+- mcx_search({ adapter: "supabase", storeAs: "supaMethods" })
+- Then access via $supaMethods in mcx_execute`,
       inputSchema: SearchInputSchema,
       annotations: {
         readOnlyHint: true,
@@ -926,13 +1175,119 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
       },
     },
     async (params: SearchInput) => {
+      const requestedLimit = params.limit || 20;
+
+      // Mode 1: Spec exploration with code (no throttling - local operation)
+      if (params.code) {
+        try {
+          // Execute code against cached $spec (intentional dynamic eval for spec exploration)
+          // eslint-disable-next-line @typescript-eslint/no-implied-eval
+          const fn = new Function('$spec', `"use strict"; return (${params.code})`);
+          const result = fn(cachedSpec);
+
+          // Store result if requested
+          if (params.storeAs) {
+            const state = getSandboxState();
+            state.set(params.storeAs, result);
+            const summary = Array.isArray(result)
+              ? `Stored ${result.length} items as $${params.storeAs}`
+              : `Stored result as $${params.storeAs}`;
+            return {
+              content: [{ type: "text" as const, text: summary }],
+              structuredContent: { mode: 'spec', storedAs: params.storeAs, itemCount: Array.isArray(result) ? result.length : 1 },
+            };
+          }
+
+          // Auto-store in $search (no storeAs since early return handles that case)
+          const state = getSandboxState();
+          state.set('search', result);
+
+          const output = safeStringify(result);
+          const { text, truncated } = enforceCharacterLimit(output);
+
+          return {
+            content: [{ type: "text" as const, text }],
+            structuredContent: { mode: 'spec', storedAs: ['search'], truncated },
+          };
+        } catch (error) {
+          return {
+            content: [{ type: "text" as const, text: `Spec query error: ${error instanceof Error ? error.message : error}` }],
+            isError: true,
+          };
+        }
+      }
+
+      // Throttling for Mode 2 and Mode 3 (not Mode 1 which is local)
+      const throttle = checkAndConsumeThrottle();
+      if (throttle.blocked) {
+        return {
+          content: [{ type: "text" as const, text: `Search blocked: ${throttle.calls} calls in ${Math.floor(THROTTLE_WINDOW_MS / 1000)}s. Use mcx_batch or wait.` }],
+          isError: true,
+        };
+      }
+      const limit = throttle.reducedLimit ? Math.min(1, requestedLimit) : requestedLimit;
+
+      // Mode 2: FTS5 content search
+      if (params.queries && params.queries.length > 0) {
+        try {
+          const store = getContentStore();
+          const sources = store.getSources();
+
+          if (sources.length === 0) {
+            return {
+              content: [{ type: "text" as const, text: "No indexed content. Use mcx_execute with intent to index output." }],
+              structuredContent: { mode: 'content', results: 0 },
+            };
+          }
+
+          // Find source by label if specified
+          let sourceId: number | undefined;
+          if (params.source) {
+            const sourceLabel = params.source;
+            const source = sources.find(s => s.label === sourceLabel || s.label.includes(sourceLabel));
+            sourceId = source?.id;
+          }
+
+          const resultsByQuery = batchSearch(store, params.queries, { limit, sourceId });
+          const allResults = Object.values(resultsByQuery).flat();
+
+          // Store in $search
+          const state = getSandboxState();
+          const searchResult = { queries: params.queries, results: allResults, resultsByQuery };
+          state.set('search', searchResult);
+          if (params.storeAs && params.storeAs !== 'search') {
+            state.set(params.storeAs, searchResult);
+          }
+
+          const rawOutput = [
+            `Found ${allResults.length} results for: ${params.queries.join(', ')}`,
+            params.source ? `Source: ${params.source}` : `Searching ${sources.length} sources`,
+            '',
+            ...allResults.slice(0, 5).map(r => `## ${r.title} (${r.sourceLabel})\n${r.snippet.slice(0, 200)}...`),
+            allResults.length > 5 ? `\n... +${allResults.length - 5} more in $search.results` : '',
+          ].join('\n');
+
+          const { text: output, truncated } = enforceCharacterLimit(rawOutput);
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+            structuredContent: { mode: 'content', storedAs: ['search'], results: allResults.length, truncated },
+          };
+        } catch (error) {
+          return {
+            content: [{ type: "text" as const, text: `Content search error: ${error instanceof Error ? error.message : error}` }],
+            isError: true,
+          };
+        }
+      }
+
+      // Mode 3: Adapter/method search (existing logic)
       const query = params.query?.toLowerCase();
       const adapterFilter = params.adapter?.toLowerCase();
       const methodFilter = params.method?.toLowerCase();
       const searchType = params.type || "all";
-      const limit = params.limit || 20;
 
-      // Require at least one filter
+      // Require at least one filter for Mode 3
       if (!query && !adapterFilter && !methodFilter) {
         return {
           content: [{ type: "text" as const, text: "Please provide at least one of: query, adapter, or method parameter" }],
@@ -948,6 +1303,8 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
           description: string;
           typescript: string;
           parameters?: Record<string, { type: string; description?: string; required: boolean; default?: unknown }>;
+          requires?: Record<string, string[]>;
+          responseSchema?: Record<string, unknown>;
           example?: string;
         }>;
         skills: Array<{ name: string; description: string }>;
@@ -1044,12 +1401,27 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
                     : `await ${adapter.name}.${methodName}()`;
                 }
 
+                // Get requires and responseSchema from cached spec (for exact matches)
+                let requires: Record<string, string[]> | undefined;
+                let responseSchema: Record<string, unknown> | undefined;
+                if (isExactMatch) {
+                  const toolSpec = cachedSpec.adapters[adapter.name]?.tools[methodName];
+                  if (toolSpec?.requires) {
+                    requires = toolSpec.requires;
+                  }
+                  if (toolSpec?.responseSchema) {
+                    responseSchema = toolSpec.responseSchema;
+                  }
+                }
+
                 results.methods.push({
                   adapter: adapter.name,
                   method: methodName,
                   description: method.description || "No description",
                   typescript,
                   parameters: detailedParams,
+                  requires,
+                  responseSchema,
                   example,
                 });
                 methodCount++;
@@ -1152,14 +1524,23 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
           output.push("");
 
           if (m.parameters && Object.keys(m.parameters).length > 0) {
-            output.push("### Parameters");
+            const paramEntries = Object.entries(m.parameters);
+            const paramCount = paramEntries.length;
+            const showAll = paramCount <= MAX_PARAMS_FULL;
+            const paramsToShow = showAll ? paramEntries : paramEntries.slice(0, MAX_PARAMS_TRUNCATED);
+
+            output.push(`### Parameters${showAll ? '' : ` (showing ${MAX_PARAMS_TRUNCATED} of ${paramCount}, use $search for full list)`}`);
             output.push("");
-            for (const [name, def] of Object.entries(m.parameters)) {
+            for (const [name, def] of paramsToShow) {
               const req = def.required ? "(required)" : "(optional)";
               const defaultVal = def.default !== undefined ? ` = ${JSON.stringify(def.default)}` : "";
+              // Truncate long descriptions
+              const desc = def.description && def.description.length > MAX_DESC_LENGTH
+                ? def.description.slice(0, MAX_DESC_LENGTH - 3) + '...'
+                : def.description;
               output.push(`- **${name}**: \`${def.type}\` ${req}${defaultVal}`);
-              if (def.description) {
-                output.push(`  ${def.description}`);
+              if (desc) {
+                output.push(`  ${desc}`);
               }
             }
             output.push("");
@@ -1187,13 +1568,465 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
         }
       }
 
+      // Always store results in $search (separate from $result to avoid conflicts)
+      const state = getSandboxState();
+      state.set('search', results);
+      if (params.storeAs && params.storeAs !== 'search') {
+        state.set(params.storeAs, results);
+      }
+
+      // For storeAs: return minimal summary
+      if (params.storeAs) {
+        const storedVars = params.storeAs !== 'search' ? `$search, $${params.storeAs}` : '$search';
+        const summary = `Stored ${results.methods.length} methods, ${results.adapters.length} adapters as ${storedVars}\nExplore: $search.methods[0].parameters`;
+        return {
+          content: [{ type: "text" as const, text: summary }],
+          structuredContent: {
+            storedAs: params.storeAs !== 'search' ? ['search', params.storeAs] : ['search'],
+            counts: {
+              methods: results.methods.length,
+              adapters: results.adapters.length,
+              skills: results.skills.length,
+            },
+          },
+        };
+      }
+
+      // Add footer about $search
+      output.push("");
+      output.push("---");
+      output.push("Full results in `$search`. Explore: `$search.methods[0].requires`");
+
       // Enforce character limit
       const { text: finalText } = enforceCharacterLimit(output.join("\n"));
 
       return {
         content: [{ type: "text" as const, text: finalText }],
-        structuredContent: results,
+        structuredContent: {
+          storedAs: ['search'],
+          counts: {
+            methods: results.methods.length,
+            adapters: results.adapters.length,
+            skills: results.skills.length,
+          },
+        },
       };
+    }
+  );
+
+  // Tool: mcx_batch
+  server.registerTool(
+    "mcx_batch",
+    {
+      title: "Batch Execute and Search",
+      description: `Run multiple executions and searches in one call. Bypasses throttling.
+
+Examples:
+- mcx_batch({ executions: [{ code: "alegra.getInvoices()", storeAs: "inv" }], queries: ["overdue"] })
+- mcx_batch({ queries: ["error", "timeout", "failed"] })`,
+      inputSchema: BatchInputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (params: BatchInput) => {
+      const output: string[] = [];
+      const results: {
+        executions: Array<{ storeAs?: string; success: boolean; error?: string }>;
+        searches: Array<{ query: string; count: number }>;
+      } = { executions: [], searches: [] };
+
+      // Run executions sequentially
+      if (params.executions && params.executions.length > 0) {
+        output.push("## Executions");
+        output.push("");
+
+        // Hoist singletons outside loop
+        const state = getSandboxState();
+        const store = getContentStore();
+
+        for (const exec of params.executions) {
+          try {
+            // Get stored variables fresh each iteration (state mutates via storeAs)
+            const result = await sandbox.execute(exec.code, {
+              adapters: adapterContext,
+              variables: state.getAllPrefixed(),
+              env: config?.env || {},
+            });
+
+            if (result.success) {
+              // Store if requested
+              if (exec.storeAs) {
+                state.set(exec.storeAs, result.value);
+              }
+
+              // Auto-index large results
+              const serialized = safeStringify(result.value);
+              if (serialized.length > INTENT_THRESHOLD) {
+                try {
+                  const sourceLabel = generateExecutionLabel(exec.storeAs);
+                  store.index(serialized, sourceLabel, { contentType: 'plaintext' });
+                  output.push(`- ${exec.storeAs || 'exec'}: Indexed (${serialized.length} chars)`);
+                } catch {
+                  // Indexing failed, still report success
+                  output.push(`- ${exec.storeAs || 'exec'}: OK (${serialized.length} chars, index failed)`);
+                }
+              } else {
+                output.push(`- ${exec.storeAs || 'exec'}: OK (${serialized.length} chars)`);
+              }
+
+              results.executions.push({ storeAs: exec.storeAs, success: true });
+            } else {
+              const errorMsg = result.error ? result.error.message : "Unknown error";
+              output.push(`- ${exec.storeAs || 'exec'}: ERROR - ${errorMsg}`);
+              results.executions.push({ storeAs: exec.storeAs, success: false, error: errorMsg });
+            }
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            output.push(`- ${exec.storeAs || 'exec'}: ERROR - ${errorMsg}`);
+            results.executions.push({ storeAs: exec.storeAs, success: false, error: errorMsg });
+          }
+        }
+        output.push("");
+      }
+
+      // Run searches (bypass throttling) - use batchSearch for efficiency
+      if (params.queries && params.queries.length > 0) {
+        output.push("## Search Results");
+        output.push("");
+
+        const store = getContentStore();
+        const sources = store.getSources();
+
+        if (sources.length === 0) {
+          output.push("No indexed content available.");
+        } else {
+          let sourceId: number | undefined;
+          if (params.source) {
+            const sourceLabel = params.source;
+            const source = sources.find(s => s.label === sourceLabel || s.label.includes(sourceLabel));
+            sourceId = source?.id;
+          }
+
+          try {
+            const batchResults = batchSearch(store, params.queries, { limit: 5, sourceId });
+            for (const [query, searchResults] of Object.entries(batchResults)) {
+              output.push(`### "${query}" (${searchResults.length} results)`);
+              for (const r of searchResults) {
+                output.push(`- ${r.title}: ${r.snippet.slice(0, 150)}...`);
+              }
+              output.push("");
+              results.searches.push({ query, count: searchResults.length });
+            }
+          } catch (error) {
+            output.push(`Search error: ${error instanceof Error ? error.message : error}`);
+            for (const query of params.queries) {
+              results.searches.push({ query, count: 0 });
+            }
+          }
+        }
+      }
+
+      // Store in $batch
+      const state = getSandboxState();
+      state.set('batch', results);
+
+      // Compact summary
+      const execCount = results.executions.length;
+      const searchCount = results.searches.length;
+      const summary = [
+        `Batch complete: ${execCount} executions, ${searchCount} searches`,
+        `Stored as $batch. Access: $batch.executions, $batch.searches`,
+      ].join('\n');
+
+      return {
+        content: [{ type: "text" as const, text: summary }],
+        structuredContent: {
+          storedAs: ['batch'],
+          counts: { executions: execCount, searches: searchCount },
+        },
+      };
+    }
+  );
+
+  // Tool: mcx_file
+  const FileInputSchema = z.object({
+    path: z.string().describe("File path to process"),
+    code: z.string().describe("JavaScript code to process $file"),
+    intent: z.string().optional().describe("Auto-index if output > 5KB"),
+    storeAs: z.string().optional().describe("Store result as variable"),
+  });
+  type FileInput = z.infer<typeof FileInputSchema>;
+
+  server.registerTool(
+    "mcx_file",
+    {
+      title: "Process File",
+      description: `Process file with code. File content available as $file.
+
+Examples:
+- mcx_file({ path: "data.json", code: "$file.items.length" })
+- mcx_file({ path: "config.yaml", code: "$file.lines.filter(l => l.includes('port'))" })
+- mcx_file({ path: "report.csv", code: "$file.lines.slice(0, 10)" })
+
+$file shape:
+- JSON files: parsed object
+- Other files: { text: string, lines: string[] }`,
+      inputSchema: FileInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (params: FileInput) => {
+      try {
+        const content = await readFile(params.path, 'utf-8');
+        const ext = extname(params.path).toLowerCase();
+
+        // Parse based on extension
+        let $file: unknown;
+        if (ext === '.json') {
+          try {
+            $file = JSON.parse(content);
+          } catch {
+            $file = { text: content, lines: content.split('\n') };
+          }
+        } else {
+          $file = { text: content, lines: content.split('\n') };
+        }
+
+        // Auto-index file content for later search (sync, like context-mode)
+        if (content.length > FILE_INDEX_THRESHOLD) {
+          const store = getContentStore();
+          const fileLabel = basename(params.path);
+          const indexContent = isHtml(content) ? htmlToMarkdown(content) : content;
+          store.index(indexContent, fileLabel, { contentType: ext === '.md' ? 'markdown' : 'plaintext' });
+        }
+
+        // Execute with $file injected via variables (MCX pattern)
+        const state = getSandboxState();
+        const result = await sandbox.execute(params.code, {
+          adapters: adapterContext,
+          variables: { ...state.getAllPrefixed(), $file },
+          env: config?.env || {},
+        });
+
+        if (!result.success) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${result.error?.message || 'Execution failed'}` }],
+            isError: true,
+          };
+        }
+
+        const serialized = safeStringify(result.value);
+
+        // Store if requested
+        if (params.storeAs) {
+          state.set(params.storeAs, result.value);
+        }
+
+        // Intent auto-index for large outputs (aligned with mcx_execute pattern)
+        if (params.intent && serialized.length > INTENT_THRESHOLD) {
+          try {
+            const store = getContentStore();
+            const sourceLabel = generateExecutionLabel(params.storeAs || basename(params.path));
+            const sourceId = store.index(serialized, sourceLabel, { contentType: 'plaintext' });
+            const chunks = store.getChunks(sourceId);
+            const searchResults = searchWithFallback(store, params.intent, { limit: 5, sourceId });
+            const terms = getDistinctiveTerms(chunks);
+
+            const output = [
+              `Indexed ${chunks.length} sections as "${sourceLabel}"`,
+              formatStoredAs(params.storeAs),
+              '',
+              `Search results for "${params.intent}":`,
+              ...searchResults.map(r => `- ${r.title}: ${r.snippet.slice(0, 200)}...`),
+              '',
+              `Distinctive terms: ${terms.slice(0, 15).join(', ')}`,
+              '',
+              'Use mcx_search to query this indexed content.',
+            ].filter(Boolean).join('\n');
+
+            return { content: [{ type: "text" as const, text: output }] };
+          } catch {
+            // Indexing failed, fall through to normal output
+          }
+        }
+
+        const { text: finalText, truncated } = enforceCharacterLimit(serialized);
+        const storedMsg = params.storeAs ? `\n${formatStoredAs(params.storeAs)}` : '';
+
+        return {
+          content: [{ type: "text" as const, text: finalText + storedMsg }],
+          structuredContent: {
+            result: result.value,
+            truncated,
+            storeAs: params.storeAs,
+          },
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error reading file: ${error instanceof Error ? error.message : error}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: mcx_fetch
+  const FetchInputSchema = z.object({
+    url: z.string().describe("URL to fetch"),
+    queries: z.array(z.string()).optional().describe("Search after indexing"),
+  });
+  type FetchInput = z.infer<typeof FetchInputSchema>;
+
+  server.registerTool(
+    "mcx_fetch",
+    {
+      title: "Fetch and Index URL",
+      description: `Fetch URL and index content. Returns summary + distinctive terms.
+
+Use for: API docs, OpenAPI specs, external documentation.
+Examples:
+- mcx_fetch({ url: "https://api.example.com/openapi.json" })
+- mcx_fetch({ url: "https://docs.example.com/guide", queries: ["auth", "api key"] })`,
+      inputSchema: FetchInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: FetchInput) => {
+      try {
+        const response = await fetch(params.url);
+        if (!response.ok) {
+          return {
+            content: [{ type: "text" as const, text: `Fetch failed: ${response.status} ${response.statusText}` }],
+            isError: true,
+          };
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        let content: string;
+        let label: string;
+
+        try {
+          label = new URL(params.url).hostname;
+        } catch {
+          label = 'fetched';
+        }
+
+        if (contentType.includes('json')) {
+          const json = await response.json() as Record<string, unknown>;
+          content = JSON.stringify(json, null, 2);
+          // Try to extract title from OpenAPI or common JSON structures
+          const info = json.info as Record<string, unknown> | undefined;
+          if (info?.title && typeof info.title === 'string') label = info.title;
+          else if (json.title && typeof json.title === 'string') label = json.title;
+          else if (json.name && typeof json.name === 'string') label = json.name;
+        } else {
+          content = await response.text();
+          // For HTML, extract title before conversion
+          const titleMatch = content.match(/<title>([^<]+)<\/title>/i);
+          if (titleMatch) label = titleMatch[1].trim();
+          // Convert HTML to markdown for cleaner indexing
+          if (isHtml(content)) {
+            content = htmlToMarkdown(content);
+          }
+        }
+
+        // Index in FTS5
+        const store = getContentStore();
+        const sourceId = store.index(content, label, { contentType: 'plaintext' });
+        const chunks = store.getChunkCount(sourceId);
+        const terms = getDistinctiveTerms(store.getChunks(sourceId));
+
+        const output: string[] = [
+          `Indexed "${label}": ${chunks} sections, ${content.length} chars`,
+          `Terms: ${terms.slice(0, 20).join(', ')}`,
+        ];
+
+        // Optional immediate search
+        if (params.queries?.length) {
+          output.push('');
+          output.push('Search Results:');
+          const batchResults = batchSearch(store, params.queries, { limit: 3, sourceId });
+          for (const [query, results] of Object.entries(batchResults)) {
+            output.push(`  "${query}": ${results.length} matches`);
+            for (const r of results.slice(0, 2)) {
+              output.push(`    - ${r.snippet.slice(0, 100)}...`);
+            }
+          }
+        }
+
+        return { content: [{ type: "text" as const, text: output.join('\n') }] };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Fetch error: ${error instanceof Error ? error.message : error}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: mcx_stats
+  server.registerTool(
+    "mcx_stats",
+    {
+      title: "Session Statistics",
+      description: "Session statistics: indexed content, searches, executions, variables.",
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const store = getContentStore();
+      const sources = store.getSources();
+      const totalChunks = sources.reduce((sum, s) => sum + s.chunkCount, 0);
+      const state = getSandboxState();
+      const variables = Array.from(state.keys());
+
+      let throttleStatus: string;
+      if (searchCallCount <= THROTTLE_AFTER) {
+        throttleStatus = 'normal';
+      } else if (searchCallCount <= BLOCK_AFTER) {
+        throttleStatus = 'reduced';
+      } else {
+        throttleStatus = 'blocked';
+      }
+
+      const output = [
+        'Session Stats',
+        '─────────────',
+        `Indexed: ${sources.length} sources, ${totalChunks} chunks`,
+        `Searches: ${searchCallCount} calls (${throttleStatus})`,
+        `Executions: ${executionCounter}`,
+        `Variables: ${variables.length > 0 ? variables.map(v => '$' + v).join(', ') : 'none'}`,
+      ];
+
+      if (sources.length > 0) {
+        output.push('');
+        output.push('Sources:');
+        for (const s of sources.slice(0, 10)) {
+          output.push(`  ${s.label}: ${s.chunkCount} chunks`);
+        }
+        if (sources.length > 10) {
+          output.push(`  ... and ${sources.length - 10} more`);
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: output.join('\n') }] };
     }
   );
 
@@ -1241,7 +2074,7 @@ async function runStdio() {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_run_skill, mcx_list, mcx_search"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_stats, mcx_list, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 

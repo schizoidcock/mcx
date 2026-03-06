@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { readFile, writeFile, access, rm } from "node:fs/promises";
+import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import pc from "picocolors";
-import { getMcxHomeDir } from "../utils/paths";
+import { getMcxHomeDir, exists } from "../utils/paths";
 
 const CLI_PACKAGE = "@papicandela/mcx-cli";
 const CORE_PACKAGE = "@papicandela/mcx-core";
@@ -124,15 +124,6 @@ function runCommand(cmd: string, args: string[], silent = false, cwd?: string): 
 
     proc.on("error", reject);
   });
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function cleanGlobalInstall(): Promise<boolean> {

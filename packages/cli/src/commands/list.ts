@@ -1,6 +1,7 @@
-import { readdir, access } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import pc from "picocolors";
+import { exists } from "../utils/paths";
 
 interface Skill {
   name: string;
@@ -12,15 +13,6 @@ interface Adapter {
   name: string;
   description?: string;
   tools?: Record<string, { description?: string }>;
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function listSkills(): Promise<Skill[]> {

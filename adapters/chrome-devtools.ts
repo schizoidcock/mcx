@@ -472,7 +472,8 @@ async function enableDomains(sessionId: string): Promise<void> {
  * Chrome DevTools Protocol Adapter
  */
 export const chromeDevtools = defineAdapter({
-  name: "browser",
+  name: "chrome-devtools",
+  description: "Chrome DevTools Protocol - browser automation (screenshots, navigation, clicks, forms, console, network)",
 
   tools: {
     launch: {
@@ -512,15 +513,24 @@ export const chromeDevtools = defineAdapter({
     },
 
     screenshot: {
-      description: "Capture a screenshot",
+      description: "Capture a screenshot (returns native MCP image for token efficiency)",
       parameters: {
         targetId: { type: "string", required: true, description: "Target page ID" },
+        format: { type: "string", required: false, description: "Image format: png, jpeg, webp (default: png)" },
+        quality: { type: "number", required: false, description: "Quality for jpeg/webp (0-100, default: 80)" },
       },
-      execute: async (params: { targetId: string }) => {
+      execute: async (params: { targetId: string; format?: string; quality?: number }) => {
         const sessionId = await attachToTarget(params.targetId);
         await enableDomains(sessionId);
-        const result = await sendCommand<{ data: string }>("Page.captureScreenshot", { format: "png" }, sessionId);
-        return { base64: result.data };
+        const format = params.format || "png";
+        const quality = format === "png" ? undefined : (params.quality ?? 80);
+        const result = await sendCommand<{ data: string }>("Page.captureScreenshot", { format, quality }, sessionId);
+        // Return as MCX native image marker - server will convert to MCP ImageContent
+        return {
+          __mcx_image__: true,
+          mimeType: `image/${format}`,
+          data: result.data,
+        };
       },
     },
 

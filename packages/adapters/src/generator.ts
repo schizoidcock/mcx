@@ -66,6 +66,14 @@ interface RequestBody {
 
 interface Response {
   description?: string;
+  content?: Record<string, { schema?: ResponseSchema }>;
+}
+
+interface ResponseSchema {
+  type?: string;
+  items?: ResponseSchema;
+  properties?: Record<string, ResponseSchema>;
+  $ref?: string;
 }
 
 interface GeneratorOptions {
@@ -95,6 +103,7 @@ interface ParsedEndpoint {
   description: string;
   parameters: Parameter[];
   hasBody: boolean;
+  responseSchema?: ResponseSchema;
 }
 
 // ============================================================================
@@ -158,6 +167,18 @@ export function parseOpenAPISpec(spec: OpenAPISpec, options: Pick<GeneratorOptio
       // Generate operationId if not present
       const operationId = operation.operationId || generateOperationId(method, path);
 
+      // Extract response schema from 200/201 response
+      let responseSchema: ResponseSchema | undefined;
+      if (operation.responses) {
+        const successResponse = operation.responses['200'] || operation.responses['201'];
+        if (successResponse?.content) {
+          const jsonContent = successResponse.content['application/json'];
+          if (jsonContent?.schema) {
+            responseSchema = jsonContent.schema;
+          }
+        }
+      }
+
       endpoints.push({
         path,
         method,
@@ -166,6 +187,7 @@ export function parseOpenAPISpec(spec: OpenAPISpec, options: Pick<GeneratorOptio
         description: operation.description || operation.summary || '',
         parameters: allParams,
         hasBody: !!operation.requestBody,
+        responseSchema,
       });
     }
   }
@@ -193,6 +215,29 @@ function generateOperationId(method: string, path: string): string {
 
 function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+/**
+ * Simplify a response schema for display.
+ * Keeps type, items, and top-level property names.
+ */
+function simplifySchema(schema: ResponseSchema, depth = 0): Record<string, unknown> {
+  if (depth > 2) return { type: '...' }; // Prevent deep nesting
+
+  const result: Record<string, unknown> = {};
+
+  if (schema.type) result.type = schema.type;
+  if (schema.$ref) result.$ref = schema.$ref.split('/').pop(); // Just the name
+
+  if (schema.type === 'array' && schema.items) {
+    result.items = simplifySchema(schema.items, depth + 1);
+  }
+
+  if (schema.properties) {
+    result.properties = Object.keys(schema.properties).slice(0, 10); // First 10 keys only
+  }
+
+  return result;
 }
 
 /**
@@ -348,7 +393,7 @@ ${apiKeyParam}
 }
 
 function generateMethodCode(endpoint: ParsedEndpoint): string {
-  const { operationId, summary, description, parameters, path, method, hasBody } = endpoint;
+  const { operationId, summary, description, parameters, path, method, hasBody, responseSchema } = endpoint;
 
   // Sanitize operationId to prevent injection
   const safeOperationId = sanitizeName(operationId);
@@ -389,11 +434,16 @@ function generateMethodCode(endpoint: ParsedEndpoint): string {
   // Escape description to prevent injection
   const safeDescription = escapeTemplateString(summary || description);
 
+  // Simplify response schema for display
+  const responseSchemaStr = responseSchema
+    ? `,\n      responseSchema: ${JSON.stringify(simplifySchema(responseSchema))}`
+    : '';
+
   return `    ${safeOperationId}: {
       description: '${safeDescription}',
       parameters: {
 ${paramsSchema || '        // No parameters'}
-      },
+      }${responseSchemaStr},
       execute: async (params: Record<string, unknown>) => {
         return ${fetchCall};
       },

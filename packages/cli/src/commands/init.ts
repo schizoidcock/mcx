@@ -1,8 +1,8 @@
-import { mkdir, writeFile, access, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import pc from "picocolors";
-import { getMcxHomeDir } from "../utils/paths";
+import { getMcxHomeDir, exists } from "../utils/paths";
 
 const MCX_CORE_VERSION = "^0.1.0";
 const MCX_ADAPTERS_VERSION = "^0.1.0";
@@ -72,23 +72,14 @@ const ENV_TEMPLATE = `# MCX Environment Variables
 # OPENAI_API_KEY=sk-...
 `;
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function ensurePackageJson(cwd: string): Promise<boolean> {
   const pkgPath = join(cwd, "package.json");
   let pkg: Record<string, unknown> = {};
   let created = false;
 
   if (await exists(pkgPath)) {
+    const content = await readFile(pkgPath, "utf-8");
     try {
-      const content = await readFile(pkgPath, "utf-8");
       pkg = JSON.parse(content);
     } catch (parseErr) {
       // Don't silently overwrite corrupted package.json - warn user

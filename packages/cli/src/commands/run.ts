@@ -1,16 +1,8 @@
-import { readFile, access, realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { join, extname, resolve } from "node:path";
 import { homedir } from "node:os";
 import pc from "picocolors";
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { exists } from "../utils/paths";
 
 /**
  * Validate that a path is within allowed directories to prevent path traversal attacks.

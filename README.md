@@ -99,24 +99,53 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 |---------|-------------|
 | **Progressive Disclosure** | Adapters loaded on demand, not upfront |
 | **Context Efficiency** | Filtering happens in sandbox, model sees results only |
-| **Configurable Truncation** | Control result size via `truncate`, `maxItems`, `maxStringLength` |
+| **Variable Persistence** | Store results as `$invoices`, `$customers` for later use |
+| **FTS5 Search** | Auto-index large outputs, search with `intent` parameter |
+| **Batch Operations** | `mcx_batch` for multiple operations in one call |
+| **File Processing** | `mcx_file` to process local files with `$file` injection |
+| **URL Fetching** | `mcx_fetch` with HTML-to-markdown conversion |
 | **Control Flow** | Loops, conditionals, retries run as native code |
 | **Privacy** | Intermediate data stays in sandbox |
-| **Skills** | Reusable operations combining multiple adapter calls |
-| **Security** | Network isolation, pre-execution analysis, path traversal protection, env injection prevention |
+| **Security** | Network isolation, path traversal protection, env injection prevention |
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `mcx_execute` | Execute code with adapter access, auto-stores as `$result` |
+| `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
+| `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
+| `mcx_file` | Process local files with `$file` variable injection |
+| `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing |
+| `mcx_list` | List available adapters and skills |
+| `mcx_stats` | Session statistics (indexed content, variables) |
+| `mcx_run_skill` | Run a registered skill |
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
 | `mcx serve` | Start MCP server (default) |
-| `mcx gen` | Generate adapters from OpenAPI specs |
+| `mcx gen` | Generate adapters from OpenAPI specs (with TUI) |
 | `mcx init` | Initialize global `~/.mcx/` directory |
 | `mcx update` | Update CLI and global installation |
 | `mcx list` | List available adapters and skills |
 | `mcx run` | Run a skill directly |
+| `mcx logs` | View server logs |
 
 See [CLI documentation](docs/cli.md) for details.
+
+## Included Adapters
+
+| Adapter | Methods | Description |
+|---------|---------|-------------|
+| `supabase` | 24 | Supabase Management API (projects, tables, functions, secrets) |
+| `chrome-devtools` | 25 | Chrome DevTools Protocol (screenshots, navigation, DOM) |
+
+Generate your own adapters from OpenAPI docs:
+```bash
+mcx gen ./api-docs.md -n myapi
+```
 
 ## Built-in Helpers
 

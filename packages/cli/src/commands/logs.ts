@@ -42,7 +42,7 @@ async function readLastLines(filePath: string, numLines: number): Promise<{ line
   const chunkSize = Math.min(65536, fileSize); // 64KB chunks
   const file = await open(filePath, "r");
   try {
-    let collectedLines: string[] = [];
+    const collectedLines: string[] = [];
     let position = fileSize;
     let partialLine = "";
 
@@ -58,15 +58,19 @@ async function readLastLines(filePath: string, numLines: number): Promise<{ line
       const lines = (chunk + partialLine).split("\n");
       partialLine = lines.shift() || ""; // First line may be partial
 
-      // Add lines in reverse order (we're reading backwards)
-      collectedLines = [...lines.filter(Boolean), ...collectedLines];
+      // Push lines (we'll reverse at the end) - O(1) per line vs O(n) for spread
+      for (const line of lines) {
+        if (line) collectedLines.push(line);
+      }
     }
 
     // Don't forget the final partial line
     if (partialLine) {
-      collectedLines = [partialLine, ...collectedLines];
+      collectedLines.push(partialLine);
     }
 
+    // Reverse to get chronological order, then take last N
+    collectedLines.reverse();
     return {
       lines: collectedLines.slice(-numLines),
       totalLines: collectedLines.length,

@@ -5,6 +5,7 @@
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync, existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 
 /** Max directory depth to traverse (prevents symlink loops) */
 const MAX_TRAVERSE_DEPTH = 100;
@@ -103,4 +104,17 @@ export function getConfigPath(): string {
  */
 export function getEnvPath(): string {
   return join(getMcxHomeDir(), ".env");
+}
+
+/**
+ * Check if a file or directory exists (async).
+ * Prefer this over sync existsSync for non-blocking checks.
+ */
+export async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
