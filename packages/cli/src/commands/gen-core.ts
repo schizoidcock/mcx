@@ -15,11 +15,13 @@ export interface OpenAPIParameter {
   in: "query" | "path" | "header";
   description?: string;
   required?: boolean;
+  example?: unknown;
   schema?: {
     type?: string;
     format?: string;
     enum?: string[];
     default?: unknown;
+    example?: unknown;
   };
 }
 
@@ -835,7 +837,9 @@ function generateParametersObject(ep: ParsedEndpoint): string {
     const paramType = mapToParamType(param.schema);
     const desc = (param.description || "").replace(/'/g, "\\'").replace(/[\r\n]+/g, " ").slice(0, 100);
     const safeName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(param.name) ? param.name : `'${param.name}'`;
-    fields.push(`      ${safeName}: { type: '${paramType}', description: '${desc}'${param.required ? ", required: true" : ""} }`);
+    const example = param.example ?? param.schema?.example;
+    const exampleStr = example !== undefined ? `, example: ${JSON.stringify(example)}` : "";
+    fields.push(`      ${safeName}: { type: '${paramType}', description: '${desc}'${param.required ? ", required: true" : ""}${exampleStr} }`);
   }
 
   if (hasRequestBody) {

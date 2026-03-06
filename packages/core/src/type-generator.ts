@@ -119,7 +119,7 @@ function generateInputInterface(
     }
 
     const tsType = paramTypeToTS(param.type);
-    const optional = param.required === false ? "?" : "";
+    const optional = param.required === true ? "" : "?";
     lines.push(`  ${safeParamName}${optional}: ${tsType};`);
   }
 

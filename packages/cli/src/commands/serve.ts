@@ -448,6 +448,54 @@ function mapMcxType(type: string | undefined): string {
   return type || "unknown";
 }
 
+function getExampleValue(paramName: string, paramType: string, schemaExample?: unknown): string {
+  // 1. If OpenAPI provides an example, use it
+  if (schemaExample !== undefined) {
+    return JSON.stringify(schemaExample);
+  }
+
+  // 2. Heuristics based on param name
+  const nameLower = paramName.toLowerCase();
+
+  // IDs
+  if (nameLower === "id" || nameLower.endsWith("_id") || nameLower.endsWith("id")) {
+    return "123";
+  }
+
+  // Pagination
+  if (nameLower === "limit" || nameLower === "count" || nameLower === "size" || nameLower === "pagesize") return "10";
+  if (nameLower === "offset" || nameLower === "start" || nameLower === "skip") return "0";
+  if (nameLower === "page") return "1";
+
+  // Dates
+  if (nameLower.includes("date")) return '"2024-01-15"';
+
+  // Contact info
+  if (nameLower === "email") return '"user@example.com"';
+  if (nameLower === "name") return '"John Doe"';
+  if (nameLower === "phone") return '"+1234567890"';
+
+  // URLs
+  if (nameLower === "url" || nameLower.endsWith("url")) return '"https://example.com"';
+
+  // Query/search
+  if (nameLower === "query" || nameLower === "q" || nameLower === "search") return '"search term"';
+
+  // 3. Fallback by type
+  switch (paramType) {
+    case "number":
+      return "10";
+    case "boolean":
+      return "true";
+    case "unknown[]":
+      return "[]";
+    case "Record<string, unknown>":
+      return "{}";
+    default:
+      return '"..."';
+  }
+}
+
 function summarizeObject(obj: unknown, opts: TruncateOptions, depth: number = 0, seen: WeakSet<object> = new WeakSet()): unknown {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") {
@@ -965,7 +1013,7 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
                 const methodParams = method.parameters
                   ? Object.entries(method.parameters)
                       .map(([name, def]) => {
-                        const opt = def.required === false ? "?" : "";
+                        const opt = def.required === true ? "" : "?";
                         return `${name}${opt}: ${mapMcxType(def.type)}`;
                       })
                       .join(", ")
@@ -976,7 +1024,7 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
                   : `${adapter.name}.${methodName}(): Promise<unknown>`;
 
                 // Only include detailed params and example for EXACT matches (saves tokens)
-                let detailedParams: Record<string, { type: string; description?: string; required: boolean; default?: unknown }> | undefined;
+                let detailedParams: Record<string, { type: string; description?: string; required: boolean; default?: unknown; example?: unknown }> | undefined;
                 let example: string | undefined;
 
                 if (isExactMatch && method.parameters) {
@@ -985,13 +1033,14 @@ Use exact method name BEFORE mcx_execute to know exact parameters.`,
                     detailedParams[paramName] = {
                       type: mapMcxType(paramDef.type),
                       description: paramDef.description,
-                      required: paramDef.required !== false,
+                      required: paramDef.required === true,
                       default: (paramDef as { default?: unknown }).default,
+                      example: (paramDef as { example?: unknown }).example,
                     };
                   }
                   const requiredParams = Object.entries(detailedParams).filter(([, d]) => d.required);
                   example = requiredParams.length > 0
-                    ? `await ${adapter.name}.${methodName}({ ${requiredParams.map(([n]) => `${n}: ...`).join(", ")} })`
+                    ? `await ${adapter.name}.${methodName}({ ${requiredParams.map(([n, d]) => `${n}: ${getExampleValue(n, d.type, d.example)}`).join(", ")} })`
                     : `await ${adapter.name}.${methodName}()`;
                 }
 
