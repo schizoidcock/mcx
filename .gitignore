@@ -35,3 +35,4 @@ packages/adapters/src/github.ts
 .heroui-docs/
 .claude/
 examples/
+.codemap/
