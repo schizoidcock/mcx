@@ -726,14 +726,27 @@ async function loadSkills(): Promise<Map<string, Skill>> {
   return skills;
 }
 
+/** Convert kebab-case to camelCase: "chrome-devtools" -> "chromeDevtools" */
+function toCamelCase(str: string): string {
+  return str.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+}
+
 function buildAdapterContext(adapters: Adapter[]): Record<string, Record<string, (params: unknown) => Promise<unknown>>> {
   const ctx: Record<string, Record<string, (params: unknown) => Promise<unknown>>> = {};
 
   for (const adapter of adapters) {
-    ctx[adapter.name] = {};
+    const methods: Record<string, (params: unknown) => Promise<unknown>> = {};
     for (const [methodName, method] of Object.entries(adapter.tools)) {
       // Wrap execute to ensure params is always an object (prevents destructuring errors)
-      ctx[adapter.name][methodName] = (params: unknown) => method.execute((params ?? {}) as Record<string, unknown>);
+      methods[methodName] = (params: unknown) => method.execute((params ?? {}) as Record<string, unknown>);
+    }
+
+    // Register under original name
+    ctx[adapter.name] = methods;
+
+    // Also register camelCase alias for kebab-case names (chrome-devtools -> chromeDevtools)
+    if (adapter.name.includes('-')) {
+      ctx[toCamelCase(adapter.name)] = methods;
     }
   }
 
@@ -827,22 +840,27 @@ async function createMcxServerCore(
       title: "Execute Code in MCX Sandbox",
       description: `Execute JavaScript/TypeScript code in an isolated sandbox.
 
+## Calling Adapters
+Adapters are available as globals. Use camelCase for names with hyphens:
+- supabase.list_projects()
+- chromeDevtools.listPages()  // chrome-devtools → chromeDevtools
+- adapters['chrome-devtools'].listPages()  // bracket notation also works
+
 ## Available Adapters
 ${typeSummary}
 
-Use mcx_search("adapter_name") to see TypeScript API for specific adapters.
+Use mcx_search({ adapter: "name" }) for method details.
 
 ## Built-in Helpers
-- pick(arr, ['id', 'name']) - Extract specific fields
+- pick(arr, ['id', 'name']) - Extract fields
 - first(arr, 5) - First N items
-- count(arr, 'field') - Count by field value
+- count(arr, 'field') - Count by field
 - sum(arr, 'field') - Sum numeric field
-- table(arr) - Format as markdown table
 
-## Variable Management
-- Results auto-stored as $result (always available)
-- storeAs: Also save as custom name (e.g., storeAs: "inv" → $inv)
-- $clear: Clear all variables
+## Variables
+- Results auto-stored as $result
+- storeAs: "name" → $name
+- $clear: Clear all
 - delete $varname: Delete specific variable
 
 ## Large Output Handling
