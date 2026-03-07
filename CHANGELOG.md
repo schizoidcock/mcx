@@ -2,6 +2,15 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.1] - 2026-03-07
+
+### Bug Fixes
+- **camelCase aliases** for kebab-case adapters (`chrome-devtools` → `chromeDevtools`)
+- **Image metadata** returned instead of null for screenshots (`{ __image__: true, mimeType, size }`)
+- Updated mcx_execute description with clear adapter usage examples
+
+---
+
 ## [0.3.0] - 2026-03-06
 
 ### Major Features
