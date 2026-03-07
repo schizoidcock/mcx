@@ -376,10 +376,10 @@ function extractImages(value: unknown): { value: unknown; images: ImageContent[]
     return { value, images: [] };
   }
 
-  // Direct image - replace with null (cleaner than sentinel object)
+  // Direct image - replace with metadata so agent knows image was captured
   if (isMcxImage(value)) {
     return {
-      value: null,
+      value: { __image__: true, mimeType: value.mimeType, size: value.data.length },
       images: [{ type: "image", mimeType: value.mimeType, data: value.data }],
     };
   }
