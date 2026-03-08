@@ -184,4 +184,22 @@ Adapters are available both via the `adapters` object and as top-level globals:
 // Both work identically
 await adapters.crm.getLeads({ limit: 10 });
 await crm.getLeads({ limit: 10 });
+
+// Kebab-case adapters also available as camelCase
+await chromeDevtools.listPages();  // chrome-devtools → chromeDevtools
+```
+
+### Fuzzy Method Suggestions
+
+When calling an undefined method, MCX suggests similar methods:
+
+```javascript
+supabase.executeSql()
+// Error: supabase.executeSql is not a function. Did you mean: execute_sql?
+
+supabase.listProjects()
+// Error: supabase.listProjects is not a function. Did you mean: list_projects?
+
+supabase.unknownMethod()
+// Error: supabase.unknownMethod is not a function. Available: list_organizations, get_organization...
 ```

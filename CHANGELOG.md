@@ -2,6 +2,16 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.2] - 2026-03-08
+
+### Developer Experience
+- **Fuzzy method suggestions** - When calling undefined adapter methods, MCX now suggests similar methods using Levenshtein distance
+  - `supabase.executeSql()` → "Did you mean: execute_sql?"
+  - `supabase.listProjects()` → "Did you mean: list_projects?"
+  - Unknown methods show available methods list
+
+---
+
 ## [0.3.1] - 2026-03-07
 
 ### Bug Fixes

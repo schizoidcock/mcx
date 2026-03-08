@@ -318,12 +318,40 @@ export class BunWorkerSandbox implements ISandbox {
             globalThis[key] = value;
           }
 
-          // Create adapter proxies and freeze them to prevent user code modification
+          // Levenshtein distance for fuzzy matching
+          const levenshtein = (a, b) => {
+            if (a.length === 0) return b.length;
+            if (b.length === 0) return a.length;
+            const matrix = [];
+            for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+            for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+            for (let i = 1; i <= b.length; i++) {
+              for (let j = 1; j <= a.length; j++) {
+                matrix[i][j] = b[i-1] === a[j-1]
+                  ? matrix[i-1][j-1]
+                  : Math.min(matrix[i-1][j-1] + 1, matrix[i][j-1] + 1, matrix[i-1][j] + 1);
+              }
+            }
+            return matrix[b.length][a.length];
+          };
+
+          // Find similar method names
+          const findSimilar = (name, methods, maxDist = 3) => {
+            const normalized = name.toLowerCase().replace(/[-_]/g, '');
+            return methods
+              .map(m => ({ method: m, dist: levenshtein(normalized, m.toLowerCase().replace(/[-_]/g, '')) }))
+              .filter(x => x.dist <= maxDist)
+              .sort((a, b) => a.dist - b.dist)
+              .slice(0, 3)
+              .map(x => x.method);
+          };
+
+          // Create adapter proxies with helpful error messages
           const adaptersObj = {};
           for (const [adapterName, methods] of Object.entries(adapterMethods)) {
-            const adapterObj = {};
+            const methodsImpl = {};
             for (const methodName of methods) {
-              adapterObj[methodName] = async (...args) => {
+              methodsImpl[methodName] = async (...args) => {
                 const id = ++callId;
                 return new Promise((resolve, reject) => {
                   pendingCalls.set(id, { resolve, reject });
@@ -337,18 +365,28 @@ export class BunWorkerSandbox implements ISandbox {
                 });
               };
             }
-            // Freeze individual adapter to prevent method tampering
-            Object.freeze(adapterObj);
-            adaptersObj[adapterName] = adapterObj;
+
+            // Use Proxy to intercept undefined method calls
+            const adapterProxy = new Proxy(methodsImpl, {
+              get(target, prop) {
+                if (prop in target) return target[prop];
+                if (typeof prop === 'symbol') return undefined;
+                const similar = findSimilar(String(prop), methods);
+                const suggestion = similar.length > 0
+                  ? '. Did you mean: ' + similar.join(', ') + '?'
+                  : '. Available: ' + methods.slice(0, 5).join(', ') + (methods.length > 5 ? '...' : '');
+                throw new Error(adapterName + '.' + String(prop) + ' is not a function' + suggestion);
+              }
+            });
+
+            adaptersObj[adapterName] = adapterProxy;
             // Also expose at top level but as non-writable
             Object.defineProperty(globalThis, adapterName, {
-              value: adapterObj,
+              value: adapterProxy,
               writable: false,
               configurable: false
             });
           }
-          // Freeze the adapters namespace and make it non-writable
-          Object.freeze(adaptersObj);
           Object.defineProperty(globalThis, 'adapters', {
             value: adaptersObj,
             writable: false,
