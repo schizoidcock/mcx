@@ -85,19 +85,76 @@ export function generateTypes(
 
 /**
  * Generate a compact type summary for token-constrained contexts.
- * Only shows adapter names and method count to minimize context usage.
+ * Groups adapters by domain and shows method count.
  * Use mcx_search to discover specific methods.
  *
  * @param adapters - Array of adapters
- * @returns Compact summary string
+ * @returns Compact summary string with domain hints
  */
 export function generateTypesSummary(adapters: Adapter[]): string {
-  return adapters
-    .map((adapter) => {
-      const count = Object.keys(adapter.tools).length;
-      return `- ${adapter.name} (${count} methods)`;
-    })
-    .join("\n");
+  // Group adapters by domain
+  const byDomain = new Map<string, Adapter[]>();
+
+  for (const adapter of adapters) {
+    const domain = inferDomain(adapter);
+    if (!byDomain.has(domain)) {
+      byDomain.set(domain, []);
+    }
+    byDomain.get(domain)!.push(adapter);
+  }
+
+  // If only one domain or fewer than 4 adapters, simple list
+  if (byDomain.size <= 1 || adapters.length < 4) {
+    return adapters
+      .map((adapter) => {
+        const count = Object.keys(adapter.tools).length;
+        return `- ${adapter.name} (${count} methods)`;
+      })
+      .join("\n");
+  }
+
+  // Group by domain for better discoverability
+  const lines: string[] = [];
+  for (const [domain, domainAdapters] of byDomain) {
+    const adapterList = domainAdapters
+      .map((a) => `${a.name}(${Object.keys(a.tools).length})`)
+      .join(", ");
+    lines.push(`[${domain}] ${adapterList}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Infer domain from adapter name/description if not explicitly set.
+ * Returns the adapter's explicit domain if set, otherwise infers from name/description.
+ */
+export function inferDomain(adapter: Adapter): string {
+  if (adapter.domain) return adapter.domain;
+
+  const name = adapter.name.toLowerCase();
+  const desc = (adapter.description || "").toLowerCase();
+  const combined = `${name} ${desc}`;
+
+  const domains: Record<string, string[]> = {
+    payments: ["stripe", "paypal", "square", "payment", "checkout", "billing", "invoice"],
+    database: ["supabase", "postgres", "mysql", "mongodb", "redis", "database", "sql", "query"],
+    email: ["sendgrid", "mailgun", "postmark", "email", "smtp", "mail"],
+    storage: ["s3", "cloudflare", "storage", "blob", "file", "upload"],
+    auth: ["auth", "oauth", "login", "jwt", "clerk", "auth0"],
+    ai: ["openai", "anthropic", "claude", "gpt", "llm", "ai", "ml"],
+    messaging: ["slack", "discord", "telegram", "twilio", "sms", "chat"],
+    crm: ["hubspot", "salesforce", "crm", "customer"],
+    analytics: ["analytics", "metrics", "tracking", "mixpanel", "amplitude"],
+    devtools: ["github", "gitlab", "jira", "linear", "chrome", "devtools", "ci", "cd"],
+  };
+
+  for (const [domain, keywords] of Object.entries(domains)) {
+    if (keywords.some((k) => combined.includes(k))) {
+      return domain;
+    }
+  }
+
+  return "general";
 }
 
 /**

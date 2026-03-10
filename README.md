@@ -103,7 +103,8 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 
 | Feature | Description |
 |---------|-------------|
-| **Progressive Disclosure** | Adapters loaded on demand, not upfront |
+| **Lazy Loading** | Adapters from `~/.mcx/adapters/` metadata-scanned at startup, fully loaded on first use |
+| **Domain Hints** | Adapters grouped by domain (payments, database, email, etc.) for better discoverability |
 | **Context Efficiency** | Filtering happens in sandbox, model sees results only |
 | **Variable Persistence** | Store results as `$invoices`, `$customers` for later use |
 | **FTS5 Search** | Auto-index large outputs, search with `intent` parameter |

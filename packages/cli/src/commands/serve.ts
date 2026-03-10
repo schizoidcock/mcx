@@ -27,7 +27,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import pc from "picocolors";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
-import { getMcxHomeDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
+import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 import { logger } from "../utils/logger";
 import { getContentStore, searchWithFallback, getDistinctiveTerms, batchSearch, htmlToMarkdown, isHtml } from "../search";
 import { getSandboxState } from "../sandbox";
@@ -165,7 +165,13 @@ interface AdapterMethod {
 interface Adapter {
   name: string;
   description?: string;
+  /** Domain/category for tool discovery (e.g., 'payments', 'database', 'email') */
+  domain?: string;
   tools: Record<string, AdapterMethod>;
+  /** Internal: marks adapter as lazy-loaded (not yet fully loaded) */
+  __lazy?: boolean;
+  /** Internal: path to load full adapter from */
+  __path?: string;
 }
 
 /** Compatible with @papicandela/mcx-core MCXConfig */
@@ -731,6 +737,134 @@ function toCamelCase(str: string): string {
   return str.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 }
 
+// ============================================================================
+// Lazy Adapter Loading from ~/.mcx/adapters/
+// ============================================================================
+
+/** Cache of fully loaded adapters (loaded on first use) */
+const loadedAdapters = new Map<string, Adapter>();
+
+/**
+ * Extract adapter metadata without fully loading the module.
+ * Reads the file and parses basic info using regex (fast).
+ */
+async function extractAdapterMetadata(filePath: string): Promise<{ name: string; description?: string; domain?: string; methods: string[] } | null> {
+  try {
+    const content = await Bun.file(filePath).text();
+
+    // Extract name from defineAdapter({ name: '...' })
+    const nameMatch = content.match(/name:\s*['"]([^'"]+)['"]/);
+    if (!nameMatch) return null;
+
+    const name = nameMatch[1];
+
+    // Extract description
+    const descMatch = content.match(/description:\s*['"]([^'"]+)['"]/);
+    const description = descMatch?.[1];
+
+    // Extract domain if present
+    const domainMatch = content.match(/domain:\s*['"]([^'"]+)['"]/);
+    const domain = domainMatch?.[1];
+
+    // Extract method names from tools: { methodName: { ... } }
+    const methods: string[] = [];
+    const toolsMatch = content.match(/tools:\s*\{([\s\S]*?)\n\s*\}/);
+    if (toolsMatch) {
+      // Match method definitions: methodName: { or 'method-name': {
+      const methodMatches = toolsMatch[1].matchAll(/^\s+['"]?([a-zA-Z_][a-zA-Z0-9_]*(?:-[a-zA-Z0-9_]+)*)['"]?\s*:\s*\{/gm);
+      for (const match of methodMatches) {
+        methods.push(match[1]);
+      }
+    }
+
+    return { name, description, domain, methods };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create a lazy adapter stub that loads the full adapter on first method call.
+ */
+function createLazyAdapter(metadata: { name: string; description?: string; domain?: string; methods: string[] }, filePath: string): Adapter {
+  const lazyTools: Record<string, AdapterMethod> = {};
+
+  for (const methodName of metadata.methods) {
+    lazyTools[methodName] = {
+      description: `[Lazy] Method from ${metadata.name}`,
+      execute: async (params: unknown) => {
+        // Load full adapter on first call
+        let fullAdapter = loadedAdapters.get(metadata.name);
+        if (!fullAdapter) {
+          console.error(pc.dim(`Lazy loading adapter: ${metadata.name}`));
+          const module = await import(filePath);
+          fullAdapter = module.default || module[metadata.name] || Object.values(module).find((v: unknown) => (v as Adapter)?.name === metadata.name);
+          if (fullAdapter) {
+            loadedAdapters.set(metadata.name, fullAdapter);
+          }
+        }
+
+        if (!fullAdapter?.tools[methodName]) {
+          throw new Error(`Method ${methodName} not found in ${metadata.name}`);
+        }
+
+        return fullAdapter.tools[methodName].execute(params);
+      },
+    };
+  }
+
+  return {
+    name: metadata.name,
+    description: metadata.description,
+    domain: metadata.domain,
+    tools: lazyTools,
+    __lazy: true,
+    __path: filePath,
+  };
+}
+
+/**
+ * Load adapters from ~/.mcx/adapters/ with lazy loading.
+ * Only extracts metadata at startup; full adapter loaded on first use.
+ */
+async function loadAdaptersFromDir(): Promise<Adapter[]> {
+  const adaptersDir = getAdaptersDir();
+
+  if (!existsSync(adaptersDir)) {
+    return [];
+  }
+
+  // Collect all paths first
+  const glob = new Bun.Glob("*.{ts,js}");
+  const files: string[] = [];
+  for await (const file of glob.scan({ cwd: adaptersDir, onlyFiles: true })) {
+    files.push(join(adaptersDir, file));
+  }
+
+  // Parallelize metadata extraction
+  const results = await Promise.all(
+    files.map(async (fullPath) => {
+      try {
+        const metadata = await extractAdapterMetadata(fullPath);
+        if (metadata && metadata.methods.length > 0) {
+          return createLazyAdapter(metadata, fullPath);
+        }
+      } catch (error) {
+        console.error(pc.yellow(`Warning: Failed to scan adapter ${basename(fullPath)}: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      return null;
+    })
+  );
+
+  const adapters = results.filter((a): a is Adapter => a !== null);
+
+  if (adapters.length > 0) {
+    console.error(pc.dim(`Scanned ${adapters.length} lazy adapter(s) from ~/.mcx/adapters/`));
+  }
+
+  return adapters;
+}
+
 function buildAdapterContext(adapters: Adapter[]): Record<string, Record<string, (params: unknown) => Promise<unknown>>> {
   const ctx: Record<string, Record<string, (params: unknown) => Promise<unknown>>> = {};
 
@@ -766,11 +900,21 @@ async function createMcxServerWithDeps(
 }
 
 async function createMcxServer() {
-  const config = await loadConfig();
-  const adapters = config?.adapters || [];
-  const skills = await loadSkills();
+  // Parallelize independent startup operations
+  const [config, lazyAdapters, skills] = await Promise.all([
+    loadConfig(),
+    loadAdaptersFromDir(),
+    loadSkills(),
+  ]);
 
-  console.error(pc.dim(`Loaded ${adapters.length} adapter(s), ${skills.size} skill(s)`));
+  const configAdapters = config?.adapters || [];
+
+  // Merge adapters: config adapters take precedence over lazy adapters (by name)
+  const configNames = new Set(configAdapters.map(a => a.name));
+  const filteredLazyAdapters = lazyAdapters.filter(a => !configNames.has(a.name));
+  const adapters = [...configAdapters, ...filteredLazyAdapters];
+
+  console.error(pc.dim(`Loaded ${configAdapters.length} config + ${filteredLazyAdapters.length} lazy adapter(s), ${skills.size} skill(s)`));
   return createMcxServerCore(config, adapters, skills);
 }
 

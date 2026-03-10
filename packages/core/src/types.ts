@@ -12,6 +12,8 @@ export interface ParameterDefinition {
   description?: string;
   required?: boolean;
   default?: unknown;
+  /** Example value for this parameter (helps LLMs understand expected format) */
+  example?: unknown;
 }
 
 /**
@@ -33,6 +35,8 @@ export interface Adapter<TTools extends Record<string, AdapterTool> = Record<str
   name: string;
   description?: string;
   version?: string;
+  /** Domain/category for tool discovery (e.g., 'payments', 'database', 'email') */
+  domain?: string;
   tools: TTools;
   dispose?: () => Promise<void> | void;
 }

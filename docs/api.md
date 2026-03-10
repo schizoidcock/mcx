@@ -203,3 +203,61 @@ supabase.listProjects()
 supabase.unknownMethod()
 // Error: supabase.unknownMethod is not a function. Available: list_organizations, get_organization...
 ```
+
+## Advanced Tool Use
+
+MCX implements patterns from [Anthropic's Advanced Tool Use](https://www.anthropic.com/engineering/advanced-tool-use) for better LLM tool discovery.
+
+### Parameter Examples
+
+Parameters can include `example` values to help LLMs understand expected formats:
+
+```typescript
+// In adapter definition
+parameters: {
+  project_id: {
+    type: 'string',
+    description: 'Project UUID',
+    example: 'proj_abc123'  // Helps LLM provide valid input
+  }
+}
+```
+
+### Domain Hints
+
+Adapters are grouped by domain for better discoverability:
+
+```
+[payments] stripe(12)
+[database] supabase(24), postgres(8)
+[email] sendgrid(8)
+[devtools] chrome-devtools(25), github(15)
+```
+
+Domains are inferred from adapter names/descriptions or can be set explicitly:
+
+```typescript
+export const myAdapter = defineAdapter({
+  name: 'my-service',
+  domain: 'payments',  // Explicit domain
+  // ...
+});
+```
+
+### Lazy Loading
+
+Adapters in `~/.mcx/adapters/` are lazy-loaded for fast startup:
+
+1. **Startup**: Only metadata extracted (name, description, method names)
+2. **First call**: Full adapter loaded on demand
+3. **Subsequent calls**: Use cached adapter
+
+This enables large adapter collections without impacting startup time.
+
+```typescript
+// Adapter metadata extracted at startup (fast regex parsing)
+{ name: 'stripe', description: 'Stripe API', methods: ['createCustomer', 'listCharges', ...] }
+
+// Full adapter loaded only when methods are called
+mcx_execute({ code: "stripe.createCustomer({ email: 'test@example.com' })" })
+```

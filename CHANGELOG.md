@@ -2,6 +2,45 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.3] - 2026-03-09
+
+### Advanced Tool Use (Anthropic Best Practices)
+
+#### input_examples
+- Added `example` field to `ParameterDefinition` type in core
+- Generated adapters now include example values from OpenAPI specs
+- Examples flow through to `mcx_search` for better LLM understanding
+
+#### deferred_loading (Lazy Adapters)
+- Adapters from `~/.mcx/adapters/` are now lazy-loaded
+- Only metadata extracted at startup (name, description, methods)
+- Full adapter loaded on first method call
+- Reduces startup time and memory for large adapter collections
+
+#### domain_hints
+- Added `domain` field to `Adapter` interface
+- Automatic domain inference from adapter name/description
+- `generateTypesSummary` groups adapters by domain when 4+ adapters present
+- Domains: payments, database, email, storage, auth, ai, messaging, devtools
+
+### Example Output
+
+Before (flat list):
+```
+- stripe (12 methods)
+- supabase (24 methods)
+- sendgrid (8 methods)
+```
+
+After (grouped by domain):
+```
+[payments] stripe(12)
+[database] supabase(24)
+[email] sendgrid(8)
+```
+
+---
+
 ## [0.3.2] - 2026-03-08
 
 ### Developer Experience

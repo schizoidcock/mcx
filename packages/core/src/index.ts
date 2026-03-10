@@ -78,6 +78,7 @@ export { configBuilder, defineConfig, mergeConfigs } from "./config.js";
 export {
   generateTypes,
   generateTypesSummary,
+  inferDomain,
   sanitizeIdentifier,
   type TypeGeneratorOptions,
 } from "./type-generator.js";
