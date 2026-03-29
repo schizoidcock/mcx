@@ -41,6 +41,9 @@ let connectionPromise: Promise<CDPSession> | null = null;
 let currentUserDataDir: string | null = null;
 let currentPort: number | null = null;
 
+// Track currently selected page (auto-set on newPage, navigate, selectPage)
+let currentTargetId: string | null = null;
+
 // Track active trace sessions per target
 const activeTraceSessions: Map<string, string> = new Map();
 
@@ -469,6 +472,31 @@ async function enableDomains(sessionId: string): Promise<void> {
 }
 
 /**
+ * Resolve targetId - use provided, current, or auto-select first page
+ */
+async function resolveTargetId(provided?: string): Promise<string> {
+  if (provided) {
+    currentTargetId = provided;
+    return provided;
+  }
+  if (currentTargetId) {
+    // Verify it still exists
+    const targets = await getTargets();
+    if (targets.some(t => t.id === currentTargetId)) {
+      return currentTargetId;
+    }
+  }
+  // Auto-select first page
+  const targets = await getTargets();
+  const page = targets.find(t => t.type === "page");
+  if (!page) {
+    throw new Error("No page available. Use newPage() or launch() first.");
+  }
+  currentTargetId = page.id;
+  return page.id;
+}
+
+/**
  * Chrome DevTools Protocol Adapter
  */
 export const chromeDevtools = defineAdapter({
@@ -500,27 +528,31 @@ export const chromeDevtools = defineAdapter({
     },
 
     navigate: {
-      description: "Navigate to a URL",
+      description: "Navigate to a URL. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
         url: { type: "string", required: true, description: "URL to navigate to" },
       },
-      execute: async (params: { targetId: string; url: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; url: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
-        return sendCommand("Page.navigate", { url: params.url }, sessionId);
+        const result = await sendCommand("Page.navigate", { url: params.url }, sessionId);
+        currentTargetId = targetId; // Keep selected after navigation
+        return result;
       },
     },
 
     screenshot: {
-      description: "Capture a screenshot (returns native MCP image for token efficiency)",
+      description: "Capture a screenshot (returns native MCP image). Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
         format: { type: "string", required: false, description: "Image format: png, jpeg, webp (default: png)" },
         quality: { type: "number", required: false, description: "Quality for jpeg/webp (0-100, default: 80)" },
       },
-      execute: async (params: { targetId: string; format?: string; quality?: number }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; format?: string; quality?: number }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
         const format = params.format || "png";
         const quality = format === "png" ? undefined : (params.quality ?? 80);
@@ -535,13 +567,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     evaluate: {
-      description: "Execute JavaScript in the page",
+      description: "Execute JavaScript in the page. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
-        expression: { type: "string", required: true, description: "JavaScript to evaluate" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
+        expression: { type: "string", required: true, description: "JavaScript code to evaluate (e.g., 'document.title')" },
       },
-      execute: async (params: { targetId: string; expression: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; expression: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
         return sendCommand("Runtime.evaluate", {
           expression: params.expression,
@@ -552,13 +585,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     click: {
-      description: "Click on an element by selector",
+      description: "Click on an element by selector. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
         selector: { type: "string", required: true, description: "CSS selector" },
       },
-      execute: async (params: { targetId: string; selector: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; selector: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         const result = await sendCommand<{ result: { value: { x: number; y: number } | null } }>(
@@ -589,14 +623,15 @@ export const chromeDevtools = defineAdapter({
     },
 
     fill: {
-      description: "Fill an input element",
+      description: "Fill an input element. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
         selector: { type: "string", required: true, description: "CSS selector" },
         value: { type: "string", required: true, description: "Value to fill" },
       },
-      execute: async (params: { targetId: string; selector: string; value: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; selector: string; value: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         await sendCommand("Runtime.evaluate", {
@@ -618,12 +653,13 @@ export const chromeDevtools = defineAdapter({
     },
 
     getText: {
-      description: "Get text content of the page",
+      description: "Get text content of the page. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
       },
-      execute: async (params: { targetId: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
         const result = await sendCommand<{ result: { value: string } }>(
           "Runtime.evaluate",
@@ -637,19 +673,20 @@ export const chromeDevtools = defineAdapter({
     // HIGH PRIORITY
 
     waitFor: {
-      description: "Wait for an element or text to appear on the page",
+      description: "Wait for an element or text to appear on the page. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
         selector: { type: "string", description: "CSS selector to wait for" },
         text: { type: "string", description: "Text content to wait for" },
         timeout: { type: "number", description: "Timeout in ms (default: 10000)" },
       },
-      execute: async (params: { targetId: string; selector?: string; text?: string; timeout?: number }) => {
+      execute: async (params: { targetId?: string; selector?: string; text?: string; timeout?: number }) => {
         if (!params.selector && !params.text) {
           throw new Error("Either selector or text must be provided");
         }
 
-        const sessionId = await attachToTarget(params.targetId);
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         const timeout = params.timeout ?? 10000;
@@ -693,13 +730,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     pressKey: {
-      description: "Press a key or key combination (e.g., 'Enter', 'Tab', 'Escape', 'a', 'Control+c')",
+      description: "Press a key or key combination. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
         key: { type: "string", required: true, description: "Key to press (e.g., 'Enter', 'Tab', 'Control+a')" },
       },
-      execute: async (params: { targetId: string; key: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; key: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         // Parse key combination
@@ -793,13 +831,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     snapshot: {
-      description: "Get DOM snapshot with unique IDs for reliable element selection",
+      description: "Get DOM snapshot with unique IDs. Auto-selects current page if targetId not provided.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional - auto-selects current page)" },
         depth: { type: "number", description: "Max depth to traverse (default: 10)" },
       },
-      execute: async (params: { targetId: string; depth?: number }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; depth?: number }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
         await sendCommand("Accessibility.enable", {}, sessionId);
 
@@ -861,13 +900,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     clickUid: {
-      description: "Click on an element by its MCX UID (from snapshot)",
+      description: "Click on an element by its MCX UID (from snapshot). Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         uid: { type: "string", required: true, description: "Element UID from snapshot" },
       },
-      execute: async (params: { targetId: string; uid: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; uid: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         const result = await sendCommand<{ result: { value: { x: number; y: number } | null } }>(
@@ -898,14 +938,15 @@ export const chromeDevtools = defineAdapter({
     },
 
     fillUid: {
-      description: "Fill an input element by its MCX UID (from snapshot)",
+      description: "Fill an input element by its MCX UID (from snapshot). Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         uid: { type: "string", required: true, description: "Element UID from snapshot" },
         value: { type: "string", required: true, description: "Value to fill" },
       },
-      execute: async (params: { targetId: string; uid: string; value: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; uid: string; value: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         const found = await sendCommand<{ result: { value: boolean } }>(
@@ -938,15 +979,16 @@ export const chromeDevtools = defineAdapter({
     // MEDIUM PRIORITY
 
     scroll: {
-      description: "Scroll the page or an element",
+      description: "Scroll the page or an element. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         x: { type: "number", description: "Horizontal scroll amount in pixels" },
         y: { type: "number", description: "Vertical scroll amount in pixels" },
         selector: { type: "string", description: "CSS selector to scroll into view" },
       },
-      execute: async (params: { targetId: string; x?: number; y?: number; selector?: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; x?: number; y?: number; selector?: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         if (params.selector) {
@@ -974,13 +1016,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     hover: {
-      description: "Hover over an element",
+      description: "Hover over an element. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         selector: { type: "string", required: true, description: "CSS selector" },
       },
-      execute: async (params: { targetId: string; selector: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; selector: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         const result = await sendCommand<{ result: { value: { x: number; y: number } | null } }>(
@@ -1009,9 +1052,9 @@ export const chromeDevtools = defineAdapter({
     },
 
     emulate: {
-      description: "Emulate device viewport, user agent, or color scheme",
+      description: "Emulate device viewport, user agent, or color scheme. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         width: { type: "number", description: "Viewport width" },
         height: { type: "number", description: "Viewport height" },
         deviceScaleFactor: { type: "number", description: "Device scale factor (default: 1)" },
@@ -1019,14 +1062,15 @@ export const chromeDevtools = defineAdapter({
         colorScheme: { type: "string", description: "Color scheme: 'light' or 'dark'" },
       },
       execute: async (params: {
-        targetId: string;
+        targetId?: string;
         width?: number;
         height?: number;
         deviceScaleFactor?: number;
         mobile?: boolean;
         colorScheme?: string;
       }) => {
-        const sessionId = await attachToTarget(params.targetId);
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         const results: string[] = [];
@@ -1061,13 +1105,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     newPage: {
-      description: "Create a new browser tab/page",
+      description: "Create a new browser tab/page (auto-selected for subsequent calls)",
       parameters: {
         url: { type: "string", description: "URL to open (default: about:blank)" },
       },
       execute: async (params: { url?: string }) => {
         const url = params.url ?? "about:blank";
         const result = await sendCommand<{ targetId: string }>("Target.createTarget", { url });
+        currentTargetId = result.targetId; // Auto-select new page
         return { targetId: result.targetId, url };
       },
     },
@@ -1079,20 +1124,42 @@ export const chromeDevtools = defineAdapter({
       },
       execute: async (params: { targetId: string }) => {
         await sendCommand("Target.closeTarget", { targetId: params.targetId });
+        // Reset current if we closed it
+        if (currentTargetId === params.targetId) {
+          currentTargetId = null;
+        }
         return { success: true };
+      },
+    },
+
+    selectPage: {
+      description: "Select a page for subsequent commands (alternative to passing targetId)",
+      parameters: {
+        targetId: { type: "string", required: true, description: "Target page ID to select (from listPages)" },
+      },
+      execute: async (params: { targetId: string }) => {
+        // Verify page exists
+        const targets = await getTargets();
+        const page = targets.find(t => t.id === params.targetId && t.type === "page");
+        if (!page) {
+          throw new Error(`Page not found: ${params.targetId}`);
+        }
+        currentTargetId = params.targetId;
+        return { success: true, selected: params.targetId, title: page.title, url: page.url };
       },
     },
 
     // LOW PRIORITY - Debugging
 
     getConsoleMessages: {
-      description: "Get console messages from the page",
+      description: "Get console messages from the page. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         types: { type: "string", description: "Filter by types: 'log', 'error', 'warning', 'info' (comma-separated)" },
       },
-      execute: async (params: { targetId: string; types?: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; types?: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await sendCommand("Runtime.enable", {}, sessionId);
         await sendCommand("Console.enable", {}, sessionId);
 
@@ -1139,13 +1206,14 @@ export const chromeDevtools = defineAdapter({
     },
 
     getNetworkRequests: {
-      description: "Get network requests from the page",
+      description: "Get network requests from the page. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         resourceTypes: { type: "string", description: "Filter by types: 'xhr', 'fetch', 'script', 'stylesheet', 'image' (comma-separated)" },
       },
-      execute: async (params: { targetId: string; resourceTypes?: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; resourceTypes?: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await sendCommand("Network.enable", {}, sessionId);
 
         // Get performance entries which include network requests
@@ -1182,13 +1250,14 @@ export const chromeDevtools = defineAdapter({
     // LOW PRIORITY - Performance
 
     startTrace: {
-      description: "Start performance tracing",
+      description: "Start performance tracing. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         categories: { type: "string", description: "Trace categories (default: standard web vitals)" },
       },
-      execute: async (params: { targetId: string; categories?: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; categories?: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
 
         const categories = params.categories || "-*,devtools.timeline,v8.execute,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.frame,toplevel,blink.console,disabled-by-default-devtools.timeline.stack";
 
@@ -1198,24 +1267,25 @@ export const chromeDevtools = defineAdapter({
         }, sessionId);
 
         // Store session for stopTrace
-        activeTraceSessions.set(params.targetId, sessionId);
+        activeTraceSessions.set(targetId, sessionId);
 
-        return { success: true, message: "Tracing started" };
+        return { success: true, message: "Tracing started", targetId };
       },
     },
 
     stopTrace: {
-      description: "Stop performance tracing and get results",
+      description: "Stop performance tracing and get results. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
       },
-      execute: async (params: { targetId: string }) => {
+      execute: async (params: { targetId?: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
         // Use stored session from startTrace, or create new one
-        let sessionId = activeTraceSessions.get(params.targetId);
+        let sessionId = activeTraceSessions.get(targetId);
         const hadActiveTrace = !!sessionId;
 
         if (!sessionId) {
-          sessionId = await attachToTarget(params.targetId);
+          sessionId = await attachToTarget(targetId);
         }
 
         // Get performance metrics
@@ -1232,7 +1302,7 @@ export const chromeDevtools = defineAdapter({
           } catch {
             // Trace may have already ended
           }
-          activeTraceSessions.delete(params.targetId);
+          activeTraceSessions.delete(targetId);
         }
 
         // Get web vitals via evaluate
@@ -1266,14 +1336,15 @@ export const chromeDevtools = defineAdapter({
     },
 
     handleDialog: {
-      description: "Handle JavaScript dialogs (alert, confirm, prompt)",
+      description: "Handle JavaScript dialogs (alert, confirm, prompt). Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         accept: { type: "boolean", required: true, description: "Accept (true) or dismiss (false) the dialog" },
         promptText: { type: "string", description: "Text to enter for prompt dialogs" },
       },
-      execute: async (params: { targetId: string; accept: boolean; promptText?: string }) => {
-        const sessionId = await attachToTarget(params.targetId);
+      execute: async (params: { targetId?: string; accept: boolean; promptText?: string }) => {
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await sendCommand("Page.enable", {}, sessionId);
 
         await sendCommand("Page.handleJavaScriptDialog", {
@@ -1286,19 +1357,20 @@ export const chromeDevtools = defineAdapter({
     },
 
     uploadFile: {
-      description: "Upload a file to a file input element",
+      description: "Upload a file to a file input element. Auto-selects current page.",
       parameters: {
-        targetId: { type: "string", required: true, description: "Target page ID" },
+        targetId: { type: "string", required: false, description: "Target page ID (optional)" },
         selector: { type: "string", required: true, description: "CSS selector for file input" },
         filePath: { type: "string", required: true, description: "Absolute path to the file" },
       },
-      execute: async (params: { targetId: string; selector: string; filePath: string }) => {
+      execute: async (params: { targetId?: string; selector: string; filePath: string }) => {
         // Validate file exists
         if (!existsSync(params.filePath)) {
           throw new Error(`File not found: ${params.filePath}`);
         }
 
-        const sessionId = await attachToTarget(params.targetId);
+        const targetId = await resolveTargetId(params.targetId);
+        const sessionId = await attachToTarget(targetId);
         await enableDomains(sessionId);
 
         // Get the node ID of the file input

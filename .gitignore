@@ -14,6 +14,8 @@ adapters/*
 !adapters/*.template.ts
 !adapters/chrome-devtools.ts
 !adapters/chrome-devtools.README.md
+!adapters/supabase.ts
+!adapters/supabase.README.md
 !adapters/README.md
 skills/*
 !skills/.gitkeep
