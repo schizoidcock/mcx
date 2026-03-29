@@ -618,6 +618,52 @@ export function getDefaultName(source: string): string {
 }
 
 // ============================================================================
+// Context Parameter Detection (auto-select pattern)
+// ============================================================================
+
+interface ContextParam {
+  name: string;        // e.g., "project_id"
+  camelName: string;   // e.g., "projectId"
+  titleName: string;   // e.g., "ProjectId"
+  count: number;       // How many endpoints use this param
+}
+
+/**
+ * Detect the most common path parameter that should be auto-selectable.
+ * Returns null if no parameter appears in >= 50% of endpoints.
+ */
+export function detectContextParam(endpoints: ParsedEndpoint[]): ContextParam | null {
+  if (endpoints.length < 3) return null; // Too few endpoints to detect pattern
+
+  const paramCounts = new Map<string, number>();
+
+  for (const ep of endpoints) {
+    // Extract path parameters like {project_id}, {account_id}
+    const matches = ep.path.matchAll(/\{([^}]+)\}/g);
+    for (const match of matches) {
+      const paramName = match[1];
+      // Skip generic params like {id}, {version}
+      if (paramName === "id" || paramName === "version" || paramName.length < 3) continue;
+      paramCounts.set(paramName, (paramCounts.get(paramName) || 0) + 1);
+    }
+  }
+
+  // Find the most common param that appears in >= 50% of endpoints
+  let bestParam: ContextParam | null = null;
+  const threshold = endpoints.length * 0.5;
+
+  for (const [name, count] of paramCounts) {
+    if (count >= threshold && (!bestParam || count > bestParam.count)) {
+      const camelName = name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      const titleName = camelName.charAt(0).toUpperCase() + camelName.slice(1);
+      bestParam = { name, camelName, titleName, count };
+    }
+  }
+
+  return bestParam;
+}
+
+// ============================================================================
 // Code Generation
 // ============================================================================
 
@@ -711,13 +757,45 @@ export function generateAdapter(name: string, endpoints: ParsedEndpoint[], baseU
   lines.push(`}`);
   lines.push(``);
 
+  // Detect context parameter for auto-selection
+  const ctxParam = detectContextParam(endpoints);
+  if (ctxParam) {
+    lines.push(`// Auto-selection: ${ctxParam.name} can be omitted after select_${ctxParam.name.replace(/_id$/, '')}()`);
+    lines.push(`let current${ctxParam.titleName}: string | null = null;`);
+    lines.push(``);
+    lines.push(`async function resolve${ctxParam.titleName}(provided?: string): Promise<string> {`);
+    lines.push(`  if (provided) {`);
+    lines.push(`    current${ctxParam.titleName} = provided;`);
+    lines.push(`    return provided;`);
+    lines.push(`  }`);
+    lines.push(`  if (current${ctxParam.titleName}) return current${ctxParam.titleName};`);
+    lines.push(`  throw new Error('No ${ctxParam.name.replace(/_/g, ' ')} selected. Use select_${ctxParam.name.replace(/_id$/, '')}() or pass ${ctxParam.name} directly.');`);
+    lines.push(`}`);
+    lines.push(``);
+  }
+
   // Adapter definition
   lines.push(`export const ${name} = defineAdapter({`);
   lines.push(`  name: '${name}',`);
   lines.push(`  description: '${capitalize(name)} API - ${endpoints.length} endpoints',`);
   lines.push(`  tools: {`);
 
+  // Add select method if context param detected
+  if (ctxParam) {
+    const selectName = `select_${ctxParam.name.replace(/_id$/, '')}`;
+    lines.push(`    ${selectName}: {`);
+    lines.push(`      description: 'Select a ${ctxParam.name.replace(/_/g, ' ').replace(/ id$/, '')} for subsequent commands',`);
+    lines.push(`      parameters: { ${ctxParam.name}: { type: 'string', description: '${ctxParam.titleName} to select' } },`);
+    lines.push(`      execute: async (params: Record<string, unknown>) => {`);
+    lines.push(`        current${ctxParam.titleName} = params.${ctxParam.name} as string;`);
+    lines.push(`        return { success: true, selected: params.${ctxParam.name} };`);
+    lines.push(`      },`);
+    lines.push(`    },`);
+  }
+
   const seenMethods = new Set<string>();
+  if (ctxParam) seenMethods.add(`select_${ctxParam.name.replace(/_id$/, '')}`);
+
   for (const ep of endpoints) {
     let methodName = ep.methodName;
     let suffix = 1;
@@ -725,7 +803,7 @@ export function generateAdapter(name: string, endpoints: ParsedEndpoint[], baseU
       methodName = `${ep.methodName}${suffix++}`;
     }
     seenMethods.add(methodName);
-    lines.push(generateMethod(methodName, ep));
+    lines.push(generateMethod(methodName, ep, ctxParam));
   }
 
   lines.push(`  },`);
@@ -795,20 +873,28 @@ export function generateSDKAdapter(name: string, endpoints: ParsedEndpoint[], sd
   return lines.join("\n");
 }
 
-function generateMethod(methodName: string, ep: ParsedEndpoint): string {
+function generateMethod(methodName: string, ep: ParsedEndpoint, ctxParam?: ContextParam | null): string {
   const lines: string[] = [];
   const indent = "    ";
 
+  // Check if this endpoint uses the context param
+  const usesCtxParam = ctxParam && ep.path.includes(`{${ctxParam.name}}`);
+
   // SECURITY: Escape backslashes BEFORE single quotes to prevent injection
-  const desc = (ep.operation.summary || ep.operation.description || ep.path)
+  let desc = (ep.operation.summary || ep.operation.description || ep.path)
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
     .replace(/[\r\n]+/g, " ")
     .slice(0, 200);
 
+  // Add auto-select hint to description
+  if (usesCtxParam) {
+    desc = desc.replace(/\.$/, '') + `. Auto-selects current ${ctxParam!.name.replace(/_/g, ' ')}.`;
+  }
+
   lines.push(`${indent}${methodName}: {`);
   lines.push(`${indent}  description: '${desc}',`);
-  lines.push(`${indent}  parameters: ${generateParametersObject(ep)},`);
+  lines.push(`${indent}  parameters: ${generateParametersObject(ep, ctxParam)},`);
 
   // Include response schema if available
   if (ep.responseSchema) {
@@ -819,7 +905,7 @@ function generateMethod(methodName: string, ep: ParsedEndpoint): string {
   const paramName = hasParams ? "params" : "_params";
 
   lines.push(`${indent}  execute: async (${paramName}: Record<string, unknown>) => {`);
-  lines.push(`${indent}    ${generateExecuteFunction(ep)}`);
+  lines.push(`${indent}    ${generateExecuteFunction(ep, ctxParam)}`);
   lines.push(`${indent}  },`);
   lines.push(`${indent}},`);
 
@@ -879,7 +965,7 @@ function deriveSDKMethodChain(ep: ParsedEndpoint): string {
   return `${resource}.${action}`;
 }
 
-function generateParametersObject(ep: ParsedEndpoint): string {
+function generateParametersObject(ep: ParsedEndpoint, ctxParam?: ContextParam | null): string {
   const params = ep.operation.parameters || [];
   const hasRequestBody = !!ep.operation.requestBody;
 
@@ -890,11 +976,21 @@ function generateParametersObject(ep: ParsedEndpoint): string {
   for (const param of params) {
     if (param.in === "header") continue;
     const paramType = mapToParamType(param.schema);
-    const desc = (param.description || "").replace(/'/g, "\\'").replace(/[\r\n]+/g, " ").slice(0, 100);
+    let desc = (param.description || "").replace(/'/g, "\\'").replace(/[\r\n]+/g, " ").slice(0, 100);
     const safeName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(param.name) ? param.name : `'${param.name}'`;
     const example = param.example ?? param.schema?.example;
     const exampleStr = example !== undefined ? `, example: ${JSON.stringify(example)}` : "";
-    fields.push(`      ${safeName}: { type: '${paramType}', description: '${desc}'${param.required ? ", required: true" : ""}${exampleStr} }`);
+
+    // Make context param optional if it matches
+    const isCtxParam = ctxParam && param.name === ctxParam.name;
+    const required = isCtxParam ? false : param.required;
+    const requiredStr = required ? ", required: true" : "";
+
+    if (isCtxParam) {
+      desc = desc ? desc + " (optional - auto-selects)" : "(optional - auto-selects)";
+    }
+
+    fields.push(`      ${safeName}: { type: '${paramType}', description: '${desc}'${requiredStr}${exampleStr} }`);
   }
 
   if (hasRequestBody) {
@@ -921,12 +1017,20 @@ function mapToParamType(schema?: OpenAPIParameter["schema"]): string {
   }
 }
 
-function generateExecuteFunction(ep: ParsedEndpoint): string {
+function generateExecuteFunction(ep: ParsedEndpoint, ctxParam?: ContextParam | null): string {
   const { method, path: pathStr } = ep;
   const params = ep.operation.parameters || [];
 
+  // Check if this endpoint uses the context param
+  const usesCtxParam = ctxParam && pathStr.includes(`{${ctxParam.name}}`);
+
   // SECURITY: Only use path params that are valid identifiers
   const pathParams = params.filter((p) => p.in === "path" && isValidIdentifier(p.name));
+
+  // Generate resolver call for context param
+  const resolverLine = usesCtxParam
+    ? `const ${ctxParam!.name} = await resolve${ctxParam!.titleName}(params.${ctxParam!.name} as string | undefined);\n      `
+    : "";
 
   // Build URL expression with safe parameter substitution
   // SECURITY: Use escapeForTemplateLiteral since the path is embedded in a template literal
@@ -935,6 +1039,10 @@ function generateExecuteFunction(ep: ParsedEndpoint): string {
     // Only substitute params that are valid identifiers
     urlExpr = urlExpr.replace(/\{([^}]+)\}/g, (match, paramName) => {
       if (isValidIdentifier(paramName)) {
+        // Use resolved variable for context param, otherwise use params.xxx
+        if (usesCtxParam && paramName === ctxParam!.name) {
+          return `\${${paramName}}`;
+        }
         return `\${params.${paramName}}`;
       }
       // Keep original placeholder if not a valid identifier (will fail at runtime, but safely)
@@ -949,11 +1057,13 @@ function generateExecuteFunction(ep: ParsedEndpoint): string {
     : "";
 
   if (method === "get") {
-    return queryParams.length > 0 ? `return apiFetch(${urlExpr}, ${queryObj});` : `return apiFetch(${urlExpr});`;
+    return queryParams.length > 0
+      ? `${resolverLine}return apiFetch(${urlExpr}, ${queryObj});`
+      : `${resolverLine}return apiFetch(${urlExpr});`;
   } else if (method === "delete") {
-    return `return apiFetch(${urlExpr}, ${queryObj || "undefined"}, { method: 'DELETE' });`;
+    return `${resolverLine}return apiFetch(${urlExpr}, ${queryObj || "undefined"}, { method: 'DELETE' });`;
   } else {
-    return `return apiFetch(${urlExpr}, ${queryObj || "undefined"}, { method: '${method.toUpperCase()}', body: params.body });`;
+    return `${resolverLine}return apiFetch(${urlExpr}, ${queryObj || "undefined"}, { method: '${method.toUpperCase()}', body: params.body });`;
   }
 }
 
