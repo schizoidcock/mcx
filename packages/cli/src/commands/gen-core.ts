@@ -337,13 +337,29 @@ function extractCategory(filePath: string): string {
 }
 
 function generateMethodName(method: string, pathStr: string, _operation: OpenAPIOperation): string {
-  let cleaned = pathStr
-    .replace(/\{([^}]+)\}/g, "ById")
+  // Extract path params for suffix (e.g., {script_name} → ByScriptName)
+  const pathParams: string[] = [];
+  const pathWithoutParams = pathStr.replace(/\{([^}]+)\}/g, (_, param) => {
+    pathParams.push(param);
+    return "";
+  });
+
+  // Build base name from path segments
+  let cleaned = pathWithoutParams
     .replace(/[^a-zA-Z0-9]/g, " ")
     .trim()
     .split(/\s+/)
+    .filter(Boolean)
     .map((word, i) => (i === 0 ? word.toLowerCase() : capitalize(word)))
     .join("");
+
+  // Add suffix with actual param names: ByScriptName, ByProjectIdAndItemId
+  if (pathParams.length > 0) {
+    const suffix = pathParams
+      .map(p => "By" + p.split(/[_-]/).map(capitalize).join(""))
+      .join("And");
+    cleaned += suffix;
+  }
 
   const prefix =
     method === "get" ? "get" : method === "post" ? "create" : method === "put" ? "update" : method === "delete" ? "delete" : method;
@@ -1034,16 +1050,18 @@ function generateExecuteFunction(ep: ParsedEndpoint, ctxParam?: ContextParam | n
 
   // Build URL expression with safe parameter substitution
   // SECURITY: Use escapeForTemplateLiteral since the path is embedded in a template literal
+  // SECURITY: Use encodeURIComponent to prevent path traversal via special chars
   let urlExpr = `\`${escapeForTemplateLiteral(pathStr)}\``;
   if (pathParams.length > 0) {
     // Only substitute params that are valid identifiers
     urlExpr = urlExpr.replace(/\{([^}]+)\}/g, (match, paramName) => {
       if (isValidIdentifier(paramName)) {
         // Use resolved variable for context param, otherwise use params.xxx
+        // Always encodeURIComponent to handle spaces, slashes, etc.
         if (usesCtxParam && paramName === ctxParam!.name) {
-          return `\${${paramName}}`;
+          return `\${encodeURIComponent(String(${paramName}))}`;
         }
-        return `\${params.${paramName}}`;
+        return `\${encodeURIComponent(String(params.${paramName}))}`;
       }
       // Keep original placeholder if not a valid identifier (will fail at runtime, but safely)
       return match;
