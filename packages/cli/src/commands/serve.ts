@@ -865,14 +865,156 @@ async function loadAdaptersFromDir(): Promise<Adapter[]> {
   return adapters;
 }
 
+/**
+ * Levenshtein distance for fuzzy parameter name matching
+ */
+function levenshtein(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      matrix[i][j] = b[i - 1] === a[j - 1]
+        ? matrix[i - 1][j - 1]
+        : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+/**
+ * Find similar parameter names using fuzzy matching
+ */
+function findSimilarParams(name: string, validParams: string[], maxDist = 3): string[] {
+  const normalized = name.toLowerCase().replace(/[-_]/g, '');
+  return validParams
+    .map(p => ({ param: p, dist: levenshtein(normalized, p.toLowerCase().replace(/[-_]/g, '')) }))
+    .filter(x => x.dist <= maxDist && x.dist > 0)
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 2)
+    .map(x => x.param);
+}
+
+/**
+ * Generate a readable signature from parameter definitions
+ */
+function formatSignature(
+  methodName: string,
+  params: Record<string, { type: string; description?: string; required?: boolean }> | undefined
+): string {
+  if (!params || Object.keys(params).length === 0) {
+    return `${methodName}()`;
+  }
+  const paramList = Object.entries(params)
+    .map(([name, def]) => {
+      const optional = def.required === false ? '?' : '';
+      return `${name}${optional}: ${def.type}`;
+    })
+    .join(', ');
+  return `${methodName}({ ${paramList} })`;
+}
+
+/**
+ * Validate parameters and return helpful error message if invalid
+ */
+function validateParams(
+  adapterName: string,
+  methodName: string,
+  params: unknown,
+  paramDefs: Record<string, { type: string; description?: string; required?: boolean }> | undefined
+): { valid: true } | { valid: false; error: string } {
+  // No param definitions = no validation
+  if (!paramDefs || Object.keys(paramDefs).length === 0) {
+    return { valid: true };
+  }
+
+  const providedParams = (params && typeof params === 'object' && !Array.isArray(params))
+    ? params as Record<string, unknown>
+    : {};
+
+  const expectedNames = Object.keys(paramDefs);
+  const providedNames = Object.keys(providedParams);
+  const errors: string[] = [];
+  const hints: string[] = [];
+
+  // Check for missing required params
+  for (const [name, def] of Object.entries(paramDefs)) {
+    if (def.required !== false && !(name in providedParams)) {
+      errors.push(`missing required '${name}'`);
+    }
+  }
+
+  for (const provided of providedNames) {
+    if (!(provided in paramDefs)) {
+      const similar = findSimilarParams(provided, expectedNames);
+      if (similar.length > 0) {
+        hints.push(`'${provided}' → did you mean '${similar[0]}'?`);
+      } else {
+        errors.push(`unknown param '${provided}'`);
+      }
+    }
+  }
+
+  // Check types for provided params
+  for (const [name, value] of Object.entries(providedParams)) {
+    const def = paramDefs[name];
+    if (!def) continue;
+
+    const actualType = Array.isArray(value) ? 'array' : typeof value;
+    const expectedType = def.type.toLowerCase();
+
+    // Basic type checking (string, number, boolean, array, object)
+    if (expectedType === 'string' && typeof value !== 'string') {
+      errors.push(`'${name}' should be string, got ${actualType}`);
+    } else if (expectedType === 'number' && typeof value !== 'number') {
+      errors.push(`'${name}' should be number, got ${actualType}`);
+    } else if (expectedType === 'boolean' && typeof value !== 'boolean') {
+      errors.push(`'${name}' should be boolean, got ${actualType}`);
+    } else if (expectedType === 'array' && !Array.isArray(value)) {
+      errors.push(`'${name}' should be array, got ${actualType}`);
+    }
+  }
+
+  if (errors.length === 0 && hints.length === 0) {
+    return { valid: true };
+  }
+
+  // Build helpful error message
+  const signature = formatSignature(methodName, paramDefs);
+  const gotParams = providedNames.length > 0
+    ? `{ ${providedNames.join(', ')} }`
+    : '{}';
+
+  let msg = `Invalid parameters for ${adapterName}.${methodName}()\n`;
+  msg += `  Expected: ${signature}\n`;
+  msg += `  Received: ${gotParams}`;
+
+  if (errors.length > 0) {
+    msg += `\n  Errors: ${errors.join('; ')}`;
+  }
+  if (hints.length > 0) {
+    msg += `\n  Hints: ${hints.join('; ')}`;
+  }
+
+  return { valid: false, error: msg };
+}
+
 function buildAdapterContext(adapters: Adapter[]): Record<string, Record<string, (params: unknown) => Promise<unknown>>> {
   const ctx: Record<string, Record<string, (params: unknown) => Promise<unknown>>> = {};
 
   for (const adapter of adapters) {
     const methods: Record<string, (params: unknown) => Promise<unknown>> = {};
     for (const [methodName, method] of Object.entries(adapter.tools)) {
-      // Wrap execute to ensure params is always an object (prevents destructuring errors)
-      methods[methodName] = (params: unknown) => method.execute((params ?? {}) as Record<string, unknown>);
+      // Wrap execute with parameter validation
+      methods[methodName] = async (params: unknown) => {
+        const validation = validateParams(adapter.name, methodName, params, method.parameters);
+        if (!validation.valid) {
+          throw new Error(validation.error);
+        }
+        return method.execute((params ?? {}) as Record<string, unknown>);
+      };
     }
 
     // Register under original name
