@@ -412,7 +412,23 @@ export class BunWorkerSandbox implements ISandbox {
             const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
             const fn = new AsyncFunction(data.code);
             const result = await fn();
-            self.postMessage({ type: 'result', success: true, value: result, logs });
+
+            // SECURITY: Hard cap on output size to prevent OOM
+            const HARD_CAP_BYTES = 100 * 1024 * 1024; // 100MB
+            const serialized = safeStr(result);
+            if (serialized.length > HARD_CAP_BYTES) {
+              self.postMessage({
+                type: 'result',
+                success: false,
+                error: {
+                  name: 'OutputSizeError',
+                  message: 'Output exceeds 100MB limit. Use pagination or filtering.'
+                },
+                logs
+              });
+            } else {
+              self.postMessage({ type: 'result', success: true, value: result, logs });
+            }
           } catch (err) {
             // Truncate stack to 5 lines to prevent context bloat
             const stack = err.stack ? err.stack.split('\\n').slice(0, 5).join('\\n') : undefined;
