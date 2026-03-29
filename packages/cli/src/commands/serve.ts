@@ -104,6 +104,11 @@ const DANGEROUS_ENV_KEYS = new Set([
   "TEMP",
 ]);
 
+/** Check if an env key is in the dangerous list (case-insensitive) */
+function isDangerousEnvKey(key: string): boolean {
+  return DANGEROUS_ENV_KEYS.has(key.toUpperCase()) || DANGEROUS_ENV_KEYS.has(key);
+}
+
 /**
  * Load environment variables from a .env file
  * Returns the number of variables loaded
@@ -140,7 +145,7 @@ async function loadEnvFromPath(envPath: string, label: string): Promise<number> 
       }
 
       // SECURITY: Block dangerous environment variables
-      if (DANGEROUS_ENV_KEYS.has(key.toUpperCase()) || DANGEROUS_ENV_KEYS.has(key)) {
+      if (isDangerousEnvKey(key)) {
         console.error(pc.yellow(`Warning: Skipped dangerous env key "${key}" in ${label}`));
         skipped++;
         continue;
@@ -180,6 +185,15 @@ async function loadEnvFile(): Promise<void> {
 // SSRF Protection
 // ============================================================================
 
+// Cloud metadata endpoints (AWS, GCP, Azure, DigitalOcean, etc.)
+const CLOUD_METADATA_HOSTS = new Set([
+  "169.254.169.254",           // AWS/GCP/Azure metadata
+  "metadata.google.internal",   // GCP
+  "metadata.goog",              // GCP alternate
+  "169.254.170.2",              // AWS ECS task metadata
+  "fd00:ec2::254",              // AWS IPv6 metadata
+]);
+
 /**
  * SECURITY: Block requests to internal/private IP addresses and cloud metadata endpoints.
  * Prevents Server-Side Request Forgery (SSRF) attacks.
@@ -194,15 +208,7 @@ function isBlockedUrl(url: string): { blocked: boolean; reason?: string } {
 
   const hostname = parsed.hostname.toLowerCase();
 
-  // Block cloud metadata endpoints (AWS, GCP, Azure, DigitalOcean, etc.)
-  const metadataHosts = [
-    "169.254.169.254",           // AWS/GCP/Azure metadata
-    "metadata.google.internal",   // GCP
-    "metadata.goog",              // GCP alternate
-    "169.254.170.2",              // AWS ECS task metadata
-    "fd00:ec2::254",              // AWS IPv6 metadata
-  ];
-  if (metadataHosts.includes(hostname)) {
+  if (CLOUD_METADATA_HOSTS.has(hostname)) {
     return { blocked: true, reason: "Cloud metadata endpoint blocked" };
   }
 
@@ -800,7 +806,7 @@ async function loadConfig(): Promise<MCXConfig | null> {
         if (value === undefined || value === null) continue;
 
         // SECURITY: Block dangerous environment variables from config.env
-        if (DANGEROUS_ENV_KEYS.has(key.toUpperCase()) || DANGEROUS_ENV_KEYS.has(key)) {
+        if (isDangerousEnvKey(key)) {
           console.error(pc.yellow(`Warning: Skipped dangerous env key "${key}" in config.env`));
           continue;
         }
