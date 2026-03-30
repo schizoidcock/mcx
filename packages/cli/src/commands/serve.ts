@@ -1089,20 +1089,26 @@ async function createMcxServerCore(
     return `exec_${executionCounter}`;
   }
 
-  // Method frecency tracker - counts how often each adapter.method is used
+  // Method frecency tracker - counts adapter.method usage for search ranking
   const methodUsage = new Map<string, number>();
+  const METHOD_USAGE_CAP = 500; // Prevent unbounded growth in long sessions
+  const METHOD_PATTERN = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+  const adapterNamesCache = new Set(Object.keys(adapterContext || {}));
 
   function trackMethodUsage(code: string): void {
-    // Extract adapter.method patterns from code
-    // Matches: adapter.method( or adapter.methodName(
-    const methodPattern = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
-    const adapterNames = new Set(Object.keys(adapterContext || {}));
+    METHOD_PATTERN.lastIndex = 0; // Reset regex state
     let match;
-    while ((match = methodPattern.exec(code)) !== null) {
+    while ((match = METHOD_PATTERN.exec(code)) !== null) {
       const [, adapterName, methodName] = match;
-      if (adapterNames.has(adapterName)) {
+      if (adapterNamesCache.has(adapterName)) {
         const key = `${adapterName}.${methodName}`;
         methodUsage.set(key, (methodUsage.get(key) || 0) + 1);
+        // Evict least-used entry if over cap
+        if (methodUsage.size > METHOD_USAGE_CAP) {
+          let minKey = '', minVal = Infinity;
+          for (const [k, v] of methodUsage) { if (v < minVal) { minKey = k; minVal = v; } }
+          if (minKey) methodUsage.delete(minKey);
+        }
       }
     }
   }
@@ -1234,11 +1240,11 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               if (seen.has(key) || filePath.includes('node_modules') || filePath.includes('dist/')) continue;
               seen.add(key);
 
-              // Try to grep around the line
+              // Try to find file and show context
               try {
-                const grepResult = fileFinder.grep(`${filePath}`, { pageLimit: 1 });
-                if (grepResult.ok && grepResult.value.items.length > 0) {
-                  const file = grepResult.value.items[0];
+                const searchResult = fileFinder.fileSearch(filePath, { pageSize: 1 });
+                if (searchResult.ok && searchResult.value.items.length > 0) {
+                  const file = searchResult.value.items[0];
                   const content = await readFile(file.path, 'utf-8');
                   const lines = content.split('\n');
                   const start = Math.max(0, lineNum - 3);
