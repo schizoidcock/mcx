@@ -51,11 +51,14 @@ mcx_execute({ code: "await api.list()", truncate: false })
 
 ## `mcx gen`
 
-Generate adapters from OpenAPI specs. Run without arguments for interactive TUI mode.
+Generate adapters from OpenAPI specs. Run without arguments for smart discovery or interactive TUI mode.
 
 ```bash
-# Interactive TUI (recommended)
+# Smart discovery - auto-finds OpenAPI specs and SDKs in current directory
 mcx gen
+
+# Interactive TUI
+mcx gen -i
 
 # CLI mode - single file
 mcx gen ./api-docs/users.md -n users
@@ -78,6 +81,32 @@ Options:
 ```
 
 **Filtering:** Patterns match against category (folder name) or method name. Case-insensitive partial matching.
+
+### Smart Discovery
+
+When run without a source argument, MCX uses FFF (Fast File Finder) to discover potential adapter sources before launching the TUI:
+
+```bash
+mcx gen
+# 🔍 Searching for adapter sources...
+# Found 5 potential sources
+#
+# 🔍 Discovered potential sources:
+#   1. [OpenAPI] api/openapi.yaml
+#   2. [OpenAPI] specs/users.json
+#   3. [SDK] src/api-client.ts
+#   4. [SDK] lib/sdk.ts
+# ...
+# Select source (1-4) or press Enter to skip:
+```
+
+**Discovery targets (in addition to .md files):**
+- **OpenAPI specs** - `.yaml`, `.yml`, `.json` files containing `openapi` field
+- **SDK files** - `.ts` files with `client`, `api`, or `sdk` in the name
+
+> **Note:** The primary source for adapter generation remains **Markdown files** containing OpenAPI specs in code blocks. Smart discovery provides additional options for raw OpenAPI files and existing SDK patterns.
+
+If no sources are found or you skip selection, the interactive TUI launches where you can browse for `.md` files.
 
 ### Interactive TUI
 

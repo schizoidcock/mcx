@@ -2,6 +2,124 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.11] - 2026-03-30
+
+### New Tools
+- **mcx_doctor** - Diagnostics: Bun runtime, SQLite/FTS5, adapters, sandbox, FFF, version
+- **mcx_upgrade** - Get self-upgrade command for latest version
+
+### Features
+- **TTL Cache for URLs** - mcx_fetch caches for 24h, use `force:true` to bypass
+- **Retry utilities** - `fetchWithRetry()` and `withRetry()` with jittered exponential backoff
+
+### Internal
+- Added `src/utils/retry.ts` with retry utilities
+- URL cache tracks sourceId, indexedAt, label
+
+---
+
+## [0.3.10] - 2026-03-30
+
+### Code Quality
+- **Shared utilities** - Extracted `FileFinder` type and `coerceJsonArray` to `src/utils/`
+- **Consistent path filtering** - New `isExcludedPath()` helper for node_modules/dist checks
+- **Memory safety** - Added vocabulary cap (10K words) to prevent unbounded growth
+- **WAL checkpoint fix** - Only runs for file-based DBs, not :memory:
+
+---
+
+## [0.3.9] - 2026-03-30
+
+### Improvements
+- **WAL Checkpoint on close** - SQLite WAL checkpoint before closing for data consistency
+- **Double-JSON coercion** - Fix for Claude Code bug that sends arrays as JSON strings
+
+### Internal
+- Added `coerceJsonArray()` helper for robust array parsing in Zod schemas
+- Store.close() now runs `PRAGMA wal_checkpoint(TRUNCATE)` before closing
+
+---
+
+## [0.3.8] - 2026-03-30
+
+### New Features
+- **mcx_related** - New tool to find related files by analyzing imports/exports
+  - Shows files that the target imports
+  - Shows files that import the target
+  - Shows sibling files with similar names
+  - Filters out node_modules automatically
+
+- **Smart adapter discovery** in `mcx gen`
+  - Auto-discovers OpenAPI specs (yaml/json) and SDK files when no source provided
+  - Interactive selection from discovered sources
+  - Uses FFF for fast file search
+
+### Performance
+- Parallelized file existence checks in import resolution (8 extensions checked concurrently)
+- Parallelized import resolution for mcx_related
+- Hoisted IMPORT_REGEX to module scope (avoids recreation per call)
+
+### Code Quality
+- Consolidated FileFinder type definitions (gen.ts now uses same pattern as serve.ts)
+- Added RelationType union type for type-safe relation handling
+- Fixed FFF `basePath` parameter (was incorrectly using `root`)
+
+---
+
+## [0.3.7] - 2026-03-30
+
+### FFF Deep Integration (Phase 2)
+- **Fuzzy path resolution** in mcx_file - partial paths resolved via FFF
+- **Method frecency tracking** in mcx_search - frequently used methods ranked higher
+- **Auto-fetch error context** - stack traces show source code automatically
+
+### Bug Fixes
+- Fixed FFF native binary auto-install via optionalDependencies
+- Added platform binaries for darwin-arm64, darwin-x64, linux-x64-gnu, win32-x64
+
+---
+
+## [0.3.6] - 2026-03-29
+
+### Testing
+- Added comprehensive tests for security utilities (SSRF, env denylist)
+- Added tests for generator features (method names, URL encoding)
+- 145 tests total, 251 assertions
+
+### Infrastructure
+- FFF cleanup on server shutdown
+- Graceful handling when FFF binary unavailable
+
+---
+
+## [0.3.5] - 2026-03-28
+
+### Generator Improvements
+- Improved generated adapter method names (cleaner, more idiomatic)
+- URL-safe path parameter encoding with encodeURIComponent
+
+### Refactoring
+- Simplified SSRF and environment key security checks
+- Extracted security utilities to `src/utils/security.ts`
+
+---
+
+## [0.3.4] - 2026-03-27
+
+### New Features
+- **FFF Integration** - Fast File Finder for SIMD-accelerated search
+  - `mcx_find` - Fuzzy file search with frecency ranking
+  - `mcx_grep` - Content search across files
+- Auto-select context parameter in generated adapters
+- Auto-select pattern for chrome-devtools and supabase adapters
+
+### Security
+- SSRF protection - blocks private IPs, cloud metadata endpoints, localhost
+- Environment variable denylist - blocks ~45 dangerous vars (NODE_OPTIONS, LD_PRELOAD, etc.)
+- Output hard cap at 100MB
+
+---
+
 ## [0.3.3] - 2026-03-09
 
 ### Advanced Tool Use (Anthropic Best Practices)

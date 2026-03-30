@@ -148,4 +148,19 @@ describe('ContentStore', () => {
       expect(store.getVocabulary().size).toBe(0);
     });
   });
+
+  describe('close()', () => {
+    test('closes without error after indexing', () => {
+      const tempStore = new ContentStore(':memory:');
+      tempStore.index('Test content', 'test-source');
+      // Should not throw - includes WAL checkpoint
+      expect(() => tempStore.close()).not.toThrow();
+    });
+
+    test('closes without error on empty store', () => {
+      const tempStore = new ContentStore(':memory:');
+      // Should not throw even with no data
+      expect(() => tempStore.close()).not.toThrow();
+    });
+  });
 });

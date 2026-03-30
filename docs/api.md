@@ -41,7 +41,7 @@ const skillResult = await executor.runSkill('daily-summary', {
 
 ## MCP Tools
 
-MCX exposes eight tools to the AI agent:
+MCX exposes eleven tools to the AI agent:
 
 | Tool | Description |
 |------|-------------|
@@ -50,6 +50,9 @@ MCX exposes eight tools to the AI agent:
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
 | `mcx_file` | Process local files with `$file` variable injection |
 | `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing |
+| `mcx_find` | Fast fuzzy file search with frecency ranking |
+| `mcx_grep` | SIMD-accelerated content search across files |
+| `mcx_related` | Find related files by analyzing imports/exports |
 | `mcx_list` | List available adapters and skills |
 | `mcx_stats` | Session statistics (indexed content, variables) |
 | `mcx_run_skill` | Run a named skill with optional inputs |
@@ -152,6 +155,62 @@ mcx_fetch({
   code: "$content.split('## ').length"  // $content is markdown
 })
 ```
+
+### mcx_find
+
+Fast fuzzy file search powered by FFF (Fast File Finder):
+
+```typescript
+mcx_find({ query: "serve.ts" })           // Fuzzy match filename
+mcx_find({ query: "*.ts" })               // Extension filter
+mcx_find({ query: "!test" })              // Exclude pattern
+mcx_find({ query: "src/" })               // Path contains
+mcx_find({ query: "status:modified" })    // Git modified files
+mcx_find({ query: "config", limit: 5 })   // Limit results
+```
+
+Results are ranked by match score + frecency (recently accessed files boosted) + git status.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | required | Search query (supports glob, exclusion, path filters) |
+| `limit` | number | `20` | Max results to return |
+
+### mcx_grep
+
+SIMD-accelerated content search across files:
+
+```typescript
+mcx_grep({ query: "TODO" })                    // Plain text search
+mcx_grep({ query: "*.ts useState" })           // Search in TypeScript files
+mcx_grep({ query: "src/ handleClick" })        // Search in directory
+mcx_grep({ query: "error", mode: "regex" })    // Regex mode
+mcx_grep({ query: "improt", mode: "fuzzy" })   // Typo-tolerant fuzzy
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | required | Search pattern (prefix with `*.ext` or `path/` to filter) |
+| `mode` | string | `"plain"` | Search mode: `plain`, `regex`, or `fuzzy` |
+| `limit` | number | `50` | Max matches to return |
+
+### mcx_related
+
+Find files related to a given file by analyzing imports and exports:
+
+```typescript
+mcx_related({ file: "src/commands/serve.ts" })
+// Returns:
+// - Files that this file imports
+// - Files that import this file
+// - Sibling files with similar names (e.g., serve.test.ts)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `file` | string | File path to find related files for |
+
+Useful for understanding code dependencies before making changes.
 
 ## Built-in Helpers
 

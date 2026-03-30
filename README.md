@@ -108,6 +108,7 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 | **Context Efficiency** | Filtering happens in sandbox, model sees results only |
 | **Variable Persistence** | Store results as `$invoices`, `$customers` for later use |
 | **FTS5 Search** | Auto-index large outputs, search with `intent` parameter |
+| **FFF Integration** | Fast fuzzy file search, content grep, import analysis |
 | **Batch Operations** | `mcx_batch` for multiple operations in one call |
 | **File Processing** | `mcx_file` to process local files with `$file` injection |
 | **URL Fetching** | `mcx_fetch` with HTML-to-markdown conversion |
@@ -124,6 +125,9 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
 | `mcx_file` | Process local files with `$file` variable injection |
 | `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing |
+| `mcx_find` | Fast fuzzy file search with frecency ranking |
+| `mcx_grep` | SIMD-accelerated content search across files |
+| `mcx_related` | Find related files by imports/exports analysis |
 | `mcx_list` | List available adapters and skills |
 | `mcx_stats` | Session statistics (indexed content, variables) |
 | `mcx_run_skill` | Run a registered skill |

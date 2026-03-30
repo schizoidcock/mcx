@@ -11,13 +11,18 @@ import { extractSnippet } from './snippets.js';
  * - BM25 ranking (relevance scoring)
  * - Trigram index for substring matching
  */
+// Max vocabulary size to prevent unbounded memory growth
+const VOCABULARY_CAP = 10000;
+
 export class ContentStore {
   private db: Database;
   private vocabulary: Set<string>;
+  private isFileDb: boolean;
 
   constructor(dbPath = ':memory:') {
     this.db = new Database(dbPath);
     this.vocabulary = new Set();
+    this.isFileDb = dbPath !== ':memory:';
     this.initialize();
   }
 
@@ -93,12 +98,15 @@ export class ContentStore {
         insertChunk.run(chunk.title, chunk.content, sourceId, contentType);
         insertTrigram.run(chunk.title, chunk.content, sourceId);
 
-        // Build vocabulary
-        const words = chunk.content.toLowerCase().match(/\b[a-z_][a-z0-9_]*\b/g) || [];
-        for (const word of words) {
-          if (word.length >= 3) {
-            insertWord.run(word);
-            this.vocabulary.add(word);
+        // Build vocabulary (capped to prevent unbounded memory)
+        if (this.vocabulary.size < VOCABULARY_CAP) {
+          const words = chunk.content.toLowerCase().match(/\b[a-z_][a-z0-9_]*\b/g) || [];
+          for (const word of words) {
+            if (word.length >= 3) {
+              insertWord.run(word);
+              this.vocabulary.add(word);
+              if (this.vocabulary.size >= VOCABULARY_CAP) break;
+            }
           }
         }
       }
@@ -254,8 +262,16 @@ export class ContentStore {
 
   /**
    * Close the database connection.
+   * Runs WAL checkpoint for file-based DBs.
    */
   close(): void {
+    if (this.isFileDb) {
+      try {
+        this.db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+      } catch {
+        // Ignore checkpoint errors on close
+      }
+    }
     this.db.close();
   }
 

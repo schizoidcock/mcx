@@ -183,7 +183,7 @@ program
       readOnly: options.readOnly,
       include: options.include,
       exclude: options.exclude,
-      interactive: !source,
+      // Don't auto-set interactive - let genCommand try discovery first
     });
   }));
 

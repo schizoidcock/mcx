@@ -18,7 +18,12 @@
  * - Supports stdio and HTTP transports
  */
 
+import * as path from "node:path";
 import { join, basename, extname } from "node:path";
+
+// Hoisted regex for import extraction (avoids recreation per call)
+const IMPORT_REGEX = /(?:import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
+const RESOLVE_EXTENSIONS = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"];
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -28,9 +33,9 @@ import { z } from "zod";
 import pc from "picocolors";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
 
-// FFF types - lazy loaded to avoid native binary requirement
-type FileFinder = Awaited<ReturnType<typeof import("@ff-labs/fff-bun")>>["FileFinder"] extends { create: (opts: unknown) => { ok: true; value: infer T } } ? T : never;
 import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
+import { type FileFinder, isExcludedPath } from "../utils/fff";
+import { coerceJsonArray } from "../utils/zod";
 import { isDangerousEnvKey, isBlockedUrl } from "../utils/security";
 import { logger } from "../utils/logger";
 import { getContentStore, searchWithFallback, getDistinctiveTerms, batchSearch, htmlToMarkdown, isHtml } from "../search";
@@ -241,7 +246,7 @@ const SearchInputSchema = z.object({
     .optional()
     .describe("JS code to explore $spec. Example: Object.keys($spec.adapters) or $spec.adapters.stripe.tools"),
   // Mode 2: FTS5 content search (queries)
-  queries: z.array(z.string())
+  queries: coerceJsonArray(z.array(z.string()))
     .optional()
     .describe("FTS5 search queries for indexed content (from mcx_execute with intent)"),
   source: z.string()
@@ -274,13 +279,13 @@ const SearchInputSchema = z.object({
 }).strict();
 
 const BatchInputSchema = z.object({
-  executions: z.array(z.object({
+  executions: coerceJsonArray(z.array(z.object({
     code: z.string().describe("Code to execute"),
     storeAs: z.string().optional().describe("Variable name to store result"),
-  }))
+  })))
     .optional()
     .describe("Array of code executions to run sequentially"),
-  queries: z.array(z.string())
+  queries: coerceJsonArray(z.array(z.string()))
     .optional()
     .describe("FTS5 search queries to run on indexed content"),
   source: z.string()
@@ -1094,6 +1099,7 @@ async function createMcxServerCore(
   const METHOD_USAGE_CAP = 500; // Prevent unbounded growth in long sessions
   const METHOD_PATTERN = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
   const adapterNamesCache = new Set(Object.keys(adapterContext || {}));
+  let fileFinder: FileFinder | null = null; // Forward declaration for trackMethodUsage
 
   function trackMethodUsage(code: string): void {
     METHOD_PATTERN.lastIndex = 0; // Reset regex state
@@ -1103,6 +1109,10 @@ async function createMcxServerCore(
       if (adapterNamesCache.has(adapterName)) {
         const key = `${adapterName}.${methodName}`;
         methodUsage.set(key, (methodUsage.get(key) || 0) + 1);
+        // Persist to FFF frecency DB for cross-session tracking
+        if (fileFinder) {
+          try { fileFinder.trackQuery(key); } catch { /* ignore */ }
+        }
         // Evict least-used entry if over cap
         if (methodUsage.size > METHOD_USAGE_CAP) {
           let minKey = '', minVal = Infinity;
@@ -1118,7 +1128,6 @@ async function createMcxServerCore(
   }
 
   // Initialize FFF (Fast File Finder) for fuzzy search - optional, graceful fallback
-  let fileFinder: FileFinder | null = null;
   try {
     const { FileFinder: FF } = await import("@ff-labs/fff-bun");
     const fffInit = FF.create({
@@ -1237,22 +1246,29 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               const [, filePath, lineStr] = match;
               const lineNum = parseInt(lineStr, 10);
               const key = `${filePath}:${lineNum}`;
-              if (seen.has(key) || filePath.includes('node_modules') || filePath.includes('dist/')) continue;
+              if (seen.has(key) || isExcludedPath(filePath)) continue;
               seen.add(key);
 
-              // Try to find file and show context
+              // Try to find file and show context (read max 100KB for efficiency)
               try {
                 const searchResult = fileFinder.fileSearch(filePath, { pageSize: 1 });
                 if (searchResult.ok && searchResult.value.items.length > 0) {
                   const file = searchResult.value.items[0];
-                  const content = await readFile(file.path, 'utf-8');
+                  const bunFile = Bun.file(file.path);
+                  const size = bunFile.size;
+                  // Read only first 100KB - enough for most source files
+                  const maxRead = Math.min(size, 100 * 1024);
+                  const content = await bunFile.slice(0, maxRead).text();
                   const lines = content.split('\n');
-                  const start = Math.max(0, lineNum - 3);
-                  const end = Math.min(lines.length, lineNum + 2);
-                  const snippet = lines.slice(start, end)
-                    .map((l, i) => `${start + i + 1}${start + i + 1 === lineNum ? '>' : ' '} ${l}`)
-                    .join('\n');
-                  contextSection += `\n\n## Context: ${file.relativePath}:${lineNum}\n\`\`\`\n${snippet}\n\`\`\``;
+                  // Skip if target line is beyond what we read
+                  if (lineNum <= lines.length) {
+                    const start = Math.max(0, lineNum - 3);
+                    const end = Math.min(lines.length, lineNum + 2);
+                    const snippet = lines.slice(start, end)
+                      .map((l, i) => `${start + i + 1}${start + i + 1 === lineNum ? '>' : ' '} ${l}`)
+                      .join('\n');
+                    contextSection += `\n\n## Context: ${file.relativePath}:${lineNum}\n\`\`\`\n${snippet}\n\`\`\``;
+                  }
                 }
               } catch {
                 // Ignore context fetch errors
@@ -2177,19 +2193,23 @@ $file shape:
           }
 
           // Fuzzy search for file
-          const searchResult = fileFinder.fileSearch(params.path, { pageSize: 5 });
+          const searchResult = fileFinder.fileSearch(params.path, { pageSize: 3 });
           if (!searchResult.ok || searchResult.value.items.length === 0) {
             throw new Error(`File not found: ${params.path}`);
           }
 
           const matches = searchResult.value.items;
-          if (matches.length === 1 || (matches.length > 1 && searchResult.value.scores[0].total > searchResult.value.scores[1].total * 1.5)) {
+          const scores = searchResult.value.scores;
+          // Auto-resolve if single match, high absolute score (>0.8), or 2x better than second
+          if (matches.length === 1 || scores[0].total > 0.8 || (matches.length > 1 && scores[0].total > scores[1].total * 2)) {
             // Single match or clear winner - use it
             resolvedPath = matches[0].path;
             content = await readFile(resolvedPath, 'utf-8');
           } else {
-            // Multiple ambiguous matches - return suggestions
-            const suggestions = matches.slice(0, 5).map(m => `  - ${m.relativePath}`).join('\n');
+            // Filter suggestions to only those within 50% of top score
+            const topScore = scores[0].total;
+            const relevantMatches = matches.filter((_, i) => scores[i].total >= topScore * 0.5);
+            const suggestions = relevantMatches.slice(0, 3).map(m => `  - ${m.relativePath}`).join('\n');
             return {
               content: [{ type: "text" as const, text: `Multiple matches for "${params.path}":\n${suggestions}\n\nSpecify full path or be more specific.` }],
               isError: true,
@@ -2289,10 +2309,14 @@ $file shape:
     }
   );
 
-  // Tool: mcx_fetch
+  // Tool: mcx_fetch with TTL cache
+  const URL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  const urlCache = new Map<string, { sourceId: number; indexedAt: number; label: string }>();
+
   const FetchInputSchema = z.object({
     url: z.string().describe("URL to fetch"),
-    queries: z.array(z.string()).optional().describe("Search after indexing"),
+    queries: coerceJsonArray(z.array(z.string())).optional().describe("Search after indexing"),
+    force: z.boolean().optional().default(false).describe("Bypass cache and re-fetch"),
   });
   type FetchInput = z.infer<typeof FetchInputSchema>;
 
@@ -2301,11 +2325,13 @@ $file shape:
     {
       title: "Fetch and Index URL",
       description: `Fetch URL and index content. Returns summary + distinctive terms.
+Caches for 24h - use force:true to bypass.
 
 Use for: API docs, OpenAPI specs, external documentation.
 Examples:
 - mcx_fetch({ url: "https://api.example.com/openapi.json" })
-- mcx_fetch({ url: "https://docs.example.com/guide", queries: ["auth", "api key"] })`,
+- mcx_fetch({ url: "https://docs.example.com/guide", queries: ["auth", "api key"] })
+- mcx_fetch({ url: "...", force: true }) // bypass cache`,
       inputSchema: FetchInputSchema,
       annotations: {
         readOnlyHint: true,
@@ -2316,6 +2342,38 @@ Examples:
     },
     async (params: FetchInput) => {
       try {
+        // Check cache first (unless force=true)
+        const cached = urlCache.get(params.url);
+        if (cached && !params.force) {
+          const age = Date.now() - cached.indexedAt;
+          if (age < URL_CACHE_TTL_MS) {
+            const ageStr = age < 60000 ? `${Math.floor(age / 1000)}s` :
+                           age < 3600000 ? `${Math.floor(age / 60000)}m` :
+                           `${Math.floor(age / 3600000)}h`;
+            const store = getContentStore();
+
+            // Optional immediate search on cached content
+            const output: string[] = [
+              `Cached "${cached.label}" (${ageStr} ago)`,
+              `Use force:true to re-fetch`,
+            ];
+
+            if (params.queries?.length) {
+              output.push('');
+              output.push('Search Results:');
+              const batchResults = batchSearch(store, params.queries, { limit: 3, sourceId: cached.sourceId });
+              for (const [query, results] of Object.entries(batchResults)) {
+                output.push(`  "${query}": ${results.length} matches`);
+                for (const r of results.slice(0, 2)) {
+                  output.push(`    - ${r.snippet.slice(0, 100)}...`);
+                }
+              }
+            }
+
+            return { content: [{ type: "text" as const, text: output.join('\n') }] };
+          }
+        }
+
         // SECURITY: Block SSRF attacks to internal/private addresses
         const ssrfCheck = isBlockedUrl(params.url);
         if (ssrfCheck.blocked) {
@@ -2367,6 +2425,9 @@ Examples:
         const sourceId = store.index(content, label, { contentType: 'plaintext' });
         const chunks = store.getChunkCount(sourceId);
         const terms = getDistinctiveTerms(store.getChunks(sourceId));
+
+        // Update cache
+        urlCache.set(params.url, { sourceId, indexedAt: Date.now(), label });
 
         const output: string[] = [
           `Indexed "${label}": ${chunks} sections, ${content.length} chars`,
@@ -2426,11 +2487,15 @@ Examples:
         throttleStatus = 'blocked';
       }
 
-      // Get top used methods for frecency display
+      // Get top used methods for frecency display (abbreviated to save tokens)
+      const abbreviate = (s: string, max = 8) => s.length > max ? s.slice(0, max) : s;
       const topMethods = [...methodUsage.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
-        .map(([method, count]) => `${method}(${count})`);
+        .map(([method, count]) => {
+          const [adapter, fn] = method.split('.');
+          return `${abbreviate(adapter, 4)}.${abbreviate(fn)}(${count})`;
+        });
 
       const output = [
         'Session Stats',
@@ -2452,6 +2517,121 @@ Examples:
           output.push(`  ... and ${sources.length - 10} more`);
         }
       }
+
+      return { content: [{ type: "text" as const, text: output.join('\n') }] };
+    }
+  );
+
+  // Tool: mcx_doctor (Diagnostics)
+  server.registerTool(
+    "mcx_doctor",
+    {
+      title: "MCX Diagnostics",
+      description: "Run diagnostics to check MCX health: runtime, database, adapters, sandbox.",
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const checks: Array<{ name: string; status: "pass" | "warn" | "fail"; detail: string }> = [];
+
+      // 1. Bun runtime
+      try {
+        const bunVersion = Bun.version;
+        checks.push({ name: "Bun runtime", status: "pass", detail: `v${bunVersion}` });
+      } catch {
+        checks.push({ name: "Bun runtime", status: "fail", detail: "Not available" });
+      }
+
+      // 2. SQLite/FTS5
+      try {
+        const store = getContentStore();
+        const sources = store.getSources();
+        checks.push({ name: "SQLite/FTS5", status: "pass", detail: `${sources.length} sources indexed` });
+      } catch (e) {
+        checks.push({ name: "SQLite/FTS5", status: "fail", detail: String(e) });
+      }
+
+      // 3. Adapters loaded
+      const adapterCount = adapters.length;
+      const lazyCount = adapters.filter(a => a.__lazy).length;
+      if (adapterCount > 0) {
+        const detail = lazyCount > 0 ? `${adapterCount} loaded (${lazyCount} lazy)` : `${adapterCount} loaded`;
+        checks.push({ name: "Adapters", status: "pass", detail });
+      } else {
+        checks.push({ name: "Adapters", status: "warn", detail: "None loaded" });
+      }
+
+      // 4. Sandbox test
+      try {
+        const sandbox = new BunWorkerSandbox({ timeout: 1000 });
+        const result = await sandbox.run("return 1 + 1", {}, { returnRaw: true });
+        await sandbox.close();
+        if (result === 2) {
+          checks.push({ name: "Sandbox", status: "pass", detail: "Execution OK" });
+        } else {
+          checks.push({ name: "Sandbox", status: "warn", detail: `Unexpected result: ${result}` });
+        }
+      } catch (e) {
+        checks.push({ name: "Sandbox", status: "fail", detail: String(e) });
+      }
+
+      // 5. FFF (optional)
+      if (fileFinder) {
+        checks.push({ name: "FFF", status: "pass", detail: "Initialized" });
+      } else {
+        checks.push({ name: "FFF", status: "warn", detail: "Not available (optional)" });
+      }
+
+      // 6. MCX version
+      const pkg = await import("../../package.json");
+      checks.push({ name: "Version", status: "pass", detail: `v${pkg.version}` });
+
+      // Format output
+      const icon = (s: "pass" | "warn" | "fail") => s === "pass" ? "[x]" : s === "warn" ? "[~]" : "[ ]";
+      const output = [
+        "MCX Diagnostics",
+        "───────────────",
+        ...checks.map(c => `${icon(c.status)} ${c.name}: ${c.detail}`),
+        "",
+        `${checks.filter(c => c.status === "pass").length}/${checks.length} checks passed`,
+      ];
+
+      return { content: [{ type: "text" as const, text: output.join('\n') }] };
+    }
+  );
+
+  // Tool: mcx_upgrade
+  server.registerTool(
+    "mcx_upgrade",
+    {
+      title: "MCX Self-Upgrade",
+      description: "Get command to upgrade MCX to latest version.",
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const pkg = await import("../../package.json");
+      const currentVersion = pkg.version;
+      const upgradeCmd = "bun add -g @papicandela/mcx-cli@latest";
+
+      const output = [
+        `Current: v${currentVersion}`,
+        "",
+        "To upgrade, run:",
+        `  ${upgradeCmd}`,
+        "",
+        "Then restart your MCP session.",
+      ];
 
       return { content: [{ type: "text" as const, text: output.join('\n') }] };
     }
@@ -2603,6 +2783,151 @@ Modes:
     }
   );
 
+  // Tool: mcx_related (find related files by imports/exports)
+  const RelatedInputSchema = z.object({
+    file: z.string().describe("File path to find related files for"),
+  });
+  type RelatedInput = z.infer<typeof RelatedInputSchema>;
+
+  server.registerTool(
+    "mcx_related",
+    {
+      title: "Find Related Files",
+      description: `Find files related to a given file by analyzing imports and exports.
+
+Returns:
+- Files that import the given file
+- Files that the given file imports
+- Files with similar names in the same directory
+
+Useful for understanding code dependencies before making changes.`,
+      inputSchema: RelatedInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (params: RelatedInput) => {
+      const targetFile = params.file;
+      type RelationType = "imports" | "imported-by" | "sibling";
+      const related = new Map<string, { relation: RelationType }>();
+
+      // Helper to extract import paths from file content (uses hoisted IMPORT_REGEX)
+      const extractImports = (content: string): string[] => {
+        const imports: string[] = [];
+        IMPORT_REGEX.lastIndex = 0; // Reset stateful regex
+        let match;
+        while ((match = IMPORT_REGEX.exec(content)) !== null) {
+          const importPath = match[1] || match[2];
+          if (importPath && !importPath.startsWith("node_modules")) {
+            imports.push(importPath);
+          }
+        }
+        return imports;
+      };
+
+      // Resolve relative import to absolute path (parallel extension check)
+      const resolveImport = async (fromFile: string, importPath: string): Promise<string | null> => {
+        if (!importPath.startsWith(".")) return null;
+        const dir = path.dirname(fromFile);
+        const resolved = path.resolve(dir, importPath);
+        // Check all extensions in parallel
+        const candidates = RESOLVE_EXTENSIONS.map(ext => resolved + ext);
+        const results = await Promise.all(candidates.map(p => Bun.file(p).exists()));
+        const idx = results.findIndex(Boolean);
+        return idx >= 0 ? candidates[idx] : null;
+      };
+
+      // 1. Find what this file imports (outgoing) - parallel resolution
+      try {
+        const targetContent = await Bun.file(targetFile).text();
+        const imports = extractImports(targetContent);
+        const resolved = await Promise.all(imports.map(imp => resolveImport(targetFile, imp)));
+        for (const r of resolved) {
+          if (r) {
+            const relPath = path.relative(process.cwd(), r);
+            related.set(relPath, { relation: "imports" });
+          }
+        }
+      } catch {
+        // File might not exist or be readable
+      }
+
+      // 2. Find files that import this file (incoming) using grep
+      if (fileFinder) {
+        const basename = path.basename(targetFile).replace(/\.(ts|tsx|js|jsx)$/, "");
+        const searchResult = fileFinder.grep(basename, { glob: "*.{ts,tsx,js,jsx}", pageSize: 100 });
+        if (searchResult.ok) {
+          for (const match of searchResult.value.items) {
+            if (match.path === targetFile) continue;
+            if (isExcludedPath(match.path)) continue;
+            // Check if it's actually importing our file
+            const content = match.lineContent;
+            if (content.includes("import") || content.includes("require")) {
+              const relPath = path.relative(process.cwd(), match.path);
+              if (!related.has(relPath)) {
+                related.set(relPath, { relation: "imported-by" });
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Find sibling files with similar names
+      const dir = path.dirname(targetFile);
+      const baseName = path.basename(targetFile).replace(/\.(ts|tsx|js|jsx)$/, "");
+      try {
+        const siblings = await Array.fromAsync(new Bun.Glob("*").scan(dir));
+        for (const sibling of siblings) {
+          const siblingBase = sibling.replace(/\.(ts|tsx|js|jsx|test|spec|stories).*$/, "");
+          if (sibling !== path.basename(targetFile) && siblingBase === baseName) {
+            const relPath = path.relative(process.cwd(), path.join(dir, sibling));
+            if (!related.has(relPath)) {
+              related.set(relPath, { relation: "sibling" });
+            }
+          }
+        }
+      } catch {
+        // Directory might not exist
+      }
+
+      if (related.size === 0) {
+        return { content: [{ type: "text" as const, text: `No related files found for: ${targetFile}` }] };
+      }
+
+      // Format output grouped by relation type
+      const byRelation = new Map<string, string[]>();
+      for (const [file, info] of related) {
+        const list = byRelation.get(info.relation) || [];
+        list.push(file);
+        byRelation.set(info.relation, list);
+      }
+
+      const output: string[] = [`Related files for ${path.basename(targetFile)}:`, ""];
+
+      const relationLabels: Record<RelationType, string> = {
+        "imports": "This file imports:",
+        "imported-by": "Imported by:",
+        "sibling": "Related files in same directory:",
+      };
+
+      for (const [relation, files] of byRelation) {
+        output.push(relationLabels[relation] || relation);
+        for (const file of files.slice(0, 10)) {
+          output.push(`  ${file}`);
+        }
+        if (files.length > 10) {
+          output.push(`  ... +${files.length - 10} more`);
+        }
+        output.push("");
+      }
+
+      return { content: [{ type: "text" as const, text: output.join("\n") }] };
+    }
+  );
+
   return {
     server,
     cleanup: () => fileFinder?.destroy(),
@@ -2651,7 +2976,7 @@ async function runStdio() {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_find, mcx_grep, mcx_stats, mcx_list, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_doctor, mcx_list, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 

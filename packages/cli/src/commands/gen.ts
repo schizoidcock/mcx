@@ -6,6 +6,8 @@ import * as readline from "readline";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import pc from "picocolors";
+
+import { type FileFinder, isExcludedPath } from "../utils/fff";
 import { runGeneratorTUI } from "./gen-tui";
 import {
   analyzeSource,
@@ -19,7 +21,7 @@ import {
   type DetectedAuth,
   type FilterOptions,
 } from "./gen-core";
-import { getConfigPath } from "../utils/paths";
+import { getConfigPath, getMcxHomeDir } from "../utils/paths";
 
 // ============================================================================
 // Security: Path Validation
@@ -31,7 +33,7 @@ import { getConfigPath } from "../utils/paths";
  */
 async function validateOutputPath(outputPath: string): Promise<string> {
   const cwd = process.cwd();
-  const mcxDir = path.join(homedir(), ".mcx");
+  const mcxDir = getMcxHomeDir();
   const allowedDirs = [cwd, mcxDir];
 
   // Resolve to absolute path first
@@ -58,6 +60,128 @@ async function validateOutputPath(outputPath: string): Promise<string> {
 }
 
 // ============================================================================
+// Smart Discovery (FFF Integration)
+// ============================================================================
+
+interface DiscoveredSource {
+  type: "openapi" | "sdk";
+  path: string;
+  score: number;
+  preview?: string;
+}
+
+/**
+ * Use FFF to discover potential adapter sources in the current directory.
+ * Looks for OpenAPI specs and existing SDK files.
+ */
+async function discoverSources(): Promise<DiscoveredSource[]> {
+  const discovered: DiscoveredSource[] = [];
+
+  let fileFinder: FileFinder | null = null;
+  try {
+    const { FileFinder: FF } = await import("@ff-labs/fff-bun");
+    const fffInit = FF.create({ basePath: process.cwd() });
+    if (fffInit.ok) {
+      fileFinder = fffInit.value;
+      fileFinder.waitForScan(3000);
+    } else {
+      console.log(pc.dim(`FFF init skipped: ${fffInit.error}`));
+    }
+  } catch (err) {
+    console.log(pc.dim(`FFF not available: ${err}`));
+    return discovered;
+  }
+
+  if (!fileFinder) return discovered;
+
+  try {
+    // 1. Find OpenAPI specs via grep (files containing "openapi" in yaml/json)
+    // Note: FFF doesn't respect glob filter, so we filter by extension manually
+    const specResult = fileFinder.grep("openapi", { pageSize: 50 });
+    if (specResult.ok) {
+      const seenPaths = new Set<string>();
+      const specExtensions = [".yaml", ".yml", ".json"];
+      for (const match of specResult.value.items) {
+        if (seenPaths.has(match.path)) continue;
+        // Filter to only yaml/json files
+        const ext = match.path.slice(match.path.lastIndexOf(".")).toLowerCase();
+        if (!specExtensions.includes(ext)) continue;
+        seenPaths.add(match.path);
+        discovered.push({
+          type: "openapi",
+          path: match.path,
+          score: 100,
+          preview: match.lineContent.slice(0, 60).trim(),
+        });
+      }
+    }
+
+    // 2. Find SDK files (*client*.ts, *api*.ts, *sdk*.ts)
+    const sdkPatterns = ["client.ts", "api.ts", "sdk.ts"];
+    for (const pattern of sdkPatterns) {
+      const sdkResult = fileFinder.fileSearch(pattern, { pageSize: 10 });
+      if (sdkResult.ok) {
+        for (const match of sdkResult.value.items) {
+          if (isExcludedPath(match.path)) continue;
+          discovered.push({
+            type: "sdk",
+            path: match.path,
+            score: match.score,
+          });
+        }
+      }
+    }
+  } finally {
+    fileFinder.destroy();
+  }
+
+  // Sort by score descending
+  discovered.sort((a, b) => b.score - a.score);
+  return discovered;
+}
+
+/**
+ * Interactive source selection from discovered files
+ */
+async function promptSourceSelection(sources: DiscoveredSource[]): Promise<string | null> {
+  if (sources.length === 0) return null;
+
+  console.log(pc.blue("\n🔍 Discovered potential sources:\n"));
+
+  const maxShow = 10;
+  const toShow = sources.slice(0, maxShow);
+
+  for (let i = 0; i < toShow.length; i++) {
+    const src = toShow[i];
+    const typeLabel = src.type === "openapi" ? pc.green("OpenAPI") : pc.cyan("SDK");
+    const relPath = path.relative(process.cwd(), src.path);
+    console.log(`  ${pc.yellow(String(i + 1))}. [${typeLabel}] ${relPath}`);
+    if (src.preview) {
+      console.log(`     ${pc.dim(src.preview)}`);
+    }
+  }
+
+  if (sources.length > maxShow) {
+    console.log(pc.dim(`  ... and ${sources.length - maxShow} more`));
+  }
+
+  console.log();
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise<string>((resolve) => {
+    rl.question(`Select source (1-${toShow.length}) or press Enter to skip: `, resolve);
+  });
+  rl.close();
+
+  const idx = parseInt(answer, 10) - 1;
+  if (idx >= 0 && idx < toShow.length) {
+    return toShow[idx].path;
+  }
+
+  return null;
+}
+
+// ============================================================================
 // Main Command
 // ============================================================================
 
@@ -73,6 +197,22 @@ export async function genCommand(options: {
   exclude?: string;
 }): Promise<void> {
   let { source, output, name, baseUrl, auth, readOnly, include, exclude } = options;
+
+  // Smart discovery when no source provided
+  if (!source && !options.interactive) {
+    console.error(pc.blue("🔍 Searching for adapter sources..."));
+    const discovered = await discoverSources();
+    console.error(pc.dim(`Found ${discovered.length} potential sources`));
+
+    if (discovered.length > 0) {
+      const selected = await promptSourceSelection(discovered);
+      if (selected) {
+        source = selected;
+      }
+    } else {
+      console.log(pc.dim("No OpenAPI specs or SDK files found in current directory."));
+    }
+  }
 
   // Interactive mode - use OpenTUI
   if (options.interactive || !source) {
