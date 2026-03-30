@@ -1,11 +1,20 @@
 import type { SandboxState } from './types.js';
 
+/** Variable metadata for compression tracking */
+interface VariableMeta {
+  setAt: number;
+  accessedAt: number;
+  originalSize: number;
+  compressed: boolean;
+}
+
 /**
  * Persistent sandbox state that survives across executions.
  * Variables stored here are available in subsequent mcx_execute calls.
  */
 export class PersistentState {
   private state: SandboxState;
+  private meta: Map<string, VariableMeta>;
 
   constructor() {
     this.state = {
@@ -13,12 +22,17 @@ export class PersistentState {
       executionCount: 0,
       lastExecution: undefined,
     };
+    this.meta = new Map();
   }
 
   /**
    * Get a stored variable.
    */
   get(name: string): unknown {
+    const meta = this.meta.get(name);
+    if (meta) {
+      meta.accessedAt = Date.now();
+    }
     return this.state.variables[name];
   }
 
@@ -27,6 +41,13 @@ export class PersistentState {
    */
   set(name: string, value: unknown): void {
     this.state.variables[name] = value;
+    const size = JSON.stringify(value)?.length || 0;
+    this.meta.set(name, {
+      setAt: Date.now(),
+      accessedAt: Date.now(),
+      originalSize: size,
+      compressed: false,
+    });
   }
 
   /**
@@ -42,6 +63,7 @@ export class PersistentState {
   delete(name: string): boolean {
     if (name in this.state.variables) {
       delete this.state.variables[name];
+      this.meta.delete(name);
       return true;
     }
     return false;
@@ -86,6 +108,64 @@ export class PersistentState {
    */
   clear(): void {
     this.state.variables = {};
+    this.meta.clear();
+  }
+
+  /**
+   * Compress a variable to save memory/context.
+   * Replaces arrays with summary, keeps first few items.
+   */
+  compress(name: string, keepItems = 3): boolean {
+    const value = this.state.variables[name];
+    if (!value || !Array.isArray(value)) return false;
+
+    const meta = this.meta.get(name);
+    if (meta?.compressed) return false;
+
+    const summary = {
+      __compressed__: true,
+      type: 'array',
+      totalItems: value.length,
+      sample: value.slice(0, keepItems),
+      keys: value.length > 0 && typeof value[0] === 'object'
+        ? Object.keys(value[0] || {})
+        : undefined,
+    };
+
+    this.state.variables[name] = summary;
+    if (meta) {
+      meta.compressed = true;
+    }
+    return true;
+  }
+
+  /**
+   * Compress old variables that haven't been accessed recently.
+   * @param maxAgeMs - Max age in ms since last access (default: 5 minutes)
+   * @param minSize - Minimum size in chars to compress (default: 1000)
+   */
+  compressStale(maxAgeMs = 5 * 60 * 1000, minSize = 1000): string[] {
+    const now = Date.now();
+    const compressed: string[] = [];
+
+    for (const [name, meta] of this.meta.entries()) {
+      if (meta.compressed) continue;
+      if (meta.originalSize < minSize) continue;
+      if (now - meta.accessedAt < maxAgeMs) continue;
+
+      if (this.compress(name)) {
+        compressed.push(name);
+      }
+    }
+
+    return compressed;
+  }
+
+  /**
+   * Get variable metadata for diagnostics.
+   */
+  getMeta(name: string): VariableMeta | undefined {
+    return this.meta.get(name);
   }
 
   /**

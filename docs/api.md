@@ -226,6 +226,33 @@ Functions available in the sandbox for efficient data handling:
 | `sum(arr, field)` | `sum(data, 'amount')` | Sum numeric field |
 | `count(arr, field)` | `count(data, 'status')` | Count by field value |
 | `table(arr, maxRows)` | `table(data, 20)` | Format as markdown table (default: 10 rows) |
+| `poll(fn, opts)` | `poll(() => api.getStatus(), { interval: 2000 })` | Poll until done or max iterations |
+| `waitFor(fn, opts)` | `waitFor(() => api.isReady())` | Wait for condition to be truthy |
+
+### Polling Helpers
+
+For operations that need to wait for a condition:
+
+```javascript
+// Poll an API every 2 seconds, max 5 times
+const results = await poll(
+  async (i) => {
+    const status = await api.getJobStatus(jobId);
+    if (status.complete) return { done: true, value: status };
+    return status;
+  },
+  { interval: 2000, maxIterations: 5 }
+);
+
+// Wait for a condition (default: 500ms interval, 10s timeout)
+const ready = await waitFor(
+  async () => {
+    const status = await api.getStatus();
+    return status.ready ? status : null;
+  },
+  { interval: 1000, timeout: 30000 }
+);
+```
 
 ### Console Methods
 

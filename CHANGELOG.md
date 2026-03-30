@@ -12,6 +12,8 @@ All notable changes to MCX will be documented in this file.
 - **Proximity Reranking** - Files near last accessed directory boosted with ★ marker
 - **Network Byte Tracking** - Session stats show ↓in ↑out bytes transferred
 - **Stale DB Cleanup** - Auto-cleanup FTS5 sources older than 24h on startup
+- **Polling Helpers** - `poll()` and `waitFor()` for async operations
+- **Auto-compress Variables** - Stale variables (>5min, >1KB) auto-compressed to save context
 
 ### Bug Fixes
 - Fixed mcx_doctor sandbox test (use `result.value` not `result.data`)

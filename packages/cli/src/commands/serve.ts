@@ -1380,6 +1380,12 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           state.set(params.storeAs, result.value);
         }
 
+        // Auto-compress stale variables to save context (5 min old, >1KB)
+        const compressed = state.compressStale(5 * 60 * 1000, 1000);
+        if (compressed.length > 0) {
+          result.logs.push(`[INFO] Auto-compressed stale variables: ${compressed.join(', ')}`);
+        }
+
         // Generate rich metadata about stored value
         const metadata = getValueMetadata(result.value);
         const metaStr = formatMetadata(metadata);

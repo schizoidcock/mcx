@@ -285,13 +285,62 @@ export class BunWorkerSandbox implements ISandbox {
         return arr.slice(0, n);
       };
 
+      /**
+       * Poll a function until condition is met or max iterations reached.
+       * @param fn - Async function to call. Return { done: true, value } to stop.
+       * @param opts - { interval: ms (default 1000), maxIterations: n (default 10) }
+       * @returns Array of all results, or last result if done:true was returned
+       */
+      globalThis.poll = async (fn, opts = {}) => {
+        const interval = opts.interval || 1000;
+        const maxIterations = opts.maxIterations || 10;
+        const results = [];
+
+        for (let i = 0; i < maxIterations; i++) {
+          const result = await fn(i);
+          results.push(result);
+
+          // Check for done signal
+          if (result && typeof result === 'object' && result.done) {
+            return result.value !== undefined ? result.value : results;
+          }
+
+          // Wait before next iteration (skip on last)
+          if (i < maxIterations - 1) {
+            await new Promise(r => setTimeout(r, interval));
+          }
+        }
+
+        return results;
+      };
+
+      /**
+       * Wait for a condition to become true.
+       * @param fn - Async function that returns truthy when done
+       * @param opts - { interval: ms (default 500), timeout: ms (default 10000) }
+       * @returns The truthy value returned by fn
+       */
+      globalThis.waitFor = async (fn, opts = {}) => {
+        const interval = opts.interval || 500;
+        const timeout = opts.timeout || 10000;
+        const start = Date.now();
+
+        while (Date.now() - start < timeout) {
+          const result = await fn();
+          if (result) return result;
+          await new Promise(r => setTimeout(r, interval));
+        }
+
+        throw new Error('waitFor timeout after ' + timeout + 'ms');
+      };
+
       // SECURITY: Reserved keys that must not be overwritten by user-provided variables/globals
       const RESERVED_KEYS = new Set([
         'onmessage', 'postMessage', 'close', 'terminate', 'self',
         'constructor', 'prototype', '__proto__',
         'pendingCalls', 'callId', 'logs', 'console', 'adapters',
         'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource',
-        'pick', 'table', 'count', 'sum', 'first', 'safeStr'
+        'pick', 'table', 'count', 'sum', 'first', 'safeStr', 'poll', 'waitFor'
       ]);
 
       self.onmessage = async (event) => {
