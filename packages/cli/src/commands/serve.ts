@@ -2066,6 +2066,10 @@ Examples:
       title: "Process File",
       description: `Process file with code. File content available as $file.
 
+Supports fuzzy paths - partial names are resolved via FFF:
+- mcx_file({ path: "serve", code: "..." }) → serve.ts
+- mcx_file({ path: "chrome adapter", code: "..." }) → chrome-devtools.ts
+
 Examples:
 - mcx_file({ path: "data.json", code: "$file.items.length" })
 - mcx_file({ path: "config.yaml", code: "$file.lines.filter(l => l.includes('port'))" })
@@ -2084,8 +2088,40 @@ $file shape:
     },
     async (params: FileInput) => {
       try {
-        const content = await readFile(params.path, 'utf-8');
-        const ext = extname(params.path).toLowerCase();
+        let resolvedPath = params.path;
+        let content: string;
+
+        // Try direct read first, then fuzzy search if not found
+        try {
+          content = await readFile(resolvedPath, 'utf-8');
+        } catch (err: unknown) {
+          const isNotFound = err instanceof Error && 'code' in err && err.code === 'ENOENT';
+          if (!isNotFound || !fileFinder) {
+            throw err;
+          }
+
+          // Fuzzy search for file
+          const searchResult = fileFinder.fileSearch(params.path, { pageSize: 5 });
+          if (!searchResult.ok || searchResult.value.items.length === 0) {
+            throw new Error(`File not found: ${params.path}`);
+          }
+
+          const matches = searchResult.value.items;
+          if (matches.length === 1 || (matches.length > 1 && searchResult.value.scores[0].total > searchResult.value.scores[1].total * 1.5)) {
+            // Single match or clear winner - use it
+            resolvedPath = matches[0].path;
+            content = await readFile(resolvedPath, 'utf-8');
+          } else {
+            // Multiple ambiguous matches - return suggestions
+            const suggestions = matches.slice(0, 5).map(m => `  - ${m.relativePath}`).join('\n');
+            return {
+              content: [{ type: "text" as const, text: `Multiple matches for "${params.path}":\n${suggestions}\n\nSpecify full path or be more specific.` }],
+              isError: true,
+            };
+          }
+        }
+
+        const ext = extname(resolvedPath).toLowerCase();
 
         // Parse based on extension
         let $file: unknown;
@@ -2102,7 +2138,7 @@ $file shape:
         // Auto-index file content for later search (sync, like context-mode)
         if (content.length > FILE_INDEX_THRESHOLD) {
           const store = getContentStore();
-          const fileLabel = basename(params.path);
+          const fileLabel = basename(resolvedPath);
           const indexContent = isHtml(content) ? htmlToMarkdown(content) : content;
           store.index(indexContent, fileLabel, { contentType: ext === '.md' ? 'markdown' : 'plaintext' });
         }
@@ -2133,7 +2169,7 @@ $file shape:
         if (params.intent && serialized.length > INTENT_THRESHOLD) {
           try {
             const store = getContentStore();
-            const sourceLabel = generateExecutionLabel(params.storeAs || basename(params.path));
+            const sourceLabel = generateExecutionLabel(params.storeAs || basename(resolvedPath));
             const sourceId = store.index(serialized, sourceLabel, { contentType: 'plaintext' });
             const chunks = store.getChunks(sourceId);
             const searchResults = searchWithFallback(store, params.intent, { limit: 5, sourceId });
