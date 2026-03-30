@@ -292,8 +292,8 @@ export class BunWorkerSandbox implements ISandbox {
        * @returns Array of all results, or last result if done:true was returned
        */
       globalThis.poll = async (fn, opts = {}) => {
-        const interval = opts.interval || 1000;
-        const maxIterations = opts.maxIterations || 10;
+        const interval = opts.interval ?? 1000;
+        const maxIterations = opts.maxIterations ?? 10;
         const results = [];
 
         for (let i = 0; i < maxIterations; i++) {
@@ -321,8 +321,8 @@ export class BunWorkerSandbox implements ISandbox {
        * @returns The truthy value returned by fn
        */
       globalThis.waitFor = async (fn, opts = {}) => {
-        const interval = opts.interval || 500;
-        const timeout = opts.timeout || 10000;
+        const interval = opts.interval ?? 500;
+        const timeout = opts.timeout ?? 10000;
         const start = Date.now();
 
         while (Date.now() - start < timeout) {

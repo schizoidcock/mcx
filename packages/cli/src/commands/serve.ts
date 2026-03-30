@@ -349,12 +349,17 @@ const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
   ],
 };
 
-/** Generate tool suggestion line */
+/** Pre-computed tool suggestions (memoized at load time) */
+const TOOL_SUGGESTIONS: Record<string, string> = Object.fromEntries(
+  Object.entries(TOOL_PAIRS).map(([tool, pairs]) => [
+    tool,
+    `\n→ Next: ${pairs.map(p => `${p.tool} (${p.hint})`).join(", ")}`
+  ])
+);
+
+/** Get tool suggestion line (memoized) */
 function suggestNextTool(toolName: string): string {
-  const pairs = TOOL_PAIRS[toolName];
-  if (!pairs?.length) return "";
-  const suggestions = pairs.map(p => `${p.tool} (${p.hint})`).join(", ");
-  return `\n→ Next: ${suggestions}`;
+  return TOOL_SUGGESTIONS[toolName] || "";
 }
 
 /** Last accessed directory for proximity reranking */
@@ -1228,21 +1233,30 @@ async function createMcxServerCore(
   let taskIdCounter = 0;
   const MAX_BACKGROUND_TASKS = 20;
 
+  /** Format task duration consistently */
+  function formatTaskDuration(task: BackgroundTask, compact = false): string {
+    const elapsed = (task.completedAt || Date.now()) - task.startedAt;
+    const secs = (elapsed / 1000).toFixed(1);
+    if (task.completedAt) return `${secs}s`;
+    return compact ? `${secs}s...` : `${secs}s (running)`;
+  }
+
   function generateTaskId(): string {
     taskIdCounter++;
     return `task_${taskIdCounter}`;
   }
 
   function cleanupOldTasks(): void {
+    // Early exit if we're under the limit
+    if (backgroundTasks.size <= MAX_BACKGROUND_TASKS) return;
+
     // Keep only last MAX_BACKGROUND_TASKS completed tasks
     const completed = [...backgroundTasks.entries()]
       .filter(([, t]) => t.status !== 'running')
       .sort((a, b) => (b[1].completedAt || 0) - (a[1].completedAt || 0));
 
-    if (completed.length > MAX_BACKGROUND_TASKS) {
-      for (const [id] of completed.slice(MAX_BACKGROUND_TASKS)) {
-        backgroundTasks.delete(id);
-      }
+    for (const [id] of completed.slice(MAX_BACKGROUND_TASKS)) {
+      backgroundTasks.delete(id);
     }
   }
 
@@ -2795,9 +2809,7 @@ Examples:
           };
         }
 
-        const duration = task.completedAt
-          ? `${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s`
-          : `${((Date.now() - task.startedAt) / 1000).toFixed(1)}s (running)`;
+        const duration = formatTaskDuration(task);
 
         const output = [
           `Task: ${task.id}`,
@@ -2832,9 +2844,7 @@ Examples:
       const output = ['Background Tasks', '────────────────'];
       for (const task of tasks.slice(0, 10)) {
         const icon = task.status === 'running' ? '⏳' : task.status === 'completed' ? '✓' : '✗';
-        const duration = task.completedAt
-          ? `${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s`
-          : `${((Date.now() - task.startedAt) / 1000).toFixed(0)}s...`;
+        const duration = formatTaskDuration(task, true);
         output.push(`${icon} ${task.id}: ${task.status} (${duration})`);
       }
 
@@ -3141,14 +3151,13 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
         return { content: [{ type: "text" as const, text: "No files found." }] };
       }
 
-      // Proximity reranking: boost files near last accessed directory
-      const rankedItems = lastAccessedDir
-        ? [...items].sort((a, b) => {
-            const proxA = getProximityScore(a.path);
-            const proxB = getProximityScore(b.path);
-            // Proximity boost is tie-breaker, not primary sort
-            return proxB - proxA;
-          })
+      // Proximity reranking: compute scores once, use for sort and display
+      const proxScores = lastAccessedDir
+        ? new Map(items.map(f => [f.path, getProximityScore(f.path)]))
+        : null;
+
+      const rankedItems = proxScores
+        ? [...items].sort((a, b) => (proxScores.get(b.path) || 0) - (proxScores.get(a.path) || 0))
         : items;
 
       const output = [
@@ -3156,7 +3165,7 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
         "",
         ...rankedItems.map((f) => {
           const status = f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : "";
-          const prox = lastAccessedDir && getProximityScore(f.path) > 0.5 ? " ★" : "";
+          const prox = proxScores && (proxScores.get(f.path) || 0) > 0.5 ? " ★" : "";
           return `${f.relativePath}${status}${prox}`;
         }),
       ];
@@ -3233,17 +3242,18 @@ Modes:
         byFile.set(item.relativePath, existing);
       }
 
-      // Sort files by proximity to last accessed directory
-      const sortedFiles = lastAccessedDir
-        ? [...byFile.entries()].sort((a, b) => {
-            const proxA = getProximityScore(a[0]);
-            const proxB = getProximityScore(b[0]);
-            return proxB - proxA;
-          })
+      // Sort files by proximity (compute scores once)
+      const fileKeys = [...byFile.keys()];
+      const proxScores = lastAccessedDir
+        ? new Map(fileKeys.map(f => [f, getProximityScore(f)]))
+        : null;
+
+      const sortedFiles = proxScores
+        ? [...byFile.entries()].sort((a, b) => (proxScores.get(b[0]) || 0) - (proxScores.get(a[0]) || 0))
         : [...byFile.entries()];
 
       for (const [file, matches] of sortedFiles) {
-        const prox = lastAccessedDir && getProximityScore(file) > 0.5 ? " ★" : "";
+        const prox = proxScores && (proxScores.get(file) || 0) > 0.5 ? " ★" : "";
         output.push(`${file}${prox}:`);
         for (const m of matches.slice(0, 5)) {
           const line = m.lineContent.trim().slice(0, 100);
