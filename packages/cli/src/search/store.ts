@@ -250,6 +250,36 @@ export class ContentStore {
   }
 
   /**
+   * Clean up stale sources older than maxAgeMs.
+   * Returns number of sources deleted.
+   */
+  cleanupStale(maxAgeMs: number = 24 * 60 * 60 * 1000): number {
+    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+    const stale = this.db.prepare(
+      'SELECT id FROM sources WHERE indexed_at < ?'
+    ).all(cutoff) as Array<{ id: number }>;
+
+    for (const { id } of stale) {
+      this.deleteSource(id);
+    }
+
+    return stale.length;
+  }
+
+  /**
+   * Get database stats for diagnostics.
+   */
+  getStats(): { sources: number; chunks: number; vocabulary: number } {
+    const sources = (this.db.prepare('SELECT COUNT(*) as c FROM sources').get() as { c: number }).c;
+    const chunks = (this.db.prepare('SELECT COUNT(*) as c FROM chunks').get() as { c: number }).c;
+    return {
+      sources,
+      chunks,
+      vocabulary: this.vocabulary.size,
+    };
+  }
+
+  /**
    * Clear all data.
    */
   clear(): void {

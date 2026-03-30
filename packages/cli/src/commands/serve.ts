@@ -1105,6 +1105,17 @@ async function createMcxServerCore(
   adapters: Adapter[],
   skills: Map<string, Skill>
 ) {
+  // Cleanup stale FTS5 data on startup (older than 24h)
+  try {
+    const store = getContentStore();
+    const cleaned = store.cleanupStale(24 * 60 * 60 * 1000);
+    if (cleaned > 0) {
+      console.error(pc.dim(`Cleaned up ${cleaned} stale source(s)`));
+    }
+  } catch {
+    // Ignore cleanup errors
+  }
+
   const sandbox = new BunWorkerSandbox({
     timeout: config?.sandbox?.timeout ?? 30000,
     memoryLimit: config?.sandbox?.memoryLimit ?? 128,
@@ -1147,6 +1158,21 @@ async function createMcxServerCore(
 
   // Execution counter (instance-scoped like searchCallCount)
   let executionCounter = 0;
+
+  // Network byte tracking
+  let networkBytesIn = 0;
+  let networkBytesOut = 0;
+
+  function trackNetworkBytes(bytesIn: number, bytesOut: number = 0): void {
+    networkBytesIn += bytesIn;
+    networkBytesOut += bytesOut;
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes}B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  }
 
   function generateExecutionLabel(storeAs?: string): string {
     if (storeAs) return storeAs;
@@ -2484,6 +2510,9 @@ Examples:
           }
         }
 
+        // Track network bytes (request URL + content)
+        trackNetworkBytes(content.length, params.url.length);
+
         // Index in FTS5
         const store = getContentStore();
 
@@ -2578,6 +2607,7 @@ Examples:
         `Indexed: ${sources.length} sources, ${totalChunks} chunks`,
         `Searches: ${searchCallCount} calls (${throttleStatus})`,
         `Executions: ${executionCounter}`,
+        `Network: ↓${formatBytes(networkBytesIn)} ↑${formatBytes(networkBytesOut)}`,
         `Variables: ${variables.length > 0 ? variables.map(v => '$' + v).join(', ') : 'none'}`,
         `Frecency: ${topMethods.length > 0 ? topMethods.join(', ') : 'no methods tracked yet'}`,
       ];
