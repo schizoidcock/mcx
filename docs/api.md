@@ -41,7 +41,7 @@ const skillResult = await executor.runSkill('daily-summary', {
 
 ## MCP Tools
 
-MCX exposes thirteen tools to the AI agent:
+MCX exposes fourteen tools to the AI agent:
 
 | Tool | Description |
 |------|-------------|
@@ -50,11 +50,12 @@ MCX exposes thirteen tools to the AI agent:
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
 | `mcx_file` | Process local files with `$file` variable injection |
 | `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing (24h TTL cache) |
-| `mcx_find` | Fast fuzzy file search with frecency ranking |
-| `mcx_grep` | SIMD-accelerated content search across files |
+| `mcx_find` | Fast fuzzy file search with frecency + proximity ranking |
+| `mcx_grep` | SIMD-accelerated content search with proximity ranking |
 | `mcx_related` | Find related files by analyzing imports/exports |
 | `mcx_list` | List available adapters and skills |
-| `mcx_stats` | Session statistics (indexed content, variables) |
+| `mcx_stats` | Session statistics (indexed content, variables, network) |
+| `mcx_tree` | Navigate large JSON results without loading full content |
 | `mcx_run_skill` | Run a named skill with optional inputs |
 | `mcx_doctor` | Run diagnostics (Bun, SQLite, adapters, sandbox, FFF) |
 | `mcx_upgrade` | Get self-upgrade command for latest version |
@@ -357,3 +358,39 @@ mcx_upgrade()
 ```
 
 The returned command can be executed by the user to upgrade their MCX installation.
+
+### mcx_tree
+
+Navigate large JSON results without loading full content:
+
+```typescript
+mcx_tree({ path: "$result" })
+// Tree: $result
+// ──────────────
+// object (5 keys)
+//   keys: data, meta, pagination, errors, warnings
+
+mcx_tree({ path: "$result.data", depth: 2 })
+// Tree: $result.data
+// ──────────────────
+// array (100 items)
+//   [0]:
+//     object (3 keys)
+//       id:
+//         string (36 chars): "abc-123-..."
+//       name:
+//         string (12 chars): "Project One"
+//       status:
+//         string: "active"
+//   [1]:
+//     object (3 keys)
+//       ...
+//   ... +97 more
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path` | string | required | Path to explore (e.g. `$result.data[0].items`) |
+| `depth` | number | `1` | Depth to show (deeper = more detail) |
+
+Useful for exploring large execution results stored in variables.

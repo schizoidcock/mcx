@@ -4,6 +4,15 @@ All notable changes to MCX will be documented in this file.
 
 ## [0.3.12] - 2026-03-30
 
+### New Tools
+- **mcx_tree** - JSON tree walker for navigating large results without loading full content
+
+### Features
+- **Tool Pair Suggestions** - Tools suggest complementary next steps (mcx_find → mcx_grep)
+- **Proximity Reranking** - Files near last accessed directory boosted with ★ marker
+- **Network Byte Tracking** - Session stats show ↓in ↑out bytes transferred
+- **Stale DB Cleanup** - Auto-cleanup FTS5 sources older than 24h on startup
+
 ### Bug Fixes
 - Fixed mcx_doctor sandbox test (use `result.value` not `result.data`)
 - Fixed isExcludedPath logic (now correctly matches path segments)
