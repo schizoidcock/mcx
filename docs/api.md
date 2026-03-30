@@ -41,7 +41,7 @@ const skillResult = await executor.runSkill('daily-summary', {
 
 ## MCP Tools
 
-MCX exposes eleven tools to the AI agent:
+MCX exposes thirteen tools to the AI agent:
 
 | Tool | Description |
 |------|-------------|
@@ -49,13 +49,15 @@ MCX exposes eleven tools to the AI agent:
 | `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
 | `mcx_file` | Process local files with `$file` variable injection |
-| `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing |
+| `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing (24h TTL cache) |
 | `mcx_find` | Fast fuzzy file search with frecency ranking |
 | `mcx_grep` | SIMD-accelerated content search across files |
 | `mcx_related` | Find related files by analyzing imports/exports |
 | `mcx_list` | List available adapters and skills |
 | `mcx_stats` | Session statistics (indexed content, variables) |
 | `mcx_run_skill` | Run a named skill with optional inputs |
+| `mcx_doctor` | Run diagnostics (Bun, SQLite, adapters, sandbox, FFF) |
+| `mcx_upgrade` | Get self-upgrade command for latest version |
 
 ### mcx_execute Parameters
 
@@ -320,3 +322,38 @@ This enables large adapter collections without impacting startup time.
 // Full adapter loaded only when methods are called
 mcx_execute({ code: "stripe.createCustomer({ email: 'test@example.com' })" })
 ```
+
+### mcx_doctor
+
+Run diagnostics to verify MCX installation health:
+
+```typescript
+mcx_doctor()
+// Returns:
+// [x] Bun runtime: v1.3.9
+// [x] SQLite/FTS5: 15 sources indexed
+// [x] Adapters: 6 loaded
+// [x] Sandbox: Execution OK
+// [x] FFF: Initialized
+// [x] Version: v0.3.12
+// 6/6 checks passed
+```
+
+Checks performed:
+- **Bun runtime**: Version detection
+- **SQLite/FTS5**: FTS5 extension availability and indexed sources count
+- **Adapters**: Number of loaded adapters
+- **Sandbox**: Executes `1 + 1` to verify worker isolation
+- **FFF**: Fast File Finder initialization status
+- **Version**: Current MCX version
+
+### mcx_upgrade
+
+Get the command to upgrade MCX to the latest version:
+
+```typescript
+mcx_upgrade()
+// Returns: "bun add -g @papicandela/mcx-cli@latest"
+```
+
+The returned command can be executed by the user to upgrade their MCX installation.

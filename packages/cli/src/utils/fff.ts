@@ -12,7 +12,6 @@ export const EXCLUDED_PATH_SEGMENTS = ["node_modules", "dist", ".git", ".next", 
 /** Check if a path should be excluded from results */
 export function isExcludedPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/");
-  return EXCLUDED_PATH_SEGMENTS.some(seg =>
-    normalized.includes(`/${seg}/`) || normalized.includes(`/${seg}`)
-  );
+  const segments = normalized.split("/");
+  return segments.some(seg => EXCLUDED_PATH_SEGMENTS.includes(seg as typeof EXCLUDED_PATH_SEGMENTS[number]));
 }

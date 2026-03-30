@@ -2309,8 +2309,9 @@ $file shape:
     }
   );
 
-  // Tool: mcx_fetch with TTL cache
+  // Tool: mcx_fetch with TTL cache (capped to prevent unbounded growth)
   const URL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  const URL_CACHE_MAX_SIZE = 100;
   const urlCache = new Map<string, { sourceId: number; indexedAt: number; label: string }>();
 
   const FetchInputSchema = z.object({
@@ -2422,11 +2423,22 @@ Examples:
 
         // Index in FTS5
         const store = getContentStore();
+
+        // Delete old source if re-fetching (force:true or expired cache)
+        const oldCached = urlCache.get(params.url);
+        if (oldCached) {
+          try { store.deleteSource(oldCached.sourceId); } catch { /* ignore */ }
+        }
+
         const sourceId = store.index(content, label, { contentType: 'plaintext' });
         const chunks = store.getChunkCount(sourceId);
         const terms = getDistinctiveTerms(store.getChunks(sourceId));
 
-        // Update cache
+        // Update cache (evict oldest if full)
+        if (urlCache.size >= URL_CACHE_MAX_SIZE) {
+          const oldest = urlCache.keys().next().value;
+          if (oldest) urlCache.delete(oldest);
+        }
         urlCache.set(params.url, { sourceId, indexedAt: Date.now(), label });
 
         const output: string[] = [
@@ -2566,15 +2578,16 @@ Examples:
         checks.push({ name: "Adapters", status: "warn", detail: "None loaded" });
       }
 
-      // 4. Sandbox test
+      // 4. Sandbox test (BunWorkerSandbox is stateless - each execute creates/terminates its own worker)
       try {
         const sandbox = new BunWorkerSandbox({ timeout: 1000 });
-        const result = await sandbox.run("return 1 + 1", {}, { returnRaw: true });
-        await sandbox.close();
-        if (result === 2) {
+        const result = await sandbox.execute<number>("1 + 1", { adapters: {} });
+        if (result.success && result.value === 2) {
           checks.push({ name: "Sandbox", status: "pass", detail: "Execution OK" });
+        } else if (result.success) {
+          checks.push({ name: "Sandbox", status: "warn", detail: `Unexpected: ${JSON.stringify(result.value)}` });
         } else {
-          checks.push({ name: "Sandbox", status: "warn", detail: `Unexpected result: ${result}` });
+          checks.push({ name: "Sandbox", status: "fail", detail: result.error?.message || "Unknown error" });
         }
       } catch (e) {
         checks.push({ name: "Sandbox", status: "fail", detail: String(e) });
@@ -2976,7 +2989,7 @@ async function runStdio() {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_doctor, mcx_list, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 

@@ -57,6 +57,8 @@ export async function fetchWithRetry(
 
       // Check if we should retry based on status code
       if (retryStatusCodes.includes(response.status) && attempt < maxRetries) {
+        // Cancel response body to free connection
+        await response.body?.cancel();
         const delay = jitterBackoff(attempt, baseDelayMs, maxDelayMs);
         onRetry?.(attempt + 1, delay, new Error(`HTTP ${response.status}`));
         await sleep(delay);

@@ -2,6 +2,17 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.12] - 2026-03-30
+
+### Bug Fixes
+- Fixed mcx_doctor sandbox test (use `result.value` not `result.data`)
+- Fixed isExcludedPath logic (now correctly matches path segments)
+- Fixed urlCache unbounded growth (capped at 100 entries)
+- Fixed force:true leaking old FTS rows (now deletes old source)
+- Fixed fetchWithRetry response body leak (cancel before retry)
+
+---
+
 ## [0.3.11] - 2026-03-30
 
 ### New Tools
