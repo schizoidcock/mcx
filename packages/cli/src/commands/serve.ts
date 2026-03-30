@@ -26,6 +26,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import pc from "picocolors";
+import { FileFinder } from "@ff-labs/fff-bun";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
 import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 import { logger } from "../utils/logger";
@@ -1239,6 +1240,21 @@ async function createMcxServerCore(
     if (storeAs) return storeAs;
     executionCounter++;
     return `exec_${executionCounter}`;
+  }
+
+  // Initialize FFF (Fast File Finder) for fuzzy search
+  let fileFinder: FileFinder | null = null;
+  const fffInit = FileFinder.create({
+    basePath: process.cwd(),
+    frecencyDbPath: join(getMcxHomeDir(), "frecency.db"),
+  });
+  if (fffInit.ok) {
+    fileFinder = fffInit.value;
+    console.error(pc.dim(`FFF initialized for: ${process.cwd()}`));
+    // Wait for initial scan (non-blocking, 5s timeout)
+    fileFinder.waitForScan(5000);
+  } else {
+    console.error(pc.yellow(`FFF init skipped: ${fffInit.error}`));
   }
 
   const server = new McpServer({
@@ -2470,6 +2486,152 @@ Examples:
     }
   );
 
+  // Tool: mcx_find (FFF fuzzy file search)
+  const FindInputSchema = z.object({
+    query: z.string().describe("Fuzzy search query. Supports: *.ext, !exclude, /path/, status:modified"),
+    limit: z.number().optional().default(20).describe("Max results (default: 20)"),
+  });
+  type FindInput = z.infer<typeof FindInputSchema>;
+
+  server.registerTool(
+    "mcx_find",
+    {
+      title: "Fuzzy File Search",
+      description: `Fast fuzzy file search with frecency ranking.
+
+Query syntax:
+- "main.ts" - Fuzzy match filename
+- "*.ts" - Extension filter
+- "!test" - Exclude pattern
+- "src/" - Path contains
+- "status:modified" - Git modified files
+
+Results ranked by: match score + frecency (recent files boosted) + git status.`,
+      inputSchema: FindInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (params: FindInput) => {
+      if (!fileFinder) {
+        return {
+          content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
+          isError: true,
+        };
+      }
+
+      const result = fileFinder.fileSearch(params.query, { pageSize: params.limit });
+      if (!result.ok) {
+        return {
+          content: [{ type: "text" as const, text: `Search failed: ${result.error}` }],
+          isError: true,
+        };
+      }
+
+      const { items, totalMatched } = result.value;
+      if (items.length === 0) {
+        return { content: [{ type: "text" as const, text: "No files found." }] };
+      }
+
+      const output = [
+        `Found ${totalMatched} files (showing ${items.length}):`,
+        "",
+        ...items.map((f) => {
+          const status = f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : "";
+          return `${f.relativePath}${status}`;
+        }),
+      ];
+
+      return { content: [{ type: "text" as const, text: output.join("\n") }] };
+    }
+  );
+
+  // Tool: mcx_grep (FFF content search)
+  const GrepInputSchema = z.object({
+    query: z.string().describe("Search pattern. Prefix with *.ext or path/ to filter files."),
+    mode: z.enum(["plain", "regex", "fuzzy"]).optional().default("plain").describe("Search mode"),
+    limit: z.number().optional().default(50).describe("Max matches (default: 50)"),
+  });
+  type GrepInput = z.infer<typeof GrepInputSchema>;
+
+  server.registerTool(
+    "mcx_grep",
+    {
+      title: "Content Search",
+      description: `SIMD-accelerated content search across files.
+
+Query examples:
+- "TODO" - Plain text search
+- "*.ts useState" - Search in TypeScript files
+- "src/ handleClick" - Search in src directory
+
+Modes:
+- plain: Literal text match (fast)
+- regex: Regular expression
+- fuzzy: Typo-tolerant fuzzy match`,
+      inputSchema: GrepInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (params: GrepInput) => {
+      if (!fileFinder) {
+        return {
+          content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
+          isError: true,
+        };
+      }
+
+      const result = fileFinder.grep(params.query, {
+        mode: params.mode,
+        pageLimit: params.limit,
+      });
+      if (!result.ok) {
+        return {
+          content: [{ type: "text" as const, text: `Grep failed: ${result.error}` }],
+          isError: true,
+        };
+      }
+
+      const { items, totalMatched, totalFilesSearched } = result.value;
+      if (items.length === 0) {
+        return { content: [{ type: "text" as const, text: `No matches in ${totalFilesSearched} files.` }] };
+      }
+
+      const output = [
+        `${totalMatched} matches in ${totalFilesSearched} files (showing ${items.length}):`,
+        "",
+      ];
+
+      // Group by file
+      const byFile = new Map<string, typeof items>();
+      for (const item of items) {
+        const existing = byFile.get(item.relativePath) || [];
+        existing.push(item);
+        byFile.set(item.relativePath, existing);
+      }
+
+      for (const [file, matches] of byFile) {
+        output.push(`${file}:`);
+        for (const m of matches.slice(0, 5)) {
+          const line = m.lineContent.trim().slice(0, 100);
+          output.push(`  ${m.lineNumber}: ${line}`);
+        }
+        if (matches.length > 5) {
+          output.push(`  ... +${matches.length - 5} more matches`);
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: output.join("\n") }] };
+    }
+  );
+
   return server;
 }
 
@@ -2514,7 +2676,7 @@ async function runStdio() {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_stats, mcx_list, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_find, mcx_grep, mcx_stats, mcx_list, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
