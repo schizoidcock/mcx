@@ -2632,7 +2632,10 @@ Modes:
     }
   );
 
-  return server;
+  return {
+    server,
+    cleanup: () => fileFinder?.destroy(),
+  };
 }
 
 // ============================================================================
@@ -2647,7 +2650,7 @@ async function runStdio() {
 
   console.error(pc.cyan("Starting MCX MCP server (stdio)...\n"));
 
-  const server = await createMcxServer();
+  const { server, cleanup } = await createMcxServer();
   const transport = new StdioServerTransport();
 
   // Handle transport errors to prevent crashes
@@ -2658,6 +2661,7 @@ async function runStdio() {
 
   // Handle stdin close gracefully (e.g., when Claude closes the connection)
   process.stdin.on("close", () => {
+    cleanup();
     console.error(pc.dim("[MCX] stdin closed, exiting gracefully"));
     logger.shutdown("stdin closed");
     process.exit(0);
@@ -2695,12 +2699,16 @@ async function runHttp(port: number) {
 
   // PERFORMANCE: Create server and transport ONCE, reuse for all requests
   // This prevents resource exhaustion from creating new instances per request
-  const server = await createMcxServerWithDeps(config, adapters, skills);
+  const { server, cleanup } = await createMcxServerWithDeps(config, adapters, skills);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   });
   await server.connect(transport);
+
+  // Cleanup on shutdown
+  process.on("SIGINT", () => { cleanup(); process.exit(0); });
+  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
   console.error(pc.dim("MCP server and transport initialized"));
 
   // Log startup
