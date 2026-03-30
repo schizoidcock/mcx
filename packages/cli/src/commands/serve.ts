@@ -2885,8 +2885,8 @@ Examples:
     async (params: TreeInput) => {
       const state = getSandboxState();
 
-      // Parse path: $varname.key1.key2[0].key3
-      const pathMatch = params.path.match(/^\$(\w+)(.*)$/);
+      // Parse path: $varname.key1.key2[0].key3 (varname can include hyphens)
+      const pathMatch = params.path.match(/^\$([\w-]+)(.*)$/);
       if (!pathMatch) {
         return {
           content: [{ type: "text" as const, text: `Invalid path: ${params.path}. Must start with $varname` }],
