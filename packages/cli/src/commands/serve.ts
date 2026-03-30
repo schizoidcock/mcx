@@ -26,8 +26,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import pc from "picocolors";
-import { FileFinder } from "@ff-labs/fff-bun";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
+
+// FFF types - lazy loaded to avoid native binary requirement
+type FileFinder = Awaited<ReturnType<typeof import("@ff-labs/fff-bun")>>["FileFinder"] extends { create: (opts: unknown) => { ok: true; value: infer T } } ? T : never;
 import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
 import { isDangerousEnvKey, isBlockedUrl } from "../utils/security";
 import { logger } from "../utils/logger";
@@ -1087,19 +1089,24 @@ async function createMcxServerCore(
     return `exec_${executionCounter}`;
   }
 
-  // Initialize FFF (Fast File Finder) for fuzzy search
+  // Initialize FFF (Fast File Finder) for fuzzy search - optional, graceful fallback
   let fileFinder: FileFinder | null = null;
-  const fffInit = FileFinder.create({
-    basePath: process.cwd(),
-    frecencyDbPath: join(getMcxHomeDir(), "frecency.db"),
-  });
-  if (fffInit.ok) {
-    fileFinder = fffInit.value;
-    console.error(pc.dim(`FFF initialized for: ${process.cwd()}`));
-    // Wait for initial scan (non-blocking, 5s timeout)
-    fileFinder.waitForScan(5000);
-  } else {
-    console.error(pc.yellow(`FFF init skipped: ${fffInit.error}`));
+  try {
+    const { FileFinder: FF } = await import("@ff-labs/fff-bun");
+    const fffInit = FF.create({
+      basePath: process.cwd(),
+      frecencyDbPath: join(getMcxHomeDir(), "frecency.db"),
+    });
+    if (fffInit.ok) {
+      fileFinder = fffInit.value;
+      console.error(pc.dim(`FFF initialized for: ${process.cwd()}`));
+      // Wait for initial scan (non-blocking, 5s timeout)
+      fileFinder.waitForScan(5000);
+    } else {
+      console.error(pc.yellow(`FFF init skipped: ${fffInit.error}`));
+    }
+  } catch (err) {
+    console.error(pc.yellow(`FFF not available (native binary missing) - mcx_find/mcx_grep disabled`));
   }
 
   const server = new McpServer({
