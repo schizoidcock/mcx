@@ -1213,6 +1213,72 @@ async function createMcxServerCore(
     return methodUsage.get(`${adapterName}.${methodName}`) || 0;
   }
 
+  // Background task registry
+  interface BackgroundTask {
+    id: string;
+    code: string;
+    status: 'running' | 'completed' | 'failed';
+    startedAt: number;
+    completedAt?: number;
+    result?: unknown;
+    error?: string;
+    logs: string[];
+  }
+  const backgroundTasks = new Map<string, BackgroundTask>();
+  let taskIdCounter = 0;
+  const MAX_BACKGROUND_TASKS = 20;
+
+  function generateTaskId(): string {
+    taskIdCounter++;
+    return `task_${taskIdCounter}`;
+  }
+
+  function cleanupOldTasks(): void {
+    // Keep only last MAX_BACKGROUND_TASKS completed tasks
+    const completed = [...backgroundTasks.entries()]
+      .filter(([, t]) => t.status !== 'running')
+      .sort((a, b) => (b[1].completedAt || 0) - (a[1].completedAt || 0));
+
+    if (completed.length > MAX_BACKGROUND_TASKS) {
+      for (const [id] of completed.slice(MAX_BACKGROUND_TASKS)) {
+        backgroundTasks.delete(id);
+      }
+    }
+  }
+
+  async function runBackgroundTask(taskId: string, code: string): Promise<void> {
+    const task = backgroundTasks.get(taskId);
+    if (!task) return;
+
+    try {
+      const state = getSandboxState();
+      const result = await sandbox.execute(code, {
+        adapters: adapterContext,
+        variables: state.getAllPrefixed(),
+        env: config?.env || {},
+      });
+
+      task.completedAt = Date.now();
+      task.logs = result.logs || [];
+
+      if (result.success) {
+        task.status = 'completed';
+        task.result = result.value;
+        // Store result in state
+        state.set(taskId, result.value);
+      } else {
+        task.status = 'failed';
+        task.error = result.error?.message || 'Unknown error';
+      }
+    } catch (err) {
+      task.completedAt = Date.now();
+      task.status = 'failed';
+      task.error = err instanceof Error ? err.message : String(err);
+    }
+
+    cleanupOldTasks();
+  }
+
   // Initialize FFF (Fast File Finder) for fuzzy search - optional, graceful fallback
   try {
     const { FileFinder: FF } = await import("@ff-labs/fff-bun");
@@ -2627,6 +2693,153 @@ Examples:
         if (sources.length > 10) {
           output.push(`  ... and ${sources.length - 10} more`);
         }
+      }
+
+      return { content: [{ type: "text" as const, text: output.join('\n') }] };
+    }
+  );
+
+  // Tool: mcx_spawn (Background execution)
+  const SpawnInputSchema = z.object({
+    code: z.string().min(1).describe("Code to run in background"),
+    label: z.string().optional().describe("Optional label for the task"),
+  });
+  type SpawnInput = z.infer<typeof SpawnInputSchema>;
+
+  server.registerTool(
+    "mcx_spawn",
+    {
+      title: "Background Execution",
+      description: `Run code in background, returns immediately with task ID.
+
+Examples:
+- mcx_spawn({ code: "await slowApi.processData()" })
+- mcx_spawn({ code: "poll(...)", label: "data-sync" })
+
+Check status with mcx_tasks. Results stored as $task_N.`,
+      inputSchema: SpawnInputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (params: SpawnInput) => {
+      const taskId = params.label || generateTaskId();
+
+      // Check if label already exists and is running
+      if (params.label && backgroundTasks.has(taskId)) {
+        const existing = backgroundTasks.get(taskId)!;
+        if (existing.status === 'running') {
+          return {
+            content: [{ type: "text" as const, text: `Task "${taskId}" already running` }],
+            isError: true,
+          };
+        }
+      }
+
+      const task: BackgroundTask = {
+        id: taskId,
+        code: params.code.slice(0, 100) + (params.code.length > 100 ? '...' : ''),
+        status: 'running',
+        startedAt: Date.now(),
+        logs: [],
+      };
+
+      backgroundTasks.set(taskId, task);
+
+      // Run in background (don't await)
+      runBackgroundTask(taskId, params.code);
+
+      return {
+        content: [{ type: "text" as const, text: `Started ${taskId}. Check with mcx_tasks, result in $${taskId}` }],
+        structuredContent: { taskId, status: 'running' },
+      };
+    }
+  );
+
+  // Tool: mcx_tasks (List/check background tasks)
+  const TasksInputSchema = z.object({
+    id: z.string().optional().describe("Get specific task by ID"),
+    status: z.enum(['all', 'running', 'completed', 'failed']).optional().default('all'),
+  });
+  type TasksInput = z.infer<typeof TasksInputSchema>;
+
+  server.registerTool(
+    "mcx_tasks",
+    {
+      title: "Background Tasks",
+      description: `List or check background tasks started with mcx_spawn.
+
+Examples:
+- mcx_tasks() → list all tasks
+- mcx_tasks({ status: "running" }) → only running
+- mcx_tasks({ id: "task_1" }) → specific task details`,
+      inputSchema: TasksInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (params: TasksInput) => {
+      // Specific task lookup
+      if (params.id) {
+        const task = backgroundTasks.get(params.id);
+        if (!task) {
+          return {
+            content: [{ type: "text" as const, text: `Task "${params.id}" not found` }],
+            isError: true,
+          };
+        }
+
+        const duration = task.completedAt
+          ? `${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s`
+          : `${((Date.now() - task.startedAt) / 1000).toFixed(1)}s (running)`;
+
+        const output = [
+          `Task: ${task.id}`,
+          `Status: ${task.status}`,
+          `Duration: ${duration}`,
+          `Code: ${task.code}`,
+        ];
+
+        if (task.error) {
+          output.push(`Error: ${task.error}`);
+        }
+        if (task.logs.length > 0) {
+          output.push(`Logs: ${task.logs.slice(0, 5).join(', ')}`);
+        }
+        if (task.status === 'completed') {
+          output.push(`Result in: $${task.id}`);
+        }
+
+        return { content: [{ type: "text" as const, text: output.join('\n') }] };
+      }
+
+      // List tasks
+      let tasks = [...backgroundTasks.values()];
+      if (params.status !== 'all') {
+        tasks = tasks.filter(t => t.status === params.status);
+      }
+
+      if (tasks.length === 0) {
+        return { content: [{ type: "text" as const, text: 'No background tasks.' }] };
+      }
+
+      const output = ['Background Tasks', '────────────────'];
+      for (const task of tasks.slice(0, 10)) {
+        const icon = task.status === 'running' ? '⏳' : task.status === 'completed' ? '✓' : '✗';
+        const duration = task.completedAt
+          ? `${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s`
+          : `${((Date.now() - task.startedAt) / 1000).toFixed(0)}s...`;
+        output.push(`${icon} ${task.id}: ${task.status} (${duration})`);
+      }
+
+      if (tasks.length > 10) {
+        output.push(`... +${tasks.length - 10} more`);
       }
 
       return { content: [{ type: "text" as const, text: output.join('\n') }] };

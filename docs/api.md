@@ -41,7 +41,7 @@ const skillResult = await executor.runSkill('daily-summary', {
 
 ## MCP Tools
 
-MCX exposes fourteen tools to the AI agent:
+MCX exposes sixteen tools to the AI agent:
 
 | Tool | Description |
 |------|-------------|
@@ -56,6 +56,8 @@ MCX exposes fourteen tools to the AI agent:
 | `mcx_list` | List available adapters and skills |
 | `mcx_stats` | Session statistics (indexed content, variables, network) |
 | `mcx_tree` | Navigate large JSON results without loading full content |
+| `mcx_spawn` | Run code in background, returns task ID immediately |
+| `mcx_tasks` | List/check background tasks and their results |
 | `mcx_run_skill` | Run a named skill with optional inputs |
 | `mcx_doctor` | Run diagnostics (Bun, SQLite, adapters, sandbox, FFF) |
 | `mcx_upgrade` | Get self-upgrade command for latest version |
@@ -421,3 +423,49 @@ mcx_tree({ path: "$result.data", depth: 2 })
 | `depth` | number | `1` | Depth to show (deeper = more detail) |
 
 Useful for exploring large execution results stored in variables.
+
+### mcx_spawn
+
+Run code in background, returns immediately with task ID:
+
+```typescript
+mcx_spawn({ code: "await slowApi.processLargeDataset()" })
+// Started task_1. Check with mcx_tasks, result in $task_1
+
+mcx_spawn({ code: "await poll(...)", label: "sync-job" })
+// Started sync-job. Check with mcx_tasks, result in $sync-job
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `code` | string | Code to run in background |
+| `label` | string | Optional custom task ID |
+
+Results are stored in `$taskId` when complete.
+
+### mcx_tasks
+
+List or check background tasks:
+
+```typescript
+mcx_tasks()
+// Background Tasks
+// ────────────────
+// ⏳ task_1: running (5s...)
+// ✓ task_2: completed (2.3s)
+// ✗ task_3: failed (0.5s)
+
+mcx_tasks({ id: "task_1" })
+// Task: task_1
+// Status: completed
+// Duration: 5.2s
+// Result in: $task_1
+
+mcx_tasks({ status: "running" })
+// Only show running tasks
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | string | - | Get specific task details |
+| `status` | string | `"all"` | Filter: `all`, `running`, `completed`, `failed` |

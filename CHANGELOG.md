@@ -6,6 +6,8 @@ All notable changes to MCX will be documented in this file.
 
 ### New Tools
 - **mcx_tree** - JSON tree walker for navigating large results without loading full content
+- **mcx_spawn** - Run code in background, returns immediately with task ID
+- **mcx_tasks** - List/check background tasks and their results
 
 ### Features
 - **Tool Pair Suggestions** - Tools suggest complementary next steps (mcx_find → mcx_grep)
