@@ -324,6 +324,66 @@ const MAX_DESC_LENGTH = 80;
 /** Max log lines to show */
 const MAX_LOGS = 20;
 
+/** Tool pair suggestions - maps tool to complementary tools */
+const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
+  mcx_find: [
+    { tool: "mcx_grep", hint: "search content in found files" },
+    { tool: "mcx_file", hint: "process a found file" },
+  ],
+  mcx_grep: [
+    { tool: "mcx_file", hint: "process matched file" },
+    { tool: "mcx_related", hint: "find related files" },
+  ],
+  mcx_fetch: [
+    { tool: "mcx_search", hint: "search indexed content" },
+  ],
+  mcx_execute: [
+    { tool: "mcx_search", hint: "search results or find methods" },
+  ],
+  mcx_search: [
+    { tool: "mcx_execute", hint: "call discovered method" },
+  ],
+  mcx_related: [
+    { tool: "mcx_file", hint: "process related file" },
+    { tool: "mcx_grep", hint: "search in related files" },
+  ],
+};
+
+/** Generate tool suggestion line */
+function suggestNextTool(toolName: string): string {
+  const pairs = TOOL_PAIRS[toolName];
+  if (!pairs?.length) return "";
+  const suggestions = pairs.map(p => `${p.tool} (${p.hint})`).join(", ");
+  return `\n→ Next: ${suggestions}`;
+}
+
+/** Last accessed directory for proximity reranking */
+let lastAccessedDir: string | null = null;
+
+/** Update last accessed directory from a file path */
+function updateProximityContext(filePath: string): void {
+  const normalized = filePath.replace(/\\/g, "/");
+  const lastSlash = normalized.lastIndexOf("/");
+  lastAccessedDir = lastSlash > 0 ? normalized.slice(0, lastSlash) : null;
+}
+
+/** Calculate proximity score (0-1) based on shared path prefix */
+function getProximityScore(filePath: string): number {
+  if (!lastAccessedDir) return 0;
+  const normalized = filePath.replace(/\\/g, "/");
+  const fileDir = normalized.slice(0, normalized.lastIndexOf("/"));
+  if (fileDir === lastAccessedDir) return 1; // Same directory
+  // Check shared prefix depth
+  const contextParts = lastAccessedDir.split("/");
+  const fileParts = fileDir.split("/");
+  let shared = 0;
+  for (let i = 0; i < Math.min(contextParts.length, fileParts.length); i++) {
+    if (contextParts[i] === fileParts[i]) shared++;
+    else break;
+  }
+  return shared / Math.max(contextParts.length, fileParts.length);
+}
+
 /** Truncate logs array with "... +N more" message */
 function truncateLogs(logs: string[]): string[] {
   if (logs.length <= MAX_LOGS) return logs;
@@ -1371,7 +1431,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
 
         // Build content array with text first, then images
         const content: Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string }> = [
-          { type: "text" as const, text: textOutput },
+          { type: "text" as const, text: textOutput + suggestNextTool("mcx_execute") },
           ...images,
         ];
 
@@ -1969,7 +2029,7 @@ Use storeAs to save results and return summary only:
       // For storeAs: return minimal summary
       if (params.storeAs) {
         const storedVars = params.storeAs !== 'search' ? `$search, $${params.storeAs}` : '$search';
-        const summary = `Stored ${results.methods.length} methods, ${results.adapters.length} adapters as ${storedVars}\nExplore: $search.methods[0].parameters`;
+        const summary = `Stored ${results.methods.length} methods, ${results.adapters.length} adapters as ${storedVars}\nExplore: $search.methods[0].parameters` + suggestNextTool("mcx_search");
         return {
           content: [{ type: "text" as const, text: summary }],
           structuredContent: {
@@ -1989,7 +2049,7 @@ Use storeAs to save results and return summary only:
       output.push("Full results in `$search`. Explore: `$search.methods[0].requires`");
 
       // Enforce character limit
-      const { text: finalText } = enforceCharacterLimit(output.join("\n"));
+      const { text: finalText } = enforceCharacterLimit(output.join("\n") + suggestNextTool("mcx_search"));
 
       return {
         content: [{ type: "text" as const, text: finalText }],
@@ -2231,6 +2291,9 @@ $file shape:
           $file = { text: content, lines: content.split('\n') };
         }
 
+        // Update proximity context for reranking
+        updateProximityContext(resolvedPath);
+
         // Auto-index file content for later search (sync, like context-mode)
         if (content.length > FILE_INDEX_THRESHOLD) {
           const store = getContentStore();
@@ -2371,7 +2434,7 @@ Examples:
               }
             }
 
-            return { content: [{ type: "text" as const, text: output.join('\n') }] };
+            return { content: [{ type: "text" as const, text: output.join('\n') + suggestNextTool("mcx_fetch") }] };
           }
         }
 
@@ -2459,7 +2522,7 @@ Examples:
           }
         }
 
-        return { content: [{ type: "text" as const, text: output.join('\n') }] };
+        return { content: [{ type: "text" as const, text: output.join('\n') + suggestNextTool("mcx_fetch") }] };
       } catch (error) {
         return {
           content: [{ type: "text" as const, text: `Fetch error: ${error instanceof Error ? error.message : error}` }],
@@ -2531,6 +2594,135 @@ Examples:
       }
 
       return { content: [{ type: "text" as const, text: output.join('\n') }] };
+    }
+  );
+
+  // Tool: mcx_tree (JSON Tree Walker)
+  const TreeInputSchema = z.object({
+    path: z.string().describe("Path to explore, e.g. $result.data[0].items or $search.methods"),
+    depth: z.number().optional().default(1).describe("Depth to show (default: 1)"),
+  });
+  type TreeInput = z.infer<typeof TreeInputSchema>;
+
+  server.registerTool(
+    "mcx_tree",
+    {
+      title: "JSON Tree Walker",
+      description: `Navigate large JSON results without loading full content.
+
+Examples:
+- mcx_tree({ path: "$result" }) → show root structure
+- mcx_tree({ path: "$result.data" }) → show data structure
+- mcx_tree({ path: "$result.data[0]" }) → show first item
+- mcx_tree({ path: "$search.methods", depth: 2 }) → deeper view`,
+      inputSchema: TreeInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (params: TreeInput) => {
+      const state = getSandboxState();
+
+      // Parse path: $varname.key1.key2[0].key3
+      const pathMatch = params.path.match(/^\$(\w+)(.*)$/);
+      if (!pathMatch) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid path: ${params.path}. Must start with $varname` }],
+          isError: true,
+        };
+      }
+
+      const [, varName, restPath] = pathMatch;
+      let value = state.get(varName);
+
+      if (value === undefined) {
+        const available = Array.from(state.keys()).map(k => '$' + k).join(', ');
+        return {
+          content: [{ type: "text" as const, text: `Variable $${varName} not found. Available: ${available || 'none'}` }],
+          isError: true,
+        };
+      }
+
+      // Navigate the path
+      if (restPath) {
+        const segments = restPath.match(/\.(\w+)|\[(\d+)\]/g) || [];
+        for (const seg of segments) {
+          if (value === null || value === undefined) break;
+          if (seg.startsWith('.')) {
+            const key = seg.slice(1);
+            value = (value as Record<string, unknown>)[key];
+          } else if (seg.startsWith('[')) {
+            const idx = parseInt(seg.slice(1, -1), 10);
+            value = (value as unknown[])[idx];
+          }
+        }
+      }
+
+      if (value === undefined) {
+        return {
+          content: [{ type: "text" as const, text: `Path not found: ${params.path}` }],
+          isError: true,
+        };
+      }
+
+      // Generate tree view
+      const describeValue = (v: unknown, depth: number, indent = ""): string[] => {
+        if (v === null) return [`${indent}null`];
+        if (v === undefined) return [`${indent}undefined`];
+
+        const type = typeof v;
+        if (type === "string") {
+          const str = v as string;
+          return [`${indent}string (${str.length} chars)${str.length <= 50 ? `: "${str}"` : ""}`];
+        }
+        if (type === "number" || type === "boolean") {
+          return [`${indent}${type}: ${v}`];
+        }
+        if (Array.isArray(v)) {
+          const lines = [`${indent}array (${v.length} items)`];
+          if (depth > 0 && v.length > 0) {
+            // Show sample of first few items
+            const sample = v.slice(0, 3);
+            for (let i = 0; i < sample.length; i++) {
+              lines.push(`${indent}  [${i}]:`);
+              lines.push(...describeValue(sample[i], depth - 1, indent + "    "));
+            }
+            if (v.length > 3) {
+              lines.push(`${indent}  ... +${v.length - 3} more`);
+            }
+          }
+          return lines;
+        }
+        if (type === "object") {
+          const obj = v as Record<string, unknown>;
+          const keys = Object.keys(obj);
+          const lines = [`${indent}object (${keys.length} keys)`];
+          if (depth > 0) {
+            for (const key of keys.slice(0, 10)) {
+              lines.push(`${indent}  ${key}:`);
+              lines.push(...describeValue(obj[key], depth - 1, indent + "    "));
+            }
+            if (keys.length > 10) {
+              lines.push(`${indent}  ... +${keys.length - 10} more keys`);
+            }
+          } else {
+            lines.push(`${indent}  keys: ${keys.slice(0, 10).join(", ")}${keys.length > 10 ? ", ..." : ""}`);
+          }
+          return lines;
+        }
+        return [`${indent}${type}`];
+      };
+
+      const output = [
+        `Tree: ${params.path}`,
+        "─".repeat(Math.min(40, params.path.length + 6)),
+        ...describeValue(value, params.depth),
+      ];
+
+      return { content: [{ type: "text" as const, text: output.join("\n") }] };
     }
   );
 
@@ -2700,16 +2892,27 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
         return { content: [{ type: "text" as const, text: "No files found." }] };
       }
 
+      // Proximity reranking: boost files near last accessed directory
+      const rankedItems = lastAccessedDir
+        ? [...items].sort((a, b) => {
+            const proxA = getProximityScore(a.path);
+            const proxB = getProximityScore(b.path);
+            // Proximity boost is tie-breaker, not primary sort
+            return proxB - proxA;
+          })
+        : items;
+
       const output = [
-        `Found ${totalMatched} files (showing ${items.length}):`,
+        `Found ${totalMatched} files (showing ${rankedItems.length}):`,
         "",
-        ...items.map((f) => {
+        ...rankedItems.map((f) => {
           const status = f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : "";
-          return `${f.relativePath}${status}`;
+          const prox = lastAccessedDir && getProximityScore(f.path) > 0.5 ? " ★" : "";
+          return `${f.relativePath}${status}${prox}`;
         }),
       ];
 
-      return { content: [{ type: "text" as const, text: output.join("\n") }] };
+      return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_find") }] };
     }
   );
 
@@ -2781,8 +2984,18 @@ Modes:
         byFile.set(item.relativePath, existing);
       }
 
-      for (const [file, matches] of byFile) {
-        output.push(`${file}:`);
+      // Sort files by proximity to last accessed directory
+      const sortedFiles = lastAccessedDir
+        ? [...byFile.entries()].sort((a, b) => {
+            const proxA = getProximityScore(a[0]);
+            const proxB = getProximityScore(b[0]);
+            return proxB - proxA;
+          })
+        : [...byFile.entries()];
+
+      for (const [file, matches] of sortedFiles) {
+        const prox = lastAccessedDir && getProximityScore(file) > 0.5 ? " ★" : "";
+        output.push(`${file}${prox}:`);
         for (const m of matches.slice(0, 5)) {
           const line = m.lineContent.trim().slice(0, 100);
           output.push(`  ${m.lineNumber}: ${line}`);
@@ -2792,7 +3005,7 @@ Modes:
         }
       }
 
-      return { content: [{ type: "text" as const, text: output.join("\n") }] };
+      return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_grep") }] };
     }
   );
 
@@ -2906,6 +3119,9 @@ Useful for understanding code dependencies before making changes.`,
         // Directory might not exist
       }
 
+      // Update proximity context for the target file
+      updateProximityContext(targetFile);
+
       if (related.size === 0) {
         return { content: [{ type: "text" as const, text: `No related files found for: ${targetFile}` }] };
       }
@@ -2937,7 +3153,7 @@ Useful for understanding code dependencies before making changes.`,
         output.push("");
       }
 
-      return { content: [{ type: "text" as const, text: output.join("\n") }] };
+      return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_related") }] };
     }
   );
 
