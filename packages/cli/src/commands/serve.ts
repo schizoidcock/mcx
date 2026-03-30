@@ -1218,8 +1218,44 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             : "Unknown error";
           const truncatedLogs = truncateLogs(result.logs);
           const logsSection = truncatedLogs.length > 0 ? `\n\nLogs:\n${truncatedLogs.join("\n")}` : "";
+
+          // Auto-fetch error context using FFF if available
+          let contextSection = "";
+          if (fileFinder && result.error?.stack) {
+            // Parse stack for file:line patterns (e.g., "at file.ts:42:10")
+            const fileLinePattern = /at\s+(?:[^\s]+\s+)?\(?([^:]+):(\d+)(?::\d+)?\)?/g;
+            const matches = [...result.error.stack.matchAll(fileLinePattern)];
+            const seen = new Set<string>();
+
+            for (const match of matches.slice(0, 2)) { // Limit to 2 locations
+              const [, filePath, lineStr] = match;
+              const lineNum = parseInt(lineStr, 10);
+              const key = `${filePath}:${lineNum}`;
+              if (seen.has(key) || filePath.includes('node_modules') || filePath.includes('dist/')) continue;
+              seen.add(key);
+
+              // Try to grep around the line
+              try {
+                const grepResult = fileFinder.grep(`${filePath}`, { pageLimit: 1 });
+                if (grepResult.ok && grepResult.value.items.length > 0) {
+                  const file = grepResult.value.items[0];
+                  const content = await readFile(file.path, 'utf-8');
+                  const lines = content.split('\n');
+                  const start = Math.max(0, lineNum - 3);
+                  const end = Math.min(lines.length, lineNum + 2);
+                  const snippet = lines.slice(start, end)
+                    .map((l, i) => `${start + i + 1}${start + i + 1 === lineNum ? '>' : ' '} ${l}`)
+                    .join('\n');
+                  contextSection += `\n\n## Context: ${file.relativePath}:${lineNum}\n\`\`\`\n${snippet}\n\`\`\``;
+                }
+              } catch {
+                // Ignore context fetch errors
+              }
+            }
+          }
+
           return {
-            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}${logsSection}` }],
+            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}${logsSection}${contextSection}` }],
             isError: true,
           };
         }
