@@ -1089,6 +1089,28 @@ async function createMcxServerCore(
     return `exec_${executionCounter}`;
   }
 
+  // Method frecency tracker - counts how often each adapter.method is used
+  const methodUsage = new Map<string, number>();
+
+  function trackMethodUsage(code: string): void {
+    // Extract adapter.method patterns from code
+    // Matches: adapter.method( or adapter.methodName(
+    const methodPattern = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+    const adapterNames = new Set(Object.keys(adapterContext || {}));
+    let match;
+    while ((match = methodPattern.exec(code)) !== null) {
+      const [, adapterName, methodName] = match;
+      if (adapterNames.has(adapterName)) {
+        const key = `${adapterName}.${methodName}`;
+        methodUsage.set(key, (methodUsage.get(key) || 0) + 1);
+      }
+    }
+  }
+
+  function getMethodFrecency(adapterName: string, methodName: string): number {
+    return methodUsage.get(`${adapterName}.${methodName}`) || 0;
+  }
+
   // Initialize FFF (Fast File Finder) for fuzzy search - optional, graceful fallback
   let fileFinder: FileFinder | null = null;
   try {
@@ -1201,6 +1223,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             isError: true,
           };
         }
+
+        // Track method usage for frecency ranking in mcx_search
+        trackMethodUsage(params.code);
 
         // Extract native images before summarization
         const { value: valueWithoutImages, images } = extractImages(result.value);
@@ -1766,6 +1791,15 @@ Use storeAs to save results and return summary only:
             }
           }
         }
+      }
+
+      // Sort methods by frecency (most used first)
+      if (results.methods.length > 1) {
+        results.methods.sort((a, b) => {
+          const freqA = getMethodFrecency(a.adapter, a.method);
+          const freqB = getMethodFrecency(b.adapter, b.method);
+          return freqB - freqA; // Higher frequency first
+        });
       }
 
       // Format output
@@ -2350,6 +2384,12 @@ Examples:
         throttleStatus = 'blocked';
       }
 
+      // Get top used methods for frecency display
+      const topMethods = [...methodUsage.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([method, count]) => `${method}(${count})`);
+
       const output = [
         'Session Stats',
         '─────────────',
@@ -2357,6 +2397,7 @@ Examples:
         `Searches: ${searchCallCount} calls (${throttleStatus})`,
         `Executions: ${executionCounter}`,
         `Variables: ${variables.length > 0 ? variables.map(v => '$' + v).join(', ') : 'none'}`,
+        `Frecency: ${topMethods.length > 0 ? topMethods.join(', ') : 'no methods tracked yet'}`,
       ];
 
       if (sources.length > 0) {
