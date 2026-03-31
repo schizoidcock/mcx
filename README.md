@@ -105,13 +105,16 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 |---------|-------------|
 | **Lazy Loading** | Adapters from `~/.mcx/adapters/` metadata-scanned at startup, fully loaded on first use |
 | **Domain Hints** | Adapters grouped by domain (payments, database, email, etc.) for better discoverability |
+| **Silent Auto-Correction** | `executeSql` auto-corrects to `execute_sql` (camelCase to snake_case) |
 | **Context Efficiency** | Filtering happens in sandbox, model sees results only |
 | **Variable Persistence** | Store results as `$invoices`, `$customers` for later use |
+| **Auto-Compress** | Stale variables (>5min, >1KB) auto-compressed to save context |
 | **FTS5 Search** | Auto-index large outputs, search with `intent` parameter |
 | **FFF Integration** | Fast fuzzy file search, content grep, import analysis |
+| **Background Tasks** | `mcx_spawn` for long-running operations, check with `mcx_tasks` |
 | **Batch Operations** | `mcx_batch` for multiple operations in one call |
 | **File Processing** | `mcx_file` to process local files with `$file` injection |
-| **URL Fetching** | `mcx_fetch` with HTML-to-markdown conversion |
+| **URL Fetching** | `mcx_fetch` with HTML-to-markdown conversion (24h TTL cache) |
 | **Control Flow** | Loops, conditionals, retries run as native code |
 | **Privacy** | Intermediate data stays in sandbox |
 | **Security** | Network isolation, path traversal protection, env injection prevention |
@@ -124,12 +127,17 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 | `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
 | `mcx_file` | Process local files with `$file` variable injection |
-| `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing |
-| `mcx_find` | Fast fuzzy file search with frecency ranking |
+| `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing (24h cache) |
+| `mcx_find` | Fast fuzzy file search with frecency + proximity ranking |
 | `mcx_grep` | SIMD-accelerated content search across files |
 | `mcx_related` | Find related files by imports/exports analysis |
+| `mcx_tree` | Navigate large JSON results without loading full content |
+| `mcx_spawn` | Run code in background, returns task ID immediately |
+| `mcx_tasks` | List/check background tasks and their results |
 | `mcx_list` | List available adapters and skills |
-| `mcx_stats` | Session statistics (indexed content, variables) |
+| `mcx_stats` | Session statistics (indexed content, variables, network) |
+| `mcx_doctor` | Run diagnostics (Bun, SQLite, adapters, sandbox, FFF) |
+| `mcx_upgrade` | Get self-upgrade command for latest version |
 | `mcx_run_skill` | Run a registered skill |
 
 ## CLI Commands
@@ -168,6 +176,10 @@ first(data, 5)                  // First N items
 sum(data, 'amount')             // Sum numeric field
 count(data, 'status')           // Count by field
 table(data, 10)                 // Markdown table
+
+// Async helpers
+await poll(fn, { interval: 2000, maxIterations: 5 })  // Poll until done
+await waitFor(fn, { timeout: 30000 })                  // Wait for condition
 ```
 
 ## Documentation
