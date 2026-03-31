@@ -437,25 +437,45 @@ export class BunWorkerSandbox implements ISandbox {
               };
             }
 
+            // Precompute auto-correct lookup (O(1) instead of O(n) per access)
+            const autoCorrectMap = new Map();
+            for (const m of methods) {
+              // Map snake_case variants: execute_sql -> execute_sql (identity)
+              autoCorrectMap.set(m, m);
+              // Map normalized: executesql -> execute_sql
+              autoCorrectMap.set(m.toLowerCase().replace(/[-_]/g, ''), m);
+            }
+
             // Use Proxy to intercept undefined method calls with auto-correction
             const adapterProxy = new Proxy(methodsImpl, {
               get(target, prop) {
                 if (prop in target) return target[prop];
                 if (typeof prop === 'symbol') return undefined;
 
-                // Auto-correct: try snake_case or fuzzy match
-                const corrected = findAutoCorrect(String(prop), methods);
+                const propStr = String(prop);
+
+                // Fast path: check precomputed map (O(1))
+                const snake = toSnakeCase(propStr);
+                if (autoCorrectMap.has(snake)) {
+                  return target[autoCorrectMap.get(snake)];
+                }
+                const normalized = propStr.toLowerCase().replace(/[-_]/g, '');
+                if (autoCorrectMap.has(normalized)) {
+                  return target[autoCorrectMap.get(normalized)];
+                }
+
+                // Slow path: fuzzy match for typos (only if fast path failed)
+                const corrected = findAutoCorrect(propStr, methods);
                 if (corrected && corrected in target) {
-                  // Silently use the corrected method
                   return target[corrected];
                 }
 
                 // No auto-correct possible, throw with suggestions
-                const similar = findSimilar(String(prop), methods);
+                const similar = findSimilar(propStr, methods);
                 const suggestion = similar.length > 0
                   ? '. Did you mean: ' + similar.join(', ') + '?'
                   : '. Available: ' + methods.slice(0, 5).join(', ') + (methods.length > 5 ? '...' : '');
-                throw new Error(adapterName + '.' + String(prop) + ' is not a function' + suggestion);
+                throw new Error(adapterName + '.' + propStr + ' is not a function' + suggestion);
               }
             });
 
