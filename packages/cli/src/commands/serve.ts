@@ -947,15 +947,17 @@ function findSimilarParams(name: string, validParams: string[], maxDist = 3): st
  */
 function formatSignature(
   methodName: string,
-  params: Record<string, { type: string; description?: string; required?: boolean }> | undefined
+  params: Record<string, { type: string; description?: string; required?: boolean; default?: unknown }> | undefined
 ): string {
   if (!params || Object.keys(params).length === 0) {
     return `${methodName}()`;
   }
   const paramList = Object.entries(params)
     .map(([name, def]) => {
-      const optional = def.required === false ? '?' : '';
-      return `${name}${optional}: ${def.type}`;
+      const hasDefault = 'default' in def;
+      const optional = def.required === false || hasDefault ? '?' : '';
+      const defaultStr = hasDefault ? ` = ${JSON.stringify(def.default)}` : '';
+      return `${name}${optional}: ${def.type}${defaultStr}`;
     })
     .join(', ');
   return `${methodName}({ ${paramList} })`;
@@ -968,7 +970,7 @@ function validateParams(
   adapterName: string,
   methodName: string,
   params: unknown,
-  paramDefs: Record<string, { type: string; description?: string; required?: boolean }> | undefined
+  paramDefs: Record<string, { type: string; description?: string; required?: boolean; default?: unknown }> | undefined
 ): { valid: true } | { valid: false; error: string } {
   // No param definitions = no validation
   if (!paramDefs || Object.keys(paramDefs).length === 0) {
@@ -984,9 +986,10 @@ function validateParams(
   const errors: string[] = [];
   const hints: string[] = [];
 
-  // Check for missing required params
+  // Check for missing required params (skip if has default value)
   for (const [name, def] of Object.entries(paramDefs)) {
-    if (def.required !== false && !(name in providedParams)) {
+    const hasDefault = 'default' in def;
+    if (def.required !== false && !hasDefault && !(name in providedParams)) {
       errors.push(`missing required '${name}'`);
     }
   }

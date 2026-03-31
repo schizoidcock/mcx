@@ -10,6 +10,8 @@ All notable changes to MCX will be documented in this file.
 - **mcx_tasks** - List/check background tasks and their results
 
 ### Features
+- **Silent Method Auto-Correction** - `executeSql` → `execute_sql` automatically (camelCase → snake_case)
+- **Default Param Support** - Params with `default` values don't require explicit input
 - **Tool Pair Suggestions** - Tools suggest complementary next steps (mcx_find → mcx_grep)
 - **Proximity Reranking** - Files near last accessed directory boosted with ★ marker
 - **Network Byte Tracking** - Session stats show ↓in ↑out bytes transferred

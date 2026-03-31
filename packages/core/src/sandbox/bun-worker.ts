@@ -384,6 +384,12 @@ export class BunWorkerSandbox implements ISandbox {
             return matrix[b.length][a.length];
           };
 
+          // Convert camelCase to snake_case
+          const toSnakeCase = (str) => str
+            .replace(/([a-z])([A-Z])/g, '$1_$2')
+            .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+            .toLowerCase();
+
           // Find similar method names
           const findSimilar = (name, methods, maxDist = 3) => {
             const normalized = name.toLowerCase().replace(/[-_]/g, '');
@@ -393,6 +399,22 @@ export class BunWorkerSandbox implements ISandbox {
               .sort((a, b) => a.dist - b.dist)
               .slice(0, 3)
               .map(x => x.method);
+          };
+
+          // Find best auto-correctable match (distance ≤ 2 = safe to auto-correct)
+          const findAutoCorrect = (name, methods) => {
+            // Try exact snake_case conversion first
+            const snake = toSnakeCase(name);
+            if (methods.includes(snake)) return snake;
+
+            // Try normalized fuzzy match
+            const normalized = name.toLowerCase().replace(/[-_]/g, '');
+            const matches = methods
+              .map(m => ({ method: m, dist: levenshtein(normalized, m.toLowerCase().replace(/[-_]/g, '')) }))
+              .filter(x => x.dist <= 2) // Only auto-correct if very close
+              .sort((a, b) => a.dist - b.dist);
+
+            return matches.length > 0 ? matches[0].method : null;
           };
 
           // Create adapter proxies with helpful error messages
@@ -415,11 +437,20 @@ export class BunWorkerSandbox implements ISandbox {
               };
             }
 
-            // Use Proxy to intercept undefined method calls
+            // Use Proxy to intercept undefined method calls with auto-correction
             const adapterProxy = new Proxy(methodsImpl, {
               get(target, prop) {
                 if (prop in target) return target[prop];
                 if (typeof prop === 'symbol') return undefined;
+
+                // Auto-correct: try snake_case or fuzzy match
+                const corrected = findAutoCorrect(String(prop), methods);
+                if (corrected && corrected in target) {
+                  // Silently use the corrected method
+                  return target[corrected];
+                }
+
+                // No auto-correct possible, throw with suggestions
                 const similar = findSimilar(String(prop), methods);
                 const suggestion = similar.length > 0
                   ? '. Did you mean: ' + similar.join(', ') + '?'

@@ -280,19 +280,33 @@ await crm.getLeads({ limit: 10 });
 await chromeDevtools.listPages();  // chrome-devtools → chromeDevtools
 ```
 
-### Fuzzy Method Suggestions
+### Silent Method Auto-Correction
 
-When calling an undefined method, MCX suggests similar methods:
+MCX automatically corrects method names when close enough (Levenshtein distance ≤ 2):
 
 ```javascript
-supabase.executeSql()
-// Error: supabase.executeSql is not a function. Did you mean: execute_sql?
+// These all work - auto-corrected silently:
+supabase.executeSql()      // → supabase.execute_sql()
+supabase.listProjects()    // → supabase.list_projects()
+supabase.getProject()      // → supabase.get_project()
+```
 
-supabase.listProjects()
-// Error: supabase.listProjects is not a function. Did you mean: list_projects?
+Only truly unknown methods throw errors with suggestions:
 
+```javascript
 supabase.unknownMethod()
 // Error: supabase.unknownMethod is not a function. Available: list_organizations, get_organization...
+```
+
+### Default Parameter Values
+
+Parameters with `default` values in the adapter definition don't need to be provided:
+
+```javascript
+// read_only has default: true, so this works:
+supabase.execute_sql({ query: "SELECT * FROM users" })
+// Equivalent to:
+supabase.execute_sql({ query: "SELECT * FROM users", read_only: true })
 ```
 
 ## Advanced Tool Use
