@@ -2545,7 +2545,9 @@ Examples:
               // Escape FTS5 special chars in queries
               const safeQueries = params.queries.map(q => q.replace(/[.:"'()]/g, ' ').trim());
               const batchResults = batchSearch(store, safeQueries, { limit: 5, sourceId: cached.sourceId });
+              let totalMatches = 0;
               for (const [query, results] of Object.entries(batchResults)) {
+                totalMatches += results.length;
                 if (results.length === 0) {
                   output.push(`  "${query}": no matches`);
                 } else {
@@ -2557,6 +2559,11 @@ Examples:
                     output.push('');
                   }
                 }
+              }
+              // If no matches, emphasize trying different terms
+              if (totalMatches === 0) {
+                output.push('');
+                output.push('→ Try mcx_search({ queries: ["different", "terms"] }) - content is cached');
               }
             }
 
@@ -2646,7 +2653,9 @@ Examples:
           // Escape FTS5 special chars in queries
           const safeQueries = params.queries.map(q => q.replace(/[.:"'()]/g, ' ').trim());
           const batchResults = batchSearch(store, safeQueries, { limit: 5, sourceId });
+          let totalMatches = 0;
           for (const [query, results] of Object.entries(batchResults)) {
+            totalMatches += results.length;
             if (results.length === 0) {
               output.push(`  "${query}": no matches`);
             } else {
@@ -2658,6 +2667,11 @@ Examples:
                 output.push('');
               }
             }
+          }
+          // If no matches, emphasize trying different terms
+          if (totalMatches === 0) {
+            output.push('');
+            output.push('→ Try mcx_search({ queries: ["different", "terms"] }) - content is cached');
           }
         }
 
