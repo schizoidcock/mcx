@@ -1711,9 +1711,9 @@ Query $spec with JS. All $refs pre-resolved.
 - mcx_search({ code: "$spec.adapters.stripe.tools.createCustomer" })
 
 ## Mode 2: Content Search (queries param)
-FTS5 search on indexed content (from mcx_execute with intent).
+FTS5 search on ALL indexed content (from mcx_execute, mcx_fetch, mcx_file).
 - mcx_search({ queries: ["error", "timeout"] })
-- mcx_search({ queries: ["invoice"], source: "exec_1" })
+- mcx_search({ queries: ["bun", "configuration"] }) // searches fetched URLs too
 
 ## Mode 3: Adapter/Method Search (query/adapter/method params)
 - mcx_search({ adapter: "stripe" }) - List all methods
@@ -2503,14 +2503,16 @@ $file shape:
     "mcx_fetch",
     {
       title: "Fetch and Index URL",
-      description: `Fetch URL and index content. Returns summary + distinctive terms.
-Caches for 24h - use force:true to bypass.
+      description: `Fetch URL, convert to markdown, index in FTS5, and optionally search.
+Caches 24h - same URL returns cached results instantly.
 
-Use for: API docs, OpenAPI specs, external documentation.
+WORKFLOW: Fetch once with queries to get relevant content immediately.
+If queries don't match, use mcx_search with different terms on the cached content.
+
 Examples:
-- mcx_fetch({ url: "https://api.example.com/openapi.json" })
-- mcx_fetch({ url: "https://docs.example.com/guide", queries: ["auth", "api key"] })
-- mcx_fetch({ url: "...", force: true }) // bypass cache`,
+- mcx_fetch({ url: "https://docs.example.com/guide", queries: ["authentication", "setup"] })
+- mcx_fetch({ url: "https://api.example.com/openapi.json" }) // index only
+- mcx_fetch({ url: "...", force: true }) // bypass 24h cache`,
       inputSchema: FetchInputSchema,
       annotations: {
         readOnlyHint: true,
@@ -2540,11 +2542,20 @@ Examples:
             if (params.queries?.length) {
               output.push('');
               output.push('Search Results:');
-              const batchResults = batchSearch(store, params.queries, { limit: 3, sourceId: cached.sourceId });
+              // Escape FTS5 special chars in queries
+              const safeQueries = params.queries.map(q => q.replace(/[.:"'()]/g, ' ').trim());
+              const batchResults = batchSearch(store, safeQueries, { limit: 5, sourceId: cached.sourceId });
               for (const [query, results] of Object.entries(batchResults)) {
-                output.push(`  "${query}": ${results.length} matches`);
-                for (const r of results.slice(0, 2)) {
-                  output.push(`    - ${r.snippet.slice(0, 100)}...`);
+                if (results.length === 0) {
+                  output.push(`  "${query}": no matches`);
+                } else {
+                  output.push(`  "${query}" (${results.length} matches):`);
+                  for (const r of results.slice(0, 3)) {
+                    // Show more context - up to 300 chars
+                    const snippet = r.snippet.length > 300 ? r.snippet.slice(0, 300) + '...' : r.snippet;
+                    output.push(`    ${snippet}`);
+                    output.push('');
+                  }
                 }
               }
             }
@@ -2625,17 +2636,27 @@ Examples:
         const output: string[] = [
           `Indexed "${label}": ${chunks} sections, ${content.length} chars`,
           `Terms: ${terms.slice(0, 20).join(', ')}`,
+          `Use mcx_search({ queries: [...] }) to search this content.`,
         ];
 
-        // Optional immediate search
+        // Optional immediate search with better results
         if (params.queries?.length) {
           output.push('');
           output.push('Search Results:');
-          const batchResults = batchSearch(store, params.queries, { limit: 3, sourceId });
+          // Escape FTS5 special chars in queries
+          const safeQueries = params.queries.map(q => q.replace(/[.:"'()]/g, ' ').trim());
+          const batchResults = batchSearch(store, safeQueries, { limit: 5, sourceId });
           for (const [query, results] of Object.entries(batchResults)) {
-            output.push(`  "${query}": ${results.length} matches`);
-            for (const r of results.slice(0, 2)) {
-              output.push(`    - ${r.snippet.slice(0, 100)}...`);
+            if (results.length === 0) {
+              output.push(`  "${query}": no matches`);
+            } else {
+              output.push(`  "${query}" (${results.length} matches):`);
+              for (const r of results.slice(0, 3)) {
+                // Show more context - up to 300 chars
+                const snippet = r.snippet.length > 300 ? r.snippet.slice(0, 300) + '...' : r.snippet;
+                output.push(`    ${snippet}`);
+                output.push('');
+              }
             }
           }
         }
