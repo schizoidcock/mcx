@@ -362,6 +362,33 @@ function suggestNextTool(toolName: string): string {
   return TOOL_SUGGESTIONS[toolName] || "";
 }
 
+/** Escape FTS5 special characters in query */
+function escapeFts5Query(query: string): string {
+  return query.replace(/[.:"'()]/g, ' ').trim();
+}
+
+/** Format batch search results for output, returns total match count */
+function formatSearchResults(
+  batchResults: Record<string, { snippet: string }[]>,
+  output: string[]
+): number {
+  let totalMatches = 0;
+  for (const [query, results] of Object.entries(batchResults)) {
+    totalMatches += results.length;
+    if (results.length === 0) {
+      output.push(`  "${query}": no matches`);
+    } else {
+      output.push(`  "${query}" (${results.length} matches):`);
+      for (const r of results.slice(0, 3)) {
+        const snippet = r.snippet.length > 300 ? r.snippet.slice(0, 300) + '...' : r.snippet;
+        output.push(`    ${snippet}`);
+        output.push('');
+      }
+    }
+  }
+  return totalMatches;
+}
+
 /** Last accessed directory for proximity reranking */
 let lastAccessedDir: string | null = null;
 
@@ -2542,28 +2569,12 @@ Examples:
             if (params.queries?.length) {
               output.push('');
               output.push('Search Results:');
-              // Escape FTS5 special chars in queries
-              const safeQueries = params.queries.map(q => q.replace(/[.:"'()]/g, ' ').trim());
-              const batchResults = batchSearch(store, safeQueries, { limit: 5, sourceId: cached.sourceId });
-              let totalMatches = 0;
-              for (const [query, results] of Object.entries(batchResults)) {
-                totalMatches += results.length;
-                if (results.length === 0) {
-                  output.push(`  "${query}": no matches`);
-                } else {
-                  output.push(`  "${query}" (${results.length} matches):`);
-                  for (const r of results.slice(0, 3)) {
-                    // Show more context - up to 300 chars
-                    const snippet = r.snippet.length > 300 ? r.snippet.slice(0, 300) + '...' : r.snippet;
-                    output.push(`    ${snippet}`);
-                    output.push('');
-                  }
-                }
-              }
-              // If no matches, emphasize trying different terms
+              const safeQueries = params.queries.map(escapeFts5Query);
+              const batchResults = batchSearch(store, safeQueries, { limit: 3, sourceId: cached.sourceId });
+              const totalMatches = formatSearchResults(batchResults, output);
               if (totalMatches === 0) {
                 output.push('');
-                output.push('→ Try mcx_search({ queries: ["different", "terms"] }) - content is cached');
+                output.push('→ Try mcx_search({ queries: [...] }) with different terms');
               }
             }
 
@@ -2646,32 +2657,16 @@ Examples:
           `Use mcx_search({ queries: [...] }) to search this content.`,
         ];
 
-        // Optional immediate search with better results
+        // Optional immediate search
         if (params.queries?.length) {
           output.push('');
           output.push('Search Results:');
-          // Escape FTS5 special chars in queries
-          const safeQueries = params.queries.map(q => q.replace(/[.:"'()]/g, ' ').trim());
-          const batchResults = batchSearch(store, safeQueries, { limit: 5, sourceId });
-          let totalMatches = 0;
-          for (const [query, results] of Object.entries(batchResults)) {
-            totalMatches += results.length;
-            if (results.length === 0) {
-              output.push(`  "${query}": no matches`);
-            } else {
-              output.push(`  "${query}" (${results.length} matches):`);
-              for (const r of results.slice(0, 3)) {
-                // Show more context - up to 300 chars
-                const snippet = r.snippet.length > 300 ? r.snippet.slice(0, 300) + '...' : r.snippet;
-                output.push(`    ${snippet}`);
-                output.push('');
-              }
-            }
-          }
-          // If no matches, emphasize trying different terms
+          const safeQueries = params.queries.map(escapeFts5Query);
+          const batchResults = batchSearch(store, safeQueries, { limit: 3, sourceId });
+          const totalMatches = formatSearchResults(batchResults, output);
           if (totalMatches === 0) {
             output.push('');
-            output.push('→ Try mcx_search({ queries: ["different", "terms"] }) - content is cached');
+            output.push('→ Try mcx_search({ queries: [...] }) with different terms');
           }
         }
 
