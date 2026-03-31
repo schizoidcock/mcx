@@ -2,6 +2,19 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.15] - 2026-03-31
+
+### Improvements
+- **mcx_fetch Search Results** - Show 300 char snippets (was 100), escape FTS5 special chars
+- **Workflow Clarity** - mcx_fetch suggests mcx_search for additional queries
+- **mcx_search Description** - Now mentions it searches mcx_fetch content too
+
+### Refactoring
+- Extracted `escapeFts5Query()` and `formatSearchResults()` helpers
+- Precomputed auto-correct lookup map for O(1) method resolution
+
+---
+
 ## [0.3.12] - 2026-03-30
 
 ### New Tools
