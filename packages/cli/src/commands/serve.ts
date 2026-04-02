@@ -998,7 +998,7 @@ function validateParams(
   methodName: string,
   params: unknown,
   paramDefs: Record<string, { type: string; description?: string; required?: boolean; default?: unknown }> | undefined
-): { valid: true } | { valid: false; error: string } {
+): { valid: true; correctedParams?: Record<string, unknown> } | { valid: false; error: string } {
   // No param definitions = no validation
   if (!paramDefs || Object.keys(paramDefs).length === 0) {
     return { valid: true };
@@ -1008,32 +1008,43 @@ function validateParams(
     ? params as Record<string, unknown>
     : {};
 
+  // Auto-correct param names before validation
+  const correctedParams: Record<string, unknown> = { ...providedParams };
   const expectedNames = Object.keys(paramDefs);
-  const providedNames = Object.keys(providedParams);
+  const corrections: string[] = [];
+
+  for (const provided of Object.keys(providedParams)) {
+    if (!(provided in paramDefs)) {
+      const similar = findSimilarParams(provided, expectedNames);
+      // Auto-correct if exactly one close match and target param not already provided
+      if (similar.length > 0 && !(similar[0] in correctedParams)) {
+        correctedParams[similar[0]] = correctedParams[provided];
+        delete correctedParams[provided];
+        corrections.push(`${provided}→${similar[0]}`);
+      }
+    }
+  }
+
+  const providedNames = Object.keys(correctedParams);
   const errors: string[] = [];
   const hints: string[] = [];
 
   // Check for missing required params (skip if has default value)
   for (const [name, def] of Object.entries(paramDefs)) {
     const hasDefault = 'default' in def;
-    if (def.required !== false && !hasDefault && !(name in providedParams)) {
+    if (def.required !== false && !hasDefault && !(name in correctedParams)) {
       errors.push(`missing required '${name}'`);
     }
   }
 
   for (const provided of providedNames) {
     if (!(provided in paramDefs)) {
-      const similar = findSimilarParams(provided, expectedNames);
-      if (similar.length > 0) {
-        hints.push(`'${provided}' → did you mean '${similar[0]}'?`);
-      } else {
-        errors.push(`unknown param '${provided}'`);
-      }
+      errors.push(`unknown param '${provided}'`);
     }
   }
 
-  // Check types for provided params
-  for (const [name, value] of Object.entries(providedParams)) {
+  // Check types for corrected params
+  for (const [name, value] of Object.entries(correctedParams)) {
     const def = paramDefs[name];
     if (!def) continue;
 
@@ -1052,8 +1063,11 @@ function validateParams(
     }
   }
 
-  if (errors.length === 0 && hints.length === 0) {
-    return { valid: true };
+  if (errors.length === 0) {
+    // Return corrected params if any corrections were made
+    return corrections.length > 0
+      ? { valid: true, correctedParams }
+      : { valid: true };
   }
 
   // Build helpful error message
@@ -1082,13 +1096,15 @@ function buildAdapterContext(adapters: Adapter[]): Record<string, Record<string,
   for (const adapter of adapters) {
     const methods: Record<string, (params: unknown) => Promise<unknown>> = {};
     for (const [methodName, method] of Object.entries(adapter.tools)) {
-      // Wrap execute with parameter validation
+      // Wrap execute with parameter validation and auto-correction
       methods[methodName] = async (params: unknown) => {
         const validation = validateParams(adapter.name, methodName, params, method.parameters);
         if (!validation.valid) {
           throw new Error(validation.error);
         }
-        return method.execute((params ?? {}) as Record<string, unknown>);
+        // Use corrected params if auto-correction was applied
+        const finalParams = validation.correctedParams ?? (params ?? {});
+        return method.execute(finalParams as Record<string, unknown>);
       };
     }
 
