@@ -2,6 +2,13 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.16] - 2026-04-02
+
+### Features
+- **Parameter Auto-Correction** - `sql`→`query`, `id`→`project_id` auto-corrected silently
+
+---
+
 ## [0.3.15] - 2026-03-31
 
 ### Improvements
