@@ -2,6 +2,14 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.17] - 2026-04-02
+
+### Bug Fixes
+- Fixed param auto-correction using wrong value source (could return undefined)
+- Lazy-init correctedParams to avoid unnecessary object copy on every call
+
+---
+
 ## [0.3.16] - 2026-04-02
 
 ### Features
