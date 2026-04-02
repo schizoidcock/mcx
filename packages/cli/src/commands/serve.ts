@@ -1008,31 +1008,30 @@ function validateParams(
     ? params as Record<string, unknown>
     : {};
 
-  // Auto-correct param names before validation
-  const correctedParams: Record<string, unknown> = { ...providedParams };
+  // Auto-correct param names before validation (lazy-init to avoid copy when not needed)
   const expectedNames = Object.keys(paramDefs);
-  const corrections: string[] = [];
+  let correctedParams: Record<string, unknown> | null = null;
 
   for (const provided of Object.keys(providedParams)) {
     if (!(provided in paramDefs)) {
       const similar = findSimilarParams(provided, expectedNames);
-      // Auto-correct if exactly one close match and target param not already provided
-      if (similar.length > 0 && !(similar[0] in correctedParams)) {
-        correctedParams[similar[0]] = correctedParams[provided];
+      // Auto-correct if close match and target param not already provided
+      if (similar.length > 0 && !(similar[0] in providedParams)) {
+        correctedParams ??= { ...providedParams };
+        correctedParams[similar[0]] = providedParams[provided]; // Use original value
         delete correctedParams[provided];
-        corrections.push(`${provided}→${similar[0]}`);
       }
     }
   }
 
-  const providedNames = Object.keys(correctedParams);
+  const finalParams = correctedParams ?? providedParams;
+  const providedNames = Object.keys(finalParams);
   const errors: string[] = [];
-  const hints: string[] = [];
 
   // Check for missing required params (skip if has default value)
   for (const [name, def] of Object.entries(paramDefs)) {
     const hasDefault = 'default' in def;
-    if (def.required !== false && !hasDefault && !(name in correctedParams)) {
+    if (def.required !== false && !hasDefault && !(name in finalParams)) {
       errors.push(`missing required '${name}'`);
     }
   }
@@ -1043,8 +1042,8 @@ function validateParams(
     }
   }
 
-  // Check types for corrected params
-  for (const [name, value] of Object.entries(correctedParams)) {
+  // Check types for params
+  for (const [name, value] of Object.entries(finalParams)) {
     const def = paramDefs[name];
     if (!def) continue;
 
@@ -1065,8 +1064,8 @@ function validateParams(
 
   if (errors.length === 0) {
     // Return corrected params if any corrections were made
-    return corrections.length > 0
-      ? { valid: true, correctedParams }
+    return correctedParams
+      ? { valid: true, correctedParams: finalParams }
       : { valid: true };
   }
 
