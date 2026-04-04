@@ -2,6 +2,21 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.19] - 2026-04-04
+
+### Features
+- **mcx_find/mcx_grep path parameter** - Search in any directory with `path: "D:/projects/myapp"`
+- **mcx_find/mcx_grep glob parameter** - Filter by file pattern with `glob: "*.tsx"`
+- **LRU cache for external finders** - Cached by path (max 5, TTL 5 min), second search is instant
+- **withFinder helper** - Centralized finder setup with path normalization
+
+### Improvements
+- Cache auto-cleans expired entries on each access
+- Concurrent creation prevention (spinlock)
+- try/catch/finally around finder creation
+
+---
+
 ## [0.3.18] - 2026-04-04
 
 ### Features

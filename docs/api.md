@@ -181,6 +181,7 @@ Results are ranked by match score + frecency (recently accessed files boosted) +
 |-----------|------|---------|-------------|
 | `query` | string | required | Search query (supports glob, exclusion, path filters) |
 | `pattern` | string | - | Alias for `query` (for compatibility) |
+| `path` | string | cwd | Directory to search in (absolute path) |
 | `limit` | number | `20` | Max results to return |
 
 ### mcx_grep
@@ -199,6 +200,7 @@ mcx_grep({ query: "improt", mode: "fuzzy" })   // Typo-tolerant fuzzy
 |-----------|------|---------|-------------|
 | `query` | string | required | Search pattern (prefix with `*.ext` or `path/` to filter) |
 | `pattern` | string | - | Alias for `query` (for compatibility) |
+| `path` | string | cwd | Directory to search in (absolute path) |
 | `mode` | string | `"plain"` | Search mode: `plain`, `regex`, or `fuzzy` |
 | `limit` | number | `50` | Max matches to return |
 

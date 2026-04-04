@@ -1339,15 +1339,18 @@ async function createMcxServerCore(
   }
 
   // Initialize FFF (Fast File Finder) for fuzzy search - optional, graceful fallback
+  let FileFinderClass: typeof import("@ff-labs/fff-bun").FileFinder | null = null;
+  const fffBasePath = process.cwd();
   try {
     const { FileFinder: FF } = await import("@ff-labs/fff-bun");
+    FileFinderClass = FF;
     const fffInit = FF.create({
-      basePath: process.cwd(),
+      basePath: fffBasePath,
       frecencyDbPath: join(getMcxHomeDir(), "frecency.db"),
     });
     if (fffInit.ok) {
       fileFinder = fffInit.value;
-      console.error(pc.dim(`FFF initialized for: ${process.cwd()}`));
+      console.error(pc.dim(`FFF initialized for: ${fffBasePath}`));
       // Wait for initial scan (non-blocking, 5s timeout)
       fileFinder.waitForScan(5000);
     } else {
@@ -1355,6 +1358,105 @@ async function createMcxServerCore(
     }
   } catch (err) {
     console.error(pc.yellow(`FFF not available (native binary missing) - mcx_find/mcx_grep disabled`));
+  }
+
+  // LRU cache for external path finders (max 5 entries, 5 min TTL)
+  const FINDER_CACHE_MAX = 5;
+  const FINDER_CACHE_TTL_MS = 5 * 60 * 1000;
+  const finderCache = new Map<string, { finder: FileFinder; lastAccess: number }>();
+  const finderCreating = new Set<string>(); // Prevent concurrent creation
+
+  /** Clean expired entries from cache */
+  function cleanExpiredFinders(): void {
+    const now = Date.now();
+    for (const [key, val] of finderCache) {
+      if (now - val.lastAccess >= FINDER_CACHE_TTL_MS) {
+        val.finder.destroy();
+        finderCache.delete(key);
+      }
+    }
+  }
+
+  /** Get or create cached finder for external path */
+  async function getCachedFinder(searchPath: string): Promise<FileFinder | null> {
+    if (!FileFinderClass) return null;
+
+    // Clean expired entries on each access
+    cleanExpiredFinders();
+
+    const now = Date.now();
+    const cached = finderCache.get(searchPath);
+
+    // Return cached if exists (TTL already checked by cleanExpiredFinders)
+    if (cached) {
+      cached.lastAccess = now;
+      return cached.finder;
+    }
+
+    // Prevent concurrent creation for same path
+    if (finderCreating.has(searchPath)) {
+      // Wait briefly and retry (simple spinlock)
+      await new Promise(r => setTimeout(r, 100));
+      return getCachedFinder(searchPath);
+    }
+
+    finderCreating.add(searchPath);
+    try {
+      // Evict LRU if at capacity
+      if (finderCache.size >= FINDER_CACHE_MAX) {
+        let oldest: string | null = null;
+        let oldestTime = Infinity;
+        for (const [key, val] of finderCache) {
+          if (val.lastAccess < oldestTime) {
+            oldestTime = val.lastAccess;
+            oldest = key;
+          }
+        }
+        if (oldest) {
+          finderCache.get(oldest)?.finder.destroy();
+          finderCache.delete(oldest);
+        }
+      }
+
+      // Create new finder
+      const init = FileFinderClass.create({ basePath: searchPath });
+      if (!init.ok) return null;
+      init.value.waitForScan(3000);
+      finderCache.set(searchPath, { finder: init.value, lastAccess: now });
+      return init.value;
+    } catch {
+      return null;
+    } finally {
+      finderCreating.delete(searchPath);
+    }
+  }
+
+  type McpResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+
+  /** Execute search with finder, handling external paths (cached) */
+  async function withFinder<T>(
+    searchPath: string | undefined,
+    fn: (finder: FileFinder) => T | Promise<T>
+  ): Promise<T | McpResult> {
+    // Normalize paths for comparison
+    const normalizedSearch = searchPath ? path.resolve(searchPath) : null;
+    const normalizedBase = path.resolve(fffBasePath);
+
+    let finder: FileFinder | null;
+
+    if (normalizedSearch && normalizedSearch !== normalizedBase) {
+      finder = await getCachedFinder(normalizedSearch);
+      if (!finder) {
+        return { content: [{ type: "text" as const, text: `Failed to initialize search in: ${searchPath}` }], isError: true };
+      }
+    } else {
+      finder = fileFinder;
+      if (!finder) {
+        return { content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }], isError: true };
+      }
+    }
+
+    return fn(finder);
   }
 
   const server = new McpServer({
@@ -3155,11 +3257,13 @@ Examples:
   const FindInputSchema = z.object({
     query: z.string().optional().describe("Fuzzy search query. Supports: *.ext, !exclude, /path/, status:modified"),
     pattern: z.string().optional().describe("Alias for query (for compatibility)"),
+    path: z.string().optional().describe("Directory to search in (absolute path). Defaults to cwd."),
+    glob: z.string().optional().describe("File pattern filter (e.g., *.tsx, **/*.ts)"),
     limit: z.number().optional().default(20).describe("Max results (default: 20)"),
-  }).transform(({ pattern, ...rest }) => ({
+  }).transform(({ pattern, glob, ...rest }) => ({
     ...rest,
-    query: rest.query || pattern || "",
-  })).refine(d => d.query, { message: "Missing query or pattern parameter" });
+    query: glob ? `${glob} ${rest.query || pattern || ""}`.trim() : (rest.query || pattern || ""),
+  }));
   type FindInput = z.infer<typeof FindInputSchema>;
 
   server.registerTool(
@@ -3175,6 +3279,8 @@ Query syntax:
 - "src/" - Path contains
 - "status:modified" - Git modified files
 
+Use path param to search in a different directory (e.g., path: "D:/projects/myapp").
+
 Results ranked by: match score + frecency (recent files boosted) + git status.`,
       inputSchema: FindInputSchema,
       annotations: {
@@ -3185,46 +3291,42 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
       },
     },
     async (params: FindInput) => {
-      if (!fileFinder) {
-        return {
-          content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
-          isError: true,
-        };
+      if (!params.query) {
+        return { content: [{ type: "text" as const, text: "Missing query or pattern parameter." }], isError: true };
       }
 
-      const result = fileFinder.fileSearch(params.query, { pageSize: params.limit });
-      if (!result.ok) {
-        return {
-          content: [{ type: "text" as const, text: `Search failed: ${result.error}` }],
-          isError: true,
-        };
-      }
+      return withFinder(params.path, (finder) => {
+        const result = finder.fileSearch(params.query, { pageSize: params.limit });
+        if (!result.ok) {
+          return { content: [{ type: "text" as const, text: `Search failed: ${result.error}` }], isError: true };
+        }
 
-      const { items, totalMatched } = result.value;
-      if (items.length === 0) {
-        return { content: [{ type: "text" as const, text: "No files found." }] };
-      }
+        const { items, totalMatched } = result.value;
+        if (items.length === 0) {
+          return { content: [{ type: "text" as const, text: "No files found." }] };
+        }
 
-      // Proximity reranking: compute scores once, use for sort and display
-      const proxScores = lastAccessedDir
-        ? new Map(items.map(f => [f.path, getProximityScore(f.path)]))
-        : null;
+        // Proximity reranking: compute scores once, use for sort and display
+        const proxScores = lastAccessedDir
+          ? new Map(items.map(f => [f.path, getProximityScore(f.path)]))
+          : null;
 
-      const rankedItems = proxScores
-        ? [...items].sort((a, b) => (proxScores.get(b.path) || 0) - (proxScores.get(a.path) || 0))
-        : items;
+        const rankedItems = proxScores
+          ? [...items].sort((a, b) => (proxScores.get(b.path) || 0) - (proxScores.get(a.path) || 0))
+          : items;
 
-      const output = [
-        `Found ${totalMatched} files (showing ${rankedItems.length}):`,
-        "",
-        ...rankedItems.map((f) => {
-          const status = f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : "";
-          const prox = proxScores && (proxScores.get(f.path) || 0) > 0.5 ? " ★" : "";
-          return `${f.relativePath}${status}${prox}`;
-        }),
-      ];
+        const output = [
+          `Found ${totalMatched} files (showing ${rankedItems.length}):`,
+          "",
+          ...rankedItems.map((f) => {
+            const status = f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : "";
+            const prox = proxScores && (proxScores.get(f.path) || 0) > 0.5 ? " ★" : "";
+            return `${f.relativePath}${status}${prox}`;
+          }),
+        ];
 
-      return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_find") }] };
+        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_find") }] };
+      });
     }
   );
 
@@ -3232,12 +3334,15 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
   const GrepInputSchema = z.object({
     query: z.string().optional().describe("Search pattern. Prefix with *.ext or path/ to filter files."),
     pattern: z.string().optional().describe("Alias for query (for compatibility)"),
+    path: z.string().optional().describe("Directory to search in (absolute path). Defaults to cwd."),
+    glob: z.string().optional().describe("File pattern filter (e.g., *.tsx, **/*.ts)"),
     mode: z.enum(["plain", "regex", "fuzzy"]).optional().default("plain").describe("Search mode"),
     limit: z.number().optional().default(50).describe("Max matches (default: 50)"),
-  }).transform(({ pattern, ...rest }) => ({
+  }).transform(({ pattern, glob, ...rest }) => ({
     ...rest,
-    query: rest.query || pattern || "",
-  })).refine(d => d.query, { message: "Missing query or pattern parameter" });
+    // Prepend glob filter to query if provided (FFF query syntax)
+    query: glob ? `${glob} ${rest.query || pattern || ""}`.trim() : (rest.query || pattern || ""),
+  }));
   type GrepInput = z.infer<typeof GrepInputSchema>;
 
   server.registerTool(
@@ -3250,6 +3355,8 @@ Query examples:
 - "TODO" - Plain text search
 - "*.ts useState" - Search in TypeScript files
 - "src/ handleClick" - Search in src directory
+
+Use path param to search in a different directory (e.g., path: "D:/projects/myapp").
 
 Modes:
 - plain: Literal text match (fast)
@@ -3264,65 +3371,49 @@ Modes:
       },
     },
     async (params: GrepInput) => {
-      if (!fileFinder) {
-        return {
-          content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
-          isError: true,
-        };
+      if (!params.query) {
+        return { content: [{ type: "text" as const, text: "Missing query or pattern parameter." }], isError: true };
       }
 
-      const result = fileFinder.grep(params.query, {
-        mode: params.mode,
-        pageLimit: params.limit,
+      return withFinder(params.path, (finder) => {
+        const result = finder.grep(params.query, { mode: params.mode, pageLimit: params.limit });
+        if (!result.ok) {
+          return { content: [{ type: "text" as const, text: `Grep failed: ${result.error}` }], isError: true };
+        }
+
+        const { items, totalMatched, totalFilesSearched } = result.value;
+        if (items.length === 0) {
+          return { content: [{ type: "text" as const, text: `No matches in ${totalFilesSearched} files.` }] };
+        }
+
+        const output = [`${totalMatched} matches in ${totalFilesSearched} files (showing ${items.length}):`, ""];
+
+        // Group by file
+        const byFile = new Map<string, typeof items>();
+        for (const item of items) {
+          const existing = byFile.get(item.relativePath) || [];
+          existing.push(item);
+          byFile.set(item.relativePath, existing);
+        }
+
+        // Sort files by proximity
+        const fileKeys = [...byFile.keys()];
+        const proxScores = lastAccessedDir ? new Map(fileKeys.map(f => [f, getProximityScore(f)])) : null;
+        const sortedFiles = proxScores
+          ? [...byFile.entries()].sort((a, b) => (proxScores.get(b[0]) || 0) - (proxScores.get(a[0]) || 0))
+          : [...byFile.entries()];
+
+        for (const [file, matches] of sortedFiles) {
+          const prox = proxScores && (proxScores.get(file) || 0) > 0.5 ? " ★" : "";
+          output.push(`${file}${prox}:`);
+          for (const m of matches.slice(0, 5)) {
+            output.push(`  ${m.lineNumber}: ${m.lineContent.trim().slice(0, 100)}`);
+          }
+          if (matches.length > 5) output.push(`  ... +${matches.length - 5} more matches`);
+        }
+
+        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_grep") }] };
       });
-      if (!result.ok) {
-        return {
-          content: [{ type: "text" as const, text: `Grep failed: ${result.error}` }],
-          isError: true,
-        };
-      }
-
-      const { items, totalMatched, totalFilesSearched } = result.value;
-      if (items.length === 0) {
-        return { content: [{ type: "text" as const, text: `No matches in ${totalFilesSearched} files.` }] };
-      }
-
-      const output = [
-        `${totalMatched} matches in ${totalFilesSearched} files (showing ${items.length}):`,
-        "",
-      ];
-
-      // Group by file
-      const byFile = new Map<string, typeof items>();
-      for (const item of items) {
-        const existing = byFile.get(item.relativePath) || [];
-        existing.push(item);
-        byFile.set(item.relativePath, existing);
-      }
-
-      // Sort files by proximity (compute scores once)
-      const fileKeys = [...byFile.keys()];
-      const proxScores = lastAccessedDir
-        ? new Map(fileKeys.map(f => [f, getProximityScore(f)]))
-        : null;
-
-      const sortedFiles = proxScores
-        ? [...byFile.entries()].sort((a, b) => (proxScores.get(b[0]) || 0) - (proxScores.get(a[0]) || 0))
-        : [...byFile.entries()];
-
-      for (const [file, matches] of sortedFiles) {
-        const prox = proxScores && (proxScores.get(file) || 0) > 0.5 ? " ★" : "";
-        output.push(`${file}${prox}:`);
-        for (const m of matches.slice(0, 5)) {
-          const line = m.lineContent.trim().slice(0, 100);
-          output.push(`  ${m.lineNumber}: ${line}`);
-        }
-        if (matches.length > 5) {
-          output.push(`  ... +${matches.length - 5} more matches`);
-        }
-      }
-
-      return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_grep") }] };
     }
   );
 
