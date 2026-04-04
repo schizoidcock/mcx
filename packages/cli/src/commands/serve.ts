@@ -3156,10 +3156,10 @@ Examples:
     query: z.string().optional().describe("Fuzzy search query. Supports: *.ext, !exclude, /path/, status:modified"),
     pattern: z.string().optional().describe("Alias for query (for compatibility)"),
     limit: z.number().optional().default(20).describe("Max results (default: 20)"),
-  }).transform(data => ({
-    ...data,
-    query: data.query || data.pattern || "",
-  }));
+  }).transform(({ pattern, ...rest }) => ({
+    ...rest,
+    query: rest.query || pattern || "",
+  })).refine(d => d.query, { message: "Missing query or pattern parameter" });
   type FindInput = z.infer<typeof FindInputSchema>;
 
   server.registerTool(
@@ -3188,13 +3188,6 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
       if (!fileFinder) {
         return {
           content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
-          isError: true,
-        };
-      }
-
-      if (!params.query) {
-        return {
-          content: [{ type: "text" as const, text: "Missing query or pattern parameter." }],
           isError: true,
         };
       }
@@ -3241,10 +3234,10 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
     pattern: z.string().optional().describe("Alias for query (for compatibility)"),
     mode: z.enum(["plain", "regex", "fuzzy"]).optional().default("plain").describe("Search mode"),
     limit: z.number().optional().default(50).describe("Max matches (default: 50)"),
-  }).transform(data => ({
-    ...data,
-    query: data.query || data.pattern || "",
-  }));
+  }).transform(({ pattern, ...rest }) => ({
+    ...rest,
+    query: rest.query || pattern || "",
+  })).refine(d => d.query, { message: "Missing query or pattern parameter" });
   type GrepInput = z.infer<typeof GrepInputSchema>;
 
   server.registerTool(
@@ -3274,13 +3267,6 @@ Modes:
       if (!fileFinder) {
         return {
           content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
-          isError: true,
-        };
-      }
-
-      if (!params.query) {
-        return {
-          content: [{ type: "text" as const, text: "Missing query or pattern parameter." }],
           isError: true,
         };
       }
