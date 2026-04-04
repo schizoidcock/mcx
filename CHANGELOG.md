@@ -2,6 +2,20 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.18] - 2026-04-04
+
+### Features
+- **mcx_fetch HTML-to-Markdown** - Automatically converts HTML to markdown before indexing for cleaner search results
+- **mcx_file Auto-Indexing** - Files >1KB are automatically indexed in FTS5 for later search
+- **Parameter Aliases** - `mcx_find` and `mcx_grep` now accept `pattern` as alias for `query`
+
+### Improvements
+- **Tool Selection Guidance** - `mcx_execute` description now clarifies to use `mcx_find`/`mcx_grep` for file search
+- **Optimized HTML Conversion** - Combined regex patterns reduce string allocations (5 passes → 1 for tag removal)
+- **Optimized Entity Decoding** - Single-pass regex with map lookup instead of 8 chained replaces
+
+---
+
 ## [0.3.17] - 2026-04-02
 
 ### Bug Fixes

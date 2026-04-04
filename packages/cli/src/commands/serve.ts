@@ -1369,6 +1369,8 @@ async function createMcxServerCore(
       title: "Execute Code in MCX Sandbox",
       description: `Execute JavaScript/TypeScript code in an isolated sandbox.
 
+NOT for file/content search - use mcx_find (files) or mcx_grep (content) instead.
+
 ## Calling Adapters
 Adapters are available as globals. Use camelCase for names with hyphens:
 - supabase.list_projects()
@@ -3151,9 +3153,13 @@ Examples:
 
   // Tool: mcx_find (FFF fuzzy file search)
   const FindInputSchema = z.object({
-    query: z.string().describe("Fuzzy search query. Supports: *.ext, !exclude, /path/, status:modified"),
+    query: z.string().optional().describe("Fuzzy search query. Supports: *.ext, !exclude, /path/, status:modified"),
+    pattern: z.string().optional().describe("Alias for query (for compatibility)"),
     limit: z.number().optional().default(20).describe("Max results (default: 20)"),
-  });
+  }).transform(data => ({
+    ...data,
+    query: data.query || data.pattern || "",
+  }));
   type FindInput = z.infer<typeof FindInputSchema>;
 
   server.registerTool(
@@ -3182,6 +3188,13 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
       if (!fileFinder) {
         return {
           content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
+          isError: true,
+        };
+      }
+
+      if (!params.query) {
+        return {
+          content: [{ type: "text" as const, text: "Missing query or pattern parameter." }],
           isError: true,
         };
       }
@@ -3224,10 +3237,14 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
 
   // Tool: mcx_grep (FFF content search)
   const GrepInputSchema = z.object({
-    query: z.string().describe("Search pattern. Prefix with *.ext or path/ to filter files."),
+    query: z.string().optional().describe("Search pattern. Prefix with *.ext or path/ to filter files."),
+    pattern: z.string().optional().describe("Alias for query (for compatibility)"),
     mode: z.enum(["plain", "regex", "fuzzy"]).optional().default("plain").describe("Search mode"),
     limit: z.number().optional().default(50).describe("Max matches (default: 50)"),
-  });
+  }).transform(data => ({
+    ...data,
+    query: data.query || data.pattern || "",
+  }));
   type GrepInput = z.infer<typeof GrepInputSchema>;
 
   server.registerTool(
@@ -3257,6 +3274,13 @@ Modes:
       if (!fileFinder) {
         return {
           content: [{ type: "text" as const, text: "FFF not initialized. Run from a project directory." }],
+          isError: true,
+        };
+      }
+
+      if (!params.query) {
+        return {
+          content: [{ type: "text" as const, text: "Missing query or pattern parameter." }],
           isError: true,
         };
       }

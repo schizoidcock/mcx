@@ -48,7 +48,7 @@ MCX exposes sixteen tools to the AI agent:
 | `mcx_execute` | Execute code in sandbox, auto-stores result as `$result` |
 | `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
-| `mcx_file` | Process local files with `$file` variable injection |
+| `mcx_file` | Process local files with `$file` injection, auto-indexes files >1KB |
 | `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing (24h TTL cache) |
 | `mcx_find` | Fast fuzzy file search with frecency + proximity ranking |
 | `mcx_grep` | SIMD-accelerated content search with proximity ranking |
@@ -140,7 +140,7 @@ mcx_batch({
 
 ### mcx_file
 
-Process local files with `$file` variable injection:
+Process local files with `$file` variable injection. Files >1KB are automatically indexed in FTS5 for later search via `mcx_search`.
 
 ```typescript
 mcx_file({
@@ -148,6 +148,7 @@ mcx_file({
   code: "({ name: $file.name, deps: Object.keys($file.dependencies) })"
 })
 // $file is parsed JSON for .json files, { text, lines } for others
+// HTML files are converted to markdown before indexing
 ```
 
 ### mcx_fetch
@@ -179,6 +180,7 @@ Results are ranked by match score + frecency (recently accessed files boosted) +
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `query` | string | required | Search query (supports glob, exclusion, path filters) |
+| `pattern` | string | - | Alias for `query` (for compatibility) |
 | `limit` | number | `20` | Max results to return |
 
 ### mcx_grep
@@ -196,6 +198,7 @@ mcx_grep({ query: "improt", mode: "fuzzy" })   // Typo-tolerant fuzzy
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `query` | string | required | Search pattern (prefix with `*.ext` or `path/` to filter) |
+| `pattern` | string | - | Alias for `query` (for compatibility) |
 | `mode` | string | `"plain"` | Search mode: `plain`, `regex`, or `fuzzy` |
 | `limit` | number | `50` | Max matches to return |
 
