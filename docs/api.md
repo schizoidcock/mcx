@@ -509,3 +509,99 @@ mcx_tasks({ status: "running" })
 |-----------|------|---------|-------------|
 | `id` | string | - | Get specific task details |
 | `status` | string | `"all"` | Filter: `all`, `running`, `completed`, `failed` |
+
+## Claude Code Hooks Integration
+
+MCX can be integrated with Claude Code hooks to automatically redirect native tools to MCX equivalents.
+
+### Installation
+
+Create hook scripts in `~/.claude/hooks/`:
+
+**mcx-redirect.js** (redirects Grep/Glob):
+```javascript
+const input = await Bun.stdin.json();
+const mcx = { Grep: "mcx_grep", Glob: "mcx_find" }[input.tool_name];
+if (mcx) {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      additionalContext: `Use ${mcx} instead`
+    }
+  }));
+}
+```
+
+**mcx-read-check.js** (suggests mcx_file for large files):
+```javascript
+const input = await Bun.stdin.json();
+const filePath = input.tool_input?.file_path;
+
+if (filePath) {
+  try {
+    const size = Bun.file(filePath).size;
+    if (size > 50 * 1024) {
+      const sizeKB = Math.round(size / 1024);
+      console.log(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          additionalContext: `File is ${sizeKB}KB. Use mcx_file({ path: "${filePath}", storeAs: "varName" }) to load into sandbox without filling context.`
+        }
+      }));
+    }
+  } catch {}
+}
+```
+
+### Settings Configuration
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep",
+        "hooks": [{
+          "type": "command",
+          "command": "bun ~/.claude/hooks/mcx-redirect.js"
+        }]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [{
+          "type": "command",
+          "command": "bun ~/.claude/hooks/mcx-redirect.js"
+        }]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [{
+          "type": "command",
+          "command": "bun ~/.claude/hooks/mcx-read-check.js"
+        }]
+      }
+    ]
+  }
+}
+```
+
+### Hook Behavior
+
+| Native Tool | Hook | MCX Alternative | When |
+|-------------|------|-----------------|------|
+| `Grep` | Block | `mcx_grep` | Always |
+| `Glob` | Block | `mcx_find` | Always |
+| `Read` | Block | `mcx_file` | File > 50KB |
+
+### Token Savings
+
+With hooks enabled, large file exploration saves ~99% tokens:
+
+```
+Without hooks: Read 800KB file → 800KB to context
+With hooks:    mcx_file + queries → ~1KB to context
+```

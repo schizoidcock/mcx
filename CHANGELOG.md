@@ -14,7 +14,8 @@ All notable changes to MCX will be documented in this file.
 
 ### Claude Code Hooks
 - **Grep/Glob redirect hooks** - Block native tools and suggest MCX alternatives
-- **Hook script** - `~/.claude/hooks/mcx-redirect.js` for tool redirection
+- **Read hook for large files** - Files >50KB blocked, suggests `mcx_file` with `storeAs`
+- **Hook scripts** - `mcx-redirect.js` and `mcx-read-check.js`
 - **additionalContext pattern** - Clean display without verbose error messages
 
 ---

@@ -99,6 +99,31 @@ Add to your Claude Code settings (`~/.claude.json` or project's `.mcp.json`):
 
 That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 
+### Claude Code Hooks (Optional)
+
+Redirect native tools to MCX alternatives for better performance:
+
+**~/.claude/settings.json:**
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Grep", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-redirect.js" }] },
+      { "matcher": "Glob", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-redirect.js" }] },
+      { "matcher": "Read", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-read-check.js" }] }
+    ]
+  }
+}
+```
+
+| Native Tool | MCX Alternative | Advantage |
+|-------------|-----------------|-----------|
+| `Glob` | `mcx_find` | Frecency ranking, git status, proximity boost |
+| `Grep` | `mcx_grep` | SIMD-accelerated, fuzzy search |
+| `Read` (>50KB) | `mcx_file({ storeAs })` | File stays in sandbox, 99% token savings |
+
+See [Hooks Integration](docs/api.md#claude-code-hooks-integration) for hook scripts.
+
 ## Key Features
 
 | Feature | Description |
@@ -126,7 +151,7 @@ That's it! MCX automatically uses `~/.mcx/` for config and adapters.
 | `mcx_execute` | Execute code with adapter access, auto-stores as `$result` |
 | `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
-| `mcx_file` | Process local files with `$file` variable injection |
+| `mcx_file` | Process local files with `$file` injection, or store-only mode with `storeAs` |
 | `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing (24h cache) |
 | `mcx_find` | Fast fuzzy file search with frecency + proximity ranking |
 | `mcx_grep` | SIMD-accelerated content search across files |
@@ -180,6 +205,21 @@ table(data, 10)                 // Markdown table
 // Async helpers
 await poll(fn, { interval: 2000, maxIterations: 5 })  // Poll until done
 await waitFor(fn, { timeout: 30000 })                  // Wait for condition
+```
+
+### File Query Helpers
+
+When using `mcx_file({ path, storeAs })` to load files into sandbox:
+
+```javascript
+// Load file without returning content to context (99% token savings)
+mcx_file({ path: "src/large-file.ts", storeAs: "src" })
+
+// Then query with helpers:
+around($src, 150, 10)          // 10 lines around line 150
+block($src, 150)               // Extract code block by indentation
+grep($src, "TODO", 3)          // Search with 3 lines context
+outline($src)                  // Extract function/class signatures
 ```
 
 ## Documentation
