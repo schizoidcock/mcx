@@ -320,6 +320,8 @@ const THROTTLE_AFTER = 3;
 const BLOCK_AFTER = 8;
 /** Search throttling window in ms */
 const THROTTLE_WINDOW_MS = 60_000;
+/** File access tracking for progressive tips (Optimization #2+#3) */
+const fileAccessLog = new Map<string, { count: number; firstAccess: number }>();
 /** Max params to show in full (above this, truncate) */
 const MAX_PARAMS_FULL = 10;
 /** Max params to show when truncating */
@@ -549,6 +551,34 @@ function safeStringify(value: unknown, indent: number = 2): string {
     }
     return val;
   }, indent);
+}
+
+/**
+ * Format mcx_file result compactly.
+ * - Array of strings → join with newlines (lines already numbered from #1)
+ * - Long string → truncate long lines
+ * - Other types → JSON
+ */
+function formatFileResult(result: unknown, code: string): string {
+  // Array of strings (lines) → join directly (already numbered from Optimization #1)
+  if (Array.isArray(result) && result.length > 0 && result.every(r => typeof r === 'string')) {
+    return result
+      .map((line: string) => {
+        // Truncate long lines (keep line number prefix)
+        return line.length > 140 ? line.slice(0, 137) + '...' : line;
+      })
+      .join('\n');
+  }
+  
+  // Long string → truncate long lines
+  if (typeof result === 'string' && result.length > 1000) {
+    return result.split('\n')
+      .map(line => line.length > 140 ? line.slice(0, 137) + '...' : line)
+      .join('\n');
+  }
+  
+  // Other types: JSON
+  return safeStringify(result);
 }
 
 /**
@@ -2607,11 +2637,16 @@ Examples:
 
 $file shape:
 - JSON files: parsed object
-- Other files: { text: string, lines: string[] }
+- Other files: { text: string, lines: string[] } (lines are numbered: "1: content")
 
 **Tips:**
 - Use \`storeAs\` for large files: \`mcx_file({ path, storeAs: "src" })\` → query with helpers
-- Helpers: around(), lines(), block(), grep(), outline()
+- Helpers (use after storeAs):
+  - around(line, ctx=20) → lines around line number
+  - lines(start, end) → specific line range
+  - grep(pattern) → matching lines with numbers
+  - block(line) → full code block containing line
+  - outline() → functions/classes with line numbers
 - For edits: find line numbers with grep(), then use mcx_edit line mode`,
       inputSchema: FileInputSchema,
       annotations: {
@@ -2668,10 +2703,16 @@ $file shape:
           try {
             $file = JSON.parse(content);
           } catch {
-            $file = { text: content, lines: content.split('\n') };
+            // JSON parse failed, treat as text with numbered lines
+            const rawLines = content.split('\n');
+            const numberedLines = rawLines.map((l, i) => `${i + 1}: ${l}`);
+            $file = { text: numberedLines.join('\n'), lines: numberedLines };
           }
         } else {
-          $file = { text: content, lines: content.split('\n') };
+          // Text file with numbered lines (Optimization #1)
+          const rawLines = content.split('\n');
+          const numberedLines = rawLines.map((l, i) => `${i + 1}: ${l}`);
+          $file = { text: numberedLines.join('\n'), lines: numberedLines };
         }
 
         // Update proximity context for reranking
@@ -2688,19 +2729,20 @@ $file shape:
         // Store-only mode: save file content without executing code (keeps content out of context)
         if (params.storeAs && !params.code) {
           const state = getSandboxState();
-          const fileLines = content.split('\n');
+          const rawLines = content.split('\n');
+          const numberedLines = rawLines.map((l, i) => `${i + 1}: ${l}`);
 
-          // Store plain data (no methods - they can't be cloned to sandbox)
+          // Store with numbered lines (Optimization #1)
           state.set(params.storeAs, {
-            text: content,
-            lines: fileLines,
+            text: numberedLines.join('\n'),
+            lines: numberedLines,
             path: resolvedPath,
           });
 
           return {
             content: [{
               type: "text" as const,
-              text: `Stored as ${params.storeAs} (${fileLines.length} lines, ${content.length} chars)
+              text: `Stored as ${params.storeAs} (${rawLines.length} lines, ${content.length} chars)
 Helpers: around($${params.storeAs}, line, ctx), lines($${params.storeAs}, start, end), block($${params.storeAs}, line), grep($${params.storeAs}, pattern), outline($${params.storeAs})
 Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
             }]
@@ -2730,7 +2772,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
           };
         }
 
-        const serialized = safeStringify(result.value);
+        const serialized = formatFileResult(result.value, params.code);
 
         // Warn if code returns entire file content (anti-pattern that fills context)
         if (FULL_FILE_CODE.has(params.code.trim()) && serialized.length > FULL_FILE_WARNING_BYTES) {
@@ -2780,6 +2822,40 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
         const rawBytes = serialized.length;  // Track size before truncation
         const { text: finalText, truncated } = enforceCharacterLimit(serialized);
         const storedMsg = params.storeAs ? `\n${formatStoredAs(params.storeAs)}` : '';
+
+        // For line arrays, return just text (Optimization #1 + #10)
+        // For other types, include structuredContent for programmatic access
+        const isLinesArray = Array.isArray(result.value) && result.value.every((r: unknown) => typeof r === 'string');
+
+        if (isLinesArray) {
+          // Track file access for progressive tips (Optimization #2+#3)
+          const now = Date.now();
+          const accessLog = fileAccessLog.get(resolvedPath);
+          if (accessLog && (now - accessLog.firstAccess) < THROTTLE_WINDOW_MS) {
+            accessLog.count++;
+          } else {
+            fileAccessLog.set(resolvedPath, { count: 1, firstAccess: now });
+          }
+          const callCount = fileAccessLog.get(resolvedPath)!.count;
+
+          // Dynamic tip based on first line number + call count (Optimization #1.2 + #2+#3)
+          const lineMatch = finalText.match(/^(\d+):/m);
+          const line = lineMatch?.[1] || 'N';
+          
+          let dynamicTip: string;
+          if (callCount === 1) {
+            dynamicTip = `\n→ Helpers: around(${line}, 20), grep("pattern"), outline()`;
+          } else if (callCount === 2) {
+            dynamicTip = `\n→ Ready to edit? mcx_edit({ start: ${line} })`;
+          } else {
+            dynamicTip = `\n⚠️ Call #${callCount} to same file. Use around(${line}, 20) or mcx_edit directly.`;
+          }
+
+          return {
+            content: [{ type: "text" as const, text: finalText + storedMsg + dynamicTip }],
+            _rawBytes: rawBytes,
+          };
+        }
 
         return {
           content: [{ type: "text" as const, text: finalText + storedMsg }],
@@ -3816,7 +3892,13 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
           }),
         ];
 
-        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_find") }], _rawBytes: rawBytes };
+        // Dynamic tip from first result (Optimization #4)
+        const dynamicTip = rankedItems[0] 
+          ? `\n→ Next: mcx_file({ path: "${rankedItems[0].relativePath}" })`
+          : suggestNextTool("mcx_find");
+
+        return { content: [{ type: "text" as const, text: output.join("\n") + dynamicTip }], _rawBytes: rawBytes };
+
       });
     }
   );
@@ -3908,7 +3990,14 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
           if (matches.length > 5) output.push(`  ... +${matches.length - 5} more matches`);
         }
 
-        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_grep") }], _rawBytes: rawBytes };
+        // Dynamic tip from first match (Optimization #4)
+        const firstFile = sortedFiles[0];
+        const dynamicTip = firstFile 
+          ? `\n→ Next: mcx_file({ path: "${firstFile[0]}", code: "around(${firstFile[1][0].lineNumber}, 20)" })`
+          : suggestNextTool("mcx_grep");
+
+        return { content: [{ type: "text" as const, text: output.join("\n") + dynamicTip }], _rawBytes: rawBytes };
+
       });
     }
   );
