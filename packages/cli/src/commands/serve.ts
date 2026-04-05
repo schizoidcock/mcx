@@ -1735,7 +1735,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
                 // Store as file object with helpers-compatible format
                 state.set(varName, {
                   text: fileLines.map((l, i) => `${i + 1}: ${l}`).join('\n'),
-                  lines: fileLines.map((l, i) => `${i + 1}\t${i + 1}: ${l}`),
+                  lines: fileLines.map((l, i) => `${i + 1}: ${l}`),
                   path: file.path,
                   size: content.length,
                 });
