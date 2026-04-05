@@ -44,6 +44,21 @@ import { getSandboxState } from "../sandbox";
 import { loadSpecsFromAdapters } from "../spec";
 
 // ============================================================================
+// Global Error Handlers (P0 - Critical for debugging crashes)
+// ============================================================================
+
+process.on('uncaughtException', (error) => {
+  logger.uncaughtException(error);
+  console.error(pc.red('[MCX] Uncaught exception:'), error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.unhandledRejection(reason);
+  console.error(pc.red('[MCX] Unhandled rejection:'), reason);
+});
+
+// ============================================================================
 // .env Loading
 // ============================================================================
 
@@ -1846,9 +1861,13 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         const structured: Record<string, unknown> = { result: summarized.value };
         if (summarized.truncated || charLimitTruncated) structured.truncated = true;
         if (params.storeAs && params.storeAs !== 'result') structured.storedAs = params.storeAs;
+        // Include warnings/errors from logs (memory warnings, etc.)
+        const warnings = truncatedLogs.filter(l => l.includes('[WARN]') || l.includes('[ERROR]'));
+        if (warnings.length > 0) structured.warnings = warnings;
 
         return { content, structuredContent: structured, _rawBytes: summarized.rawBytes };
       } catch (error) {
+        logger.error("mcx_execute sandbox error", error);
         const message = error instanceof Error ? error.message : String(error);
         return {
           content: [{ type: "text" as const, text: `Sandbox error: ${message}` }],
@@ -2060,6 +2079,7 @@ Use storeAs to save results and return summary only:
             structuredContent: { mode: 'spec', storedAs: ['search'], truncated },
           };
         } catch (error) {
+          logger.error("mcx_search spec query error", error);
           return {
             content: [{ type: "text" as const, text: `Spec query error: ${error instanceof Error ? error.message : error}` }],
             isError: true,
@@ -2124,6 +2144,7 @@ Use storeAs to save results and return summary only:
             structuredContent: { mode: 'content', storedAs: ['search'], results: allResults.length, truncated },
           };
         } catch (error) {
+          logger.error("mcx_search content search error", error);
           return {
             content: [{ type: "text" as const, text: `Content search error: ${error instanceof Error ? error.message : error}` }],
             isError: true,
@@ -2544,6 +2565,7 @@ Examples:
               results.executions.push({ storeAs: exec.storeAs, success: false, error: errorMsg });
             }
           } catch (error) {
+            logger.error("mcx_batch execution error", error);
             const errorMsg = error instanceof Error ? error.message : String(error);
             output.push(`- ${exec.storeAs || 'exec'}: ERROR - ${errorMsg}`);
             results.executions.push({ storeAs: exec.storeAs, success: false, error: errorMsg });
@@ -2581,6 +2603,7 @@ Examples:
               results.searches.push({ query, count: searchResults.length });
             }
           } catch (error) {
+            logger.error("mcx_batch search error", error);
             output.push(`Search error: ${error instanceof Error ? error.message : error}`);
             for (const query of params.queries) {
               results.searches.push({ query, count: 0 });
@@ -2867,6 +2890,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
           _rawBytes: rawBytes,
         };
       } catch (error) {
+        logger.error("mcx_file error", error);
         return {
           content: [{ type: "text" as const, text: `Error reading file: ${error instanceof Error ? error.message : error}` }],
           isError: true,
@@ -2983,6 +3007,7 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
           content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}` }],
         };
       } catch (error) {
+        logger.error("mcx_edit error", error);
         return {
           content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
@@ -3026,6 +3051,7 @@ Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
           content: [{ type: "text" as const, text: `✓ Wrote ${lines} lines to ${basename(resolvedPath)}` }],
         };
       } catch (error) {
+        logger.error("mcx_write error", error);
         return {
           content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
@@ -3192,6 +3218,7 @@ Examples:
 
         return { content: [{ type: "text" as const, text: output.join('\n') + suggestNextTool("mcx_fetch") }] };
       } catch (error) {
+        logger.error("mcx_fetch error", error);
         return {
           content: [{ type: "text" as const, text: `Fetch error: ${error instanceof Error ? error.message : error}` }],
           isError: true,

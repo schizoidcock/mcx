@@ -4,6 +4,19 @@ import { DEFAULT_NETWORK_POLICY, generateNetworkIsolationCode } from "./network-
 import { normalizeCode } from "./normalizer.js";
 import { analyze, formatFindings, DEFAULT_ANALYSIS_CONFIG } from "./analyzer/index.js";
 
+/** Get current memory usage in MB */
+function getMemoryUsageMB(): { heapUsed: number; heapTotal: number; rss: number } {
+  const mem = process.memoryUsage();
+  return {
+    heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+    heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+    rss: Math.round(mem.rss / 1024 / 1024),
+  };
+}
+
+/** Memory warning threshold in MB */
+const MEMORY_WARNING_THRESHOLD = 256;
+
 const DEFAULT_CONFIG: Required<SandboxConfig> = {
   timeout: 5000,
   memoryLimit: 128, // Not enforced in workers, kept for API compat
@@ -117,7 +130,8 @@ export class BunWorkerSandbox implements ISandbox {
 
       const blob = new Blob([workerCode], { type: "application/javascript" });
       const url = URL.createObjectURL(blob);
-      const worker = new Worker(url);
+      // smol: true reduces memory usage (JSC::HeapSize = Small)
+      const worker = new Worker(url, { smol: true });
 
       let resolved = false;
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -171,11 +185,17 @@ export class BunWorkerSandbox implements ISandbox {
 
         else if (type === "result") {
           cleanup();
+          // Add memory warning to logs if usage is high
+          const mem = getMemoryUsageMB();
+          const resultLogs = [...logs, ...(data.logs || [])];
+          if (mem.heapUsed > MEMORY_WARNING_THRESHOLD) {
+            resultLogs.push(`[WARN] High memory: heap=${mem.heapUsed}MB, rss=${mem.rss}MB`);
+          }
           resolve({
             success: data.success,
             value: data.value as T,
             error: data.error,
-            logs: [...logs, ...(data.logs || [])],
+            logs: resultLogs,
             executionTime: performance.now() - startTime,
           });
         }
@@ -183,9 +203,21 @@ export class BunWorkerSandbox implements ISandbox {
 
       worker.onerror = (error: ErrorEvent) => {
         cleanup();
+        // Include memory stats in error for debugging
+        const mem = getMemoryUsageMB();
+        const memInfo = `[Memory: heap=${mem.heapUsed}/${mem.heapTotal}MB, rss=${mem.rss}MB]`;
+        const isMemoryIssue = mem.heapUsed > MEMORY_WARNING_THRESHOLD;
+        const errorMsg = error.message || "Unknown worker error";
+        logs.push(`[WORKER_ERROR] ${errorMsg} ${memInfo}`);
+        if (isMemoryIssue) {
+          logs.push(`[WARN] High memory usage detected - consider using smaller data chunks`);
+        }
         resolve({
           success: false,
-          error: { name: "WorkerError", message: error.message || "Unknown worker error" },
+          error: { 
+            name: isMemoryIssue ? "MemoryError" : "WorkerError", 
+            message: `${errorMsg} ${memInfo}` 
+          },
           logs,
           executionTime: performance.now() - startTime,
         });
@@ -643,6 +675,12 @@ export class BunWorkerSandbox implements ISandbox {
                 logs
               });
             } else {
+              // Check memory and add warning if high
+              const mem = process.memoryUsage();
+              const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+              if (heapMB > 256) {
+                logs.push('[WARN] High memory: heap=' + heapMB + 'MB - consider smaller data chunks');
+              }
               self.postMessage({ type: 'result', success: true, value: result, logs });
             }
           } catch (err) {
