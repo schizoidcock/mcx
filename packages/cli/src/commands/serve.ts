@@ -3008,7 +3008,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
               'Use mcx_search to query this indexed content.',
             ].filter(Boolean).join('\n');
 
-            return { content: [{ type: "text" as const, text: output }] };
+            return { content: [{ type: "text" as const, text: output }], toolResult: output };
           } catch {
             // Indexing failed, fall through to normal output
           }
