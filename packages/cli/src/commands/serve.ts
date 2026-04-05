@@ -333,23 +333,45 @@ const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
   mcx_find: [
     { tool: "mcx_grep", hint: "search content in found files" },
     { tool: "mcx_file", hint: "process a found file" },
+    { tool: "mcx_related", hint: "find imports/exports" },
   ],
   mcx_grep: [
     { tool: "mcx_file", hint: "process matched file" },
     { tool: "mcx_related", hint: "find related files" },
   ],
+  mcx_file: [
+    { tool: "mcx_related", hint: "find imports/exports" },
+    { tool: "mcx_tree", hint: "navigate large JSON" },
+    { tool: "mcx_edit", hint: "edit the file" },
+  ],
+  mcx_edit: [
+    { tool: "mcx_related", hint: "check related files" },
+  ],
+  mcx_write: [
+    { tool: "mcx_related", hint: "find files that may import this" },
+  ],
+  mcx_batch: [
+    { tool: "mcx_tree", hint: "navigate large results" },
+    { tool: "mcx_related", hint: "find related files" },
+  ],
   mcx_fetch: [
     { tool: "mcx_search", hint: "search indexed content" },
+    { tool: "mcx_tree", hint: "navigate JSON response" },
   ],
   mcx_execute: [
     { tool: "mcx_search", hint: "search results or find methods" },
+    { tool: "mcx_tree", hint: "navigate large results" },
   ],
   mcx_search: [
     { tool: "mcx_execute", hint: "call discovered method" },
+    { tool: "mcx_tree", hint: "navigate results" },
   ],
   mcx_related: [
     { tool: "mcx_file", hint: "process related file" },
     { tool: "mcx_grep", hint: "search in related files" },
+  ],
+  mcx_tree: [
+    { tool: "mcx_file", hint: "process with code" },
   ],
 };
 
