@@ -24,14 +24,14 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun --env disable --external @opentui/core --external @opentui/react --external @opentui-ui/dialog --external @opentui-ui/toast --external react --external react-reconciler && bun run add-shebang",
+    "build": "bun build src/index.ts --outdir dist --target bun --env disable --external @opentui/core --external @opentui/react --external @opentui-ui/dialog --external @opentui-ui/toast --external react --external react-reconciler --external @ff-labs/fff-bun && bun run add-shebang",
     "add-shebang": "bun -e \"const f=Bun.file('dist/index.js');const c=await f.text();if(!c.startsWith('#!'))await Bun.write('dist/index.js','#!/usr/bin/env bun\\n'+c)\"",
     "dev": "bun --watch dist/index.js",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ff-labs/fff-bun": "^0.5.2",
+    "@ff-labs/fff-bun": "link:@ff-labs/fff-bun",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@opentui-ui/dialog": "^0.1.2",
     "@opentui-ui/toast": "^0.0.5",

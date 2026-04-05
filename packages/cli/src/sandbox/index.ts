@@ -6,9 +6,6 @@ export type {
   TruncateOptions,
 } from './types.js';
 
-// Executor
-export { executeCode, storeResult } from './executor.js';
-
 // State
 export {
   PersistentState,

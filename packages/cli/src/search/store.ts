@@ -63,6 +63,28 @@ export class ContentStore {
   }
 
   /**
+   * Delete source by label. Returns true if found and deleted.
+   */
+  deleteByLabel(label: string): boolean {
+    const source = this.db.prepare('SELECT id FROM sources WHERE label = ?').get(label) as { id: number } | undefined;
+    if (!source) return false;
+    
+    // Delete chunks first (FTS5 tables)
+    this.db.prepare('DELETE FROM chunks_fts WHERE source_id = ?').run(source.id);
+    this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?').run(source.id);
+    this.db.prepare('DELETE FROM sources WHERE id = ?').run(source.id);
+    return true;
+  }
+
+  /**
+   * Re-index content (delete old, insert new). Returns new source ID.
+   */
+  reindex(content: string, label: string, options: IndexOptions = {}): number {
+    this.deleteByLabel(label);
+    return this.index(content, label, options);
+  }
+
+  /**
    * Index content and return source ID.
    */
   index(content: string, label: string, options: IndexOptions = {}): number {

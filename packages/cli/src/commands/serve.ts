@@ -19,7 +19,7 @@
  */
 
 import * as path from "node:path";
-import { join, basename, extname, isAbsolute } from "node:path";
+import { join, basename, extname, isAbsolute, resolve } from "node:path";
 
 // Hoisted regex for import extraction (avoids recreation per call)
 const IMPORT_REGEX = /(?:import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
@@ -34,6 +34,7 @@ import pc from "picocolors";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
 
 import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
+import { startDaemon, stopDaemon } from "../daemon";
 import { type FileFinder, isExcludedPath } from "../utils/fff";
 import { coerceJsonArray } from "../utils/zod";
 import { isDangerousEnvKey, isBlockedUrl } from "../utils/security";
@@ -176,14 +177,14 @@ const ExecuteInputSchema = z.object({
     .optional()
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
-  maxItems: z.number()
+  maxItems: z.coerce.number()
     .int()
     .min(1)
     .max(1000)
     .optional()
     .default(10)
     .describe("Max array items to return when truncating (default: 10, max: 1000)"),
-  maxStringLength: z.number()
+  maxStringLength: z.coerce.number()
     .int()
     .min(10)
     .max(10000)
@@ -210,14 +211,14 @@ const RunSkillInputSchema = z.object({
     .optional()
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
-  maxItems: z.number()
+  maxItems: z.coerce.number()
     .int()
     .min(1)
     .max(1000)
     .optional()
     .default(10)
     .describe("Max array items to return when truncating (default: 10, max: 1000)"),
-  maxStringLength: z.number()
+  maxStringLength: z.coerce.number()
     .int()
     .min(10)
     .max(10000)
@@ -231,7 +232,7 @@ const ListInputSchema = z.object({
     .optional()
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
-  maxItems: z.number()
+  maxItems: z.coerce.number()
     .int()
     .min(1)
     .max(500)
@@ -266,7 +267,7 @@ const SearchInputSchema = z.object({
     .optional()
     .default("all")
     .describe("Filter results by type"),
-  limit: z.number()
+  limit: z.coerce.number()
     .int()
     .min(1)
     .max(100)
@@ -1204,6 +1205,43 @@ async function createMcxServerCore(
     allowAsync: true,
   });
 
+  // File helpers code to prepend to user code (functions can't be passed via postMessage)
+  const FILE_HELPERS_CODE = `
+const around = (stored, line, ctx = 10) => {
+  const start = Math.max(0, line - ctx - 1);
+  const end = Math.min(stored.lines.length, line + ctx);
+  return stored.lines.slice(start, end).map((l, i) => (start + i + 1) + '\\t' + l).join('\\n');
+};
+const lines = (stored, start, end) => {
+  return stored.lines.slice(start - 1, end).map((l, i) => (start + i) + '\\t' + l).join('\\n');
+};
+const block = (stored, line) => {
+  const lns = stored.lines;
+  let blockStart = line - 1, blockEnd = line - 1, braceCount = 0;
+  for (let i = line - 1; i >= 0; i--) {
+    if (lns[i].includes('{')) braceCount++;
+    if (lns[i].includes('}')) braceCount--;
+    if (braceCount > 0 || /^(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/.test(lns[i])) {
+      blockStart = i; break;
+    }
+  }
+  braceCount = 0;
+  for (let i = blockStart; i < lns.length; i++) {
+    for (const ch of lns[i]) { if (ch === '{') braceCount++; if (ch === '}') braceCount--; }
+    blockEnd = i;
+    if (braceCount <= 0 && i > blockStart) break;
+  }
+  return lns.slice(blockStart, blockEnd + 1).map((l, i) => (blockStart + i + 1) + '\\t' + l).join('\\n');
+};
+const grep = (stored, pattern) => {
+  const re = new RegExp(pattern, 'gi');
+  return stored.lines.map((l, i) => re.test(l) ? (i + 1) + '\\t' + l : null).filter(Boolean).join('\\n');
+};
+const outline = (stored) => {
+  return stored.lines.map((l, i) => /^(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/.test(l.trim()) ? (i + 1) + '\\t' + l : null).filter(Boolean).join('\\n');
+};
+`;
+
   const adapterContext = buildAdapterContext(adapters);
 
   // Build descriptions for tool hints
@@ -1297,6 +1335,9 @@ async function createMcxServerCore(
   const METHOD_PATTERN = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
   const adapterNamesCache = new Set(Object.keys(adapterContext || {}));
   let fileFinder: FileFinder | null = null; // Forward declaration for trackMethodUsage
+  
+  // Multi-project watching: Map of project path -> FileFinder instance
+  const watchedProjects = new Map<string, FileFinder>();
 
   function trackMethodUsage(code: string): void {
     METHOD_PATTERN.lastIndex = 0; // Reset regex state
@@ -1372,7 +1413,7 @@ async function createMcxServerCore(
 
     try {
       const state = getSandboxState();
-      const result = await sandbox.execute(code, {
+      const result = await sandbox.execute(FILE_HELPERS_CODE + code, {
         adapters: adapterContext,
         variables: state.getAllPrefixed(),
         env: config?.env || {},
@@ -1414,6 +1455,7 @@ async function createMcxServerCore(
       console.error(pc.dim(`FFF initialized for: ${fffBasePath}`));
       // Wait for initial scan (non-blocking, 5s timeout)
       fileFinder.waitForScan(5000);
+      // Don't start daemon yet - wait for mcx_watch to specify projects
     } else {
       console.error(pc.yellow(`FFF init skipped: ${fffInit.error}`));
     }
@@ -1610,7 +1652,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         }
 
         // Execute code in sandbox
-        const result = await sandbox.execute(code, {
+        const result = await sandbox.execute(FILE_HELPERS_CODE + code, {
           adapters: adapterContext,
           variables: state.getAllPrefixed(),
           env: config?.env || {},
@@ -2438,7 +2480,7 @@ Examples:
         for (const exec of params.executions) {
           try {
             // Get stored variables fresh each iteration (state mutates via storeAs)
-            const result = await sandbox.execute(exec.code, {
+            const result = await sandbox.execute(FILE_HELPERS_CODE + exec.code, {
               adapters: adapterContext,
               variables: state.getAllPrefixed(),
               env: config?.env || {},
@@ -2659,7 +2701,7 @@ $file shape:
             content: [{
               type: "text" as const,
               text: `Stored as ${params.storeAs} (${fileLines.length} lines, ${content.length} chars)
-Helpers: around(${params.storeAs}, line, ctx), lines(${params.storeAs}, start, end), block(${params.storeAs}, line), grep(${params.storeAs}, pattern), outline(${params.storeAs})
+Helpers: around($${params.storeAs}, line, ctx), lines($${params.storeAs}, start, end), block($${params.storeAs}, line), grep($${params.storeAs}, pattern), outline($${params.storeAs})
 Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
             }]
           };
@@ -2675,7 +2717,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
 
         // Execute with $file injected via variables (MCX pattern)
         const state = getSandboxState();
-        const result = await sandbox.execute(params.code, {
+        const result = await sandbox.execute(FILE_HELPERS_CODE + params.code, {
           adapters: adapterContext,
           variables: { ...state.getAllPrefixed(), $file },
           env: config?.env || {},
@@ -2763,8 +2805,8 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
     old_string: z.string().optional().describe("String mode: exact string to find and replace"),
     new_string: z.string().describe("The replacement string/content"),
     replace_all: z.boolean().optional().default(false).describe("String mode: replace all occurrences"),
-    start: z.number().optional().describe("Line mode: start line (1-indexed)"),
-    end: z.number().optional().describe("Line mode: end line (1-indexed, inclusive)"),
+    start: z.coerce.number().optional().describe("Line mode: start line (1-indexed)"),
+    end: z.coerce.number().optional().describe("Line mode: end line (1-indexed, inclusive)"),
   });
   type EditInput = z.infer<typeof EditInputSchema>;
 
@@ -2807,17 +2849,20 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
 
         let newContent: string;
 
-        // Line mode: replace by line numbers
+        // Line mode: replace by line numbers (or append if start > lines.length)
         if (start !== undefined && end !== undefined) {
           const lines = content.split('\n');
-          if (start < 1 || end > lines.length || start > end) {
+          // Allow append: start can be lines.length + 1
+          if (start < 1 || start > lines.length + 1 || end < start) {
             return {
               content: [{ type: "text" as const, text: `Error: Invalid line range ${start}-${end} (file has ${lines.length} lines)` }],
               isError: true,
             };
           }
-          const before = lines.slice(0, start - 1);
-          const after = lines.slice(end);
+          // Append mode: start > lines.length
+          const isAppend = start > lines.length;
+          const before = isAppend ? lines : lines.slice(0, start - 1);
+          const after = isAppend ? [] : lines.slice(end);
           newContent = [...before, new_string, ...after].join('\n');
         }
         // String mode: find and replace
@@ -3341,7 +3386,7 @@ Examples:
   // Tool: mcx_tree (JSON Tree Walker)
   const TreeInputSchema = z.object({
     path: z.string().describe("Path to explore, e.g. $result.data[0].items or $search.methods"),
-    depth: z.number().optional().default(1).describe("Depth to show (default: 1)"),
+    depth: z.coerce.number().optional().default(1).describe("Depth to show (default: 1)"),
   });
   type TreeInput = z.infer<typeof TreeInputSchema>;
 
@@ -3467,6 +3512,118 @@ Examples:
     }
   );
 
+  // Tool: mcx_watch (Project Indexing)
+  const WatchInputSchema = z.object({
+    projects: z.array(z.string()).describe("Array of project directory paths to watch and index"),
+    action: z.enum(["add", "remove", "list", "clear"]).default("add").describe("Action: add (default), remove, list, or clear projects"),
+  });
+  type WatchInput = z.infer<typeof WatchInputSchema>;
+
+  server.registerTool(
+    "mcx_watch",
+    {
+      title: "Watch Projects",
+      description: `Manage which project directories are watched for automatic FTS5 content indexing.
+
+Examples:
+- mcx_watch({ projects: ["/path/to/project"] }) - Add project to watch
+- mcx_watch({ projects: [], action: "list" }) - List watched projects
+- mcx_watch({ projects: ["/path"], action: "remove" }) - Stop watching
+
+The daemon automatically indexes file changes in watched projects for later search via mcx_search.`,
+      inputSchema: WatchInputSchema,
+      annotations: { readOnlyHint: false },
+    },
+    async (params: WatchInput): Promise<MCP.CallToolResult> => {
+      if (!FileFinderClass) {
+        return { content: [{ type: "text" as const, text: "FFF not available - cannot watch projects" }], isError: true };
+      }
+
+      const { projects, action } = params;
+
+      if (action === "list") {
+        const watched = Array.from(watchedProjects.keys());
+        if (watched.length === 0) {
+          return { content: [{ type: "text" as const, text: "No projects being watched. Use mcx_watch({ projects: [\"/path\"] }) to add." }] };
+        }
+        return { content: [{ type: "text" as const, text: `Watching ${watched.length} project(s):\n${watched.map(p => `  - ${p}`).join("\n")}` }] };
+      }
+
+      if (action === "clear") {
+        stopDaemon();
+        for (const [, finder] of watchedProjects) {
+          finder.destroy();
+        }
+        watchedProjects.clear();
+        return { content: [{ type: "text" as const, text: "Cleared all watched projects" }] };
+      }
+
+      if (action === "remove") {
+        const removed: string[] = [];
+        for (const projectPath of projects) {
+          const normalized = resolve(projectPath);
+          const finder = watchedProjects.get(normalized);
+          if (finder) {
+            finder.destroy();
+            watchedProjects.delete(normalized);
+            removed.push(normalized);
+          }
+        }
+        // Restart daemon with remaining projects
+        if (watchedProjects.size > 0) {
+          startDaemon(watchedProjects);
+        } else {
+          stopDaemon();
+        }
+        return { content: [{ type: "text" as const, text: removed.length > 0 ? `Stopped watching: ${removed.join(", ")}` : "No matching projects found" }] };
+      }
+
+      // action === "add"
+      const added: string[] = [];
+      const errors: string[] = [];
+
+      for (const projectPath of projects) {
+        const normalized = resolve(projectPath);
+        
+        // Skip if already watching
+        if (watchedProjects.has(normalized)) {
+          continue;
+        }
+
+        // Create new FileFinder for this project (unique frecency DB per project)
+        const projectHash = basename(normalized).replace(/[^a-zA-Z0-9]/g, '_');
+        const init = FileFinderClass.create({
+          basePath: normalized,
+          frecencyDbPath: join(getMcxHomeDir(), `frecency-${projectHash}.db`),
+        });
+
+        if (init.ok) {
+          init.value.waitForScan(5000);
+          watchedProjects.set(normalized, init.value);
+          added.push(normalized);
+        } else {
+          errors.push(`${normalized}: ${init.error}`);
+        }
+      }
+
+      // Start/restart daemon with all watched projects
+      if (watchedProjects.size > 0) {
+        startDaemon(watchedProjects);
+      }
+
+      const result: string[] = [];
+      if (added.length > 0) {
+        result.push(`Now watching: ${added.join(", ")}`);
+      }
+      if (errors.length > 0) {
+        result.push(`Errors: ${errors.join("; ")}`);
+      }
+      result.push(`Total projects watched: ${watchedProjects.size}`);
+
+      return { content: [{ type: "text" as const, text: result.join("\n") }] };
+    }
+  );
+
   // Tool: mcx_doctor (Diagnostics)
   server.registerTool(
     "mcx_doctor",
@@ -3589,7 +3746,7 @@ Examples:
     pattern: z.string().optional().describe("Alias for query (for compatibility)"),
     path: z.string().optional().describe("Directory to search in (absolute path). Defaults to cwd."),
     glob: z.string().optional().describe("File pattern filter (e.g., *.tsx, **/*.ts)"),
-    limit: z.number().optional().default(20).describe("Max results (default: 20)"),
+    limit: z.coerce.number().optional().default(20).describe("Max results (default: 20)"),
   }).transform(({ pattern, glob, ...rest }) => ({
     ...rest,
     query: glob ? `${glob} ${rest.query || pattern || ""}`.trim() : (rest.query || pattern || ""),
@@ -3671,7 +3828,7 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
     path: z.string().optional().describe("Directory to search in (absolute path). Defaults to cwd."),
     glob: z.string().optional().describe("File pattern filter (e.g., *.tsx, **/*.ts)"),
     mode: z.enum(["plain", "regex", "fuzzy"]).optional().default("plain").describe("Search mode"),
-    limit: z.number().optional().default(50).describe("Max matches (default: 50)"),
+    limit: z.coerce.number().optional().default(50).describe("Max matches (default: 50)"),
   }).transform(({ pattern, glob, ...rest }) => ({
     ...rest,
     // Prepend glob filter to query if provided (FFF query syntax)
@@ -3906,7 +4063,10 @@ Useful for understanding code dependencies before making changes.`,
 
   return {
     server,
-    cleanup: () => fileFinder?.destroy(),
+    cleanup: () => {
+      stopDaemon();
+      fileFinder?.destroy();
+    },
   };
 }
 
@@ -3952,7 +4112,7 @@ async function runStdio() {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_watch, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
