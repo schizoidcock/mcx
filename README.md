@@ -145,6 +145,7 @@ See [Hooks Integration](docs/api.md#claude-code-hooks-integration) for hook scri
 | **Background Tasks** | `mcx_spawn` for long-running operations, check with `mcx_tasks` |
 | **Batch Operations** | `mcx_batch` for multiple operations in one call |
 | **File Processing** | `mcx_file` to process local files with `$file` injection |
+| **Large File Handling** | Files >50KB stay in sandbox via `storeAs`, query with helpers |
 | **File Editing** | `mcx_edit` (string/line modes), `mcx_write` - no "read first" requirement |
 | **File Query Helpers** | `around()`, `lines()`, `block()`, `grep()`, `outline()` for stored files |
 | **URL Fetching** | `mcx_fetch` with HTML-to-markdown conversion (24h TTL cache) |
