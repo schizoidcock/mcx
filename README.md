@@ -135,7 +135,7 @@ See [Hooks Integration](docs/api.md#claude-code-hooks-integration) for hook scri
 | **Variable Persistence** | Store results as `$invoices`, `$customers` for later use |
 | **Auto-Compress** | Stale variables (>5min, >1KB) auto-compressed to save context |
 | **FTS5 Search** | Auto-index large outputs, search with `intent` parameter |
-| **FFF Integration** | Fast fuzzy file search, content grep, import analysis |
+| **FFF Integration** | [Fast File Finder](https://github.com/dmtrKovalenko/fff) - SIMD-accelerated fuzzy search, content grep |
 | **Background Tasks** | `mcx_spawn` for long-running operations, check with `mcx_tasks` |
 | **Batch Operations** | `mcx_batch` for multiple operations in one call |
 | **File Processing** | `mcx_file` to process local files with `$file` injection |
