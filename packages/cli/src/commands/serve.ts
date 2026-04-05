@@ -1204,12 +1204,13 @@ function buildAdapterContext(adapters: Adapter[]): Record<string, Record<string,
 async function createMcxServerWithDeps(
   config: MCXConfig | null,
   adapters: Adapter[],
-  skills: Map<string, Skill>
+  skills: Map<string, Skill>,
+  fffSearchPath?: string
 ) {
-  return createMcxServerCore(config, adapters, skills);
+  return createMcxServerCore(config, adapters, skills, fffSearchPath);
 }
 
-async function createMcxServer() {
+async function createMcxServer(fffSearchPath?: string) {
   // Parallelize independent startup operations
   const [config, lazyAdapters, skills] = await Promise.all([
     loadConfig(),
@@ -1225,13 +1226,14 @@ async function createMcxServer() {
   const adapters = [...configAdapters, ...filteredLazyAdapters];
 
   console.error(pc.dim(`Loaded ${configAdapters.length} config + ${filteredLazyAdapters.length} lazy adapter(s), ${skills.size} skill(s)`));
-  return createMcxServerCore(config, adapters, skills);
+  return createMcxServerCore(config, adapters, skills, fffSearchPath);
 }
 
 async function createMcxServerCore(
   config: MCXConfig | null,
   adapters: Adapter[],
-  skills: Map<string, Skill>
+  skills: Map<string, Skill>,
+  fffSearchPath?: string
 ) {
   // Cleanup stale FTS5 data on startup (older than 24h)
   try {
@@ -1487,7 +1489,7 @@ const outline = (stored) => {
 
   // Initialize FFF (Fast File Finder) for fuzzy search - optional, graceful fallback
   let FileFinderClass: typeof import("@ff-labs/fff-bun").FileFinder | null = null;
-  const fffBasePath = process.cwd();
+  const fffBasePath = fffSearchPath || process.cwd();
   try {
     const { FileFinder: FF } = await import("@ff-labs/fff-bun");
     FileFinderClass = FF;
@@ -1694,6 +1696,53 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             content: [{ type: "text" as const, text: deleted ? `Deleted $${varName}` : `Variable $${varName} not found` }],
             structuredContent: { deleted: deleted ? varName : null },
           };
+        }
+
+        // Auto-recovery: detect file helper patterns with undefined variables
+        // and auto-load matching files before execution
+        if (fileFinder) {
+          const helperPattern = /(?:grep|lines|around|block|outline)\(\$(\w+)/g;
+          const varMatches = [...code.matchAll(helperPattern)];
+          const autoLoaded: string[] = [];
+          
+          for (const [, varName] of varMatches) {
+            // Skip if variable already exists or is a built-in
+            if (state.has(varName) || varName === 'file' || varName === 'result') continue;
+            
+            // Try to find a file with EXACT basename match only
+            // This prevents loading wrong files when FFF is in global directory
+            const searchResult = fileFinder.fileSearch(varName, { pageSize: 10 });
+            if (searchResult.ok && searchResult.value.items.length > 0) {
+              // ONLY use exact basename match - never fall back to fuzzy match
+              const exactMatch = searchResult.value.items.find(f => {
+                const base = f.relativePath.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || '';
+                return base.toLowerCase() === varName.toLowerCase();
+              });
+              // Skip if no exact match found
+              if (!exactMatch) continue;
+              const file = exactMatch;
+              try {
+                const content = await Bun.file(file.path).text();
+                const fileLines = content.split('\n');
+                // Store as file object with helpers-compatible format
+                state.set(varName, {
+                  text: fileLines.map((l, i) => `${i + 1}: ${l}`).join('\n'),
+                  lines: fileLines.map((l, i) => `${i + 1}\t${i + 1}: ${l}`),
+                  path: file.path,
+                  size: content.length,
+                });
+                autoLoaded.push(`$${varName} → ${file.relativePath}`);
+              } catch {
+                // Ignore load errors, let execution fail naturally
+              }
+            }
+          }
+          
+          // Add auto-load info to result logs if any were loaded
+          if (autoLoaded.length > 0) {
+            // Will be visible in warnings/logs
+            console.error(pc.dim(`[MCX] Auto-loaded: ${autoLoaded.join(', ')}`));
+          }
         }
 
         // Execute code in sandbox
@@ -4190,7 +4239,7 @@ Useful for understanding code dependencies before making changes.`,
 // Transports
 // ============================================================================
 
-async function runStdio() {
+async function runStdio(fffSearchPath?: string) {
   console.error(pc.dim(`[MCX] cwd: ${process.cwd()}`));
 
   // Load global ~/.mcx/.env
@@ -4198,7 +4247,7 @@ async function runStdio() {
 
   console.error(pc.cyan("Starting MCX MCP server (stdio)...\n"));
 
-  const { server, cleanup } = await createMcxServer();
+  const { server, cleanup } = await createMcxServer(fffSearchPath);
   const transport = new StdioServerTransport();
 
   // Handle transport errors to prevent crashes
@@ -4232,7 +4281,7 @@ async function runStdio() {
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
-async function runHttp(port: number) {
+async function runHttp(port: number, fffSearchPath?: string) {
   console.error(pc.dim(`[MCX] cwd: ${process.cwd()}`));
 
   // Load global ~/.mcx/.env
@@ -4247,7 +4296,7 @@ async function runHttp(port: number) {
 
   // PERFORMANCE: Create server and transport ONCE, reuse for all requests
   // This prevents resource exhaustion from creating new instances per request
-  const { server, cleanup } = await createMcxServerWithDeps(config, adapters, skills);
+  const { server, cleanup } = await createMcxServerWithDeps(config, adapters, skills, fffSearchPath);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
@@ -4347,6 +4396,9 @@ export interface ServeOptions {
 }
 
 export async function serveCommand(options: ServeOptions = {}): Promise<void> {
+  // Save original cwd BEFORE any changes - this is where FFF should search
+  const originalCwd = process.cwd();
+  
   // If cwd is explicitly provided, use it (backward compatible)
   if (options.cwd) {
     // Check if it's a project-local config
@@ -4359,15 +4411,17 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
       console.error(pc.dim(`[MCX] Using cwd: ${options.cwd}`));
     }
   } else {
-    // Default: use global ~/.mcx/ directory
+    // Default: use global ~/.mcx/ directory for config/adapters
+    // but keep original cwd for FFF file search
     const mcxHome = ensureMcxHomeDir();
-    console.error(pc.dim(`[MCX] Using global: ${mcxHome}`));
+    console.error(pc.dim(`[MCX] Config from: ${mcxHome}`));
+    console.error(pc.dim(`[MCX] FFF search in: ${originalCwd}`));
     process.chdir(mcxHome);
   }
 
   if (options.transport === "http") {
-    await runHttp(options.port || 3100);
+    await runHttp(options.port || 3100, originalCwd);
   } else {
-    await runStdio();
+    await runStdio(originalCwd);
   }
 }
