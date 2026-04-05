@@ -1595,10 +1595,18 @@ const outline = (stored) => {
     let finder: FileFinder | null;
 
     if (normalizedSearch && normalizedSearch !== normalizedBase) {
-      finder = await getCachedFinder(normalizedSearch);
+      // First check watchedProjects (already initialized by mcx_watch)
+      finder = watchedProjects.get(normalizedSearch) || null;
+      
+      // If not in watchedProjects, use cached finder (creates new if needed)
+      if (!finder) {
+        finder = await getCachedFinder(normalizedSearch);
+      }
+      
       if (!finder) {
         return { content: [{ type: "text" as const, text: `Failed to initialize search in: ${searchPath}` }], isError: true };
       }
+
     } else {
       finder = fileFinder;
       if (!finder) {
