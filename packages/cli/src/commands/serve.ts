@@ -615,6 +615,42 @@ function formatFileResult(result: unknown, code: string): string {
 }
 
 /**
+ * Format tool result for readable output (Optimization #11b).
+ * - String → return directly with line truncation
+ * - Array of strings → join with newlines
+ * - Object/Array → compact JSON
+ */
+function formatToolResult(value: unknown, maxWidth: number = 120): string {
+  // Null/undefined
+  if (value === null || value === undefined) {
+    return String(value);
+  }
+  
+  // String → normalize CRLF, truncate long lines
+  if (typeof value === 'string') {
+    return value
+      .replace(/\r\n/g, '\n')  // Normalize Windows line endings
+      .split('\n')
+      .map(line => line.length > maxWidth ? line.slice(0, maxWidth - 3) + '...' : line)
+      .join('\n');
+  }
+  
+  // Array of strings → join with newlines
+  if (Array.isArray(value) && value.length > 0 && value.every(v => typeof v === 'string')) {
+    return (value as string[])
+      .map(line => {
+        const clean = typeof line === 'string' ? line.replace(/\r/g, '') : String(line);
+        return clean.length > maxWidth ? clean.slice(0, maxWidth - 3) + '...' : clean;
+      })
+      .join('\n');
+  }
+  
+  // Object/Array → compact JSON (indent=2 for readability but not excessive)
+  return safeStringify(value, 2);
+}
+
+
+/**
  * Enforce character limit on text output
  */
 function enforceCharacterLimit(text: string, limit: number = CHARACTER_LIMIT): { text: string; truncated: boolean } {
@@ -1915,9 +1951,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           storeMsg,
           truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}` : "",
           summarized.truncated
-            ? `Result (${summarized.originalSize}):\n${safeStringify(summarized.value)}`
+            ? `Result (${summarized.originalSize}):\n${formatToolResult(summarized.value)}`
             : valueWithoutImages !== undefined && valueWithoutImages !== null
-              ? `Result:\n${safeStringify(summarized.value)}`
+              ? `Result:\n${formatToolResult(summarized.value)}`
               : images.length > 0
                 ? "Image(s) attached"
                 : "Code executed successfully",
@@ -1932,15 +1968,14 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           ...images,
         ];
 
-        // Minimal structuredContent - only include non-default values
-        const structured: Record<string, unknown> = { result: summarized.value };
-        if (summarized.truncated || charLimitTruncated) structured.truncated = true;
-        if (params.storeAs && params.storeAs !== 'result') structured.storedAs = params.storeAs;
-        // Include warnings/errors from logs (memory warnings, etc.)
-        const warnings = truncatedLogs.filter(l => l.includes('[WARN]') || l.includes('[ERROR]'));
-        if (warnings.length > 0) structured.warnings = warnings;
-
-        return { content, structuredContent: structured, _rawBytes: summarized.rawBytes };
+        // Claude Code only shows structuredContent to user (ignores content)
+        // This is a client limitation, not MCP spec behavior
+        // Format result as readable string - best we can do
+        return { 
+          content,
+          structuredContent: { result: formatToolResult(summarized.value) },
+          _rawBytes: summarized.rawBytes 
+        };
       } catch (error) {
         logger.error("mcx_execute sandbox error", error);
         const message = error instanceof Error ? error.message : String(error);
@@ -2003,13 +2038,18 @@ ${skillList}`,
           maxStringLength: params.maxStringLength,
         });
 
-        // Enforce character limit on skill output too
-        const rawText = summarized.value !== undefined ? safeStringify(summarized.value) : "Skill executed successfully";
+        // Format skill result for readable output
+        const rawText = summarized.value !== undefined ? formatToolResult(summarized.value) : "Skill executed successfully";
         const { text: finalText, truncated: charLimitTruncated } = enforceCharacterLimit(rawText);
+
+        // Minimal structuredContent - only metadata
+        const structured: Record<string, unknown> = {};
+        if (summarized.truncated || charLimitTruncated) structured.truncated = true;
+        const hasStructured = Object.keys(structured).length > 0;
 
         return {
           content: [{ type: "text" as const, text: finalText }],
-          structuredContent: { result: summarized.value, truncated: summarized.truncated || charLimitTruncated },
+          ...(hasStructured ? { structuredContent: structured } : {}),
           _rawBytes: summarized.rawBytes,
         };
       } catch (error) {
@@ -2146,12 +2186,16 @@ Use storeAs to save results and return summary only:
           const state = getSandboxState();
           state.set('search', result);
 
-          const output = safeStringify(result);
+          const output = formatToolResult(result);
           const { text, truncated } = enforceCharacterLimit(output);
+
+          // Minimal structuredContent
+          const structured: Record<string, unknown> = { mode: 'spec', storedAs: ['search'] };
+          if (truncated) structured.truncated = true;
 
           return {
             content: [{ type: "text" as const, text }],
-            structuredContent: { mode: 'spec', storedAs: ['search'], truncated },
+            ...(Object.keys(structured).length > 0 ? { structuredContent: structured } : {}),
           };
         } catch (error) {
           logger.error("mcx_search spec query error", error);
