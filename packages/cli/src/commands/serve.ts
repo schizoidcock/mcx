@@ -569,18 +569,36 @@ function safeStringify(value: unknown, indent: number = 2): string {
 }
 
 /**
- * Format mcx_file result compactly.
- * - Array of strings → join with newlines (lines already numbered from #1)
+ * Format mcx_file result compactly (Optimization #10).
+ * - Array of strings → numbered lines (detects offset from slice())
  * - Long string → truncate long lines
  * - Other types → JSON
  */
 function formatFileResult(result: unknown, code: string): string {
-  // Array of strings (lines) → join directly (already numbered from Optimization #1)
+  const MAX_LINE_WIDTH = 120;
+  
+  // Array of strings (lines) → format with numbers
   if (Array.isArray(result) && result.length > 0 && result.every(r => typeof r === 'string')) {
+    // Check if lines are already numbered (format "N: content")
+    const firstLine = result[0] as string;
+    const alreadyNumbered = /^\d+:\s/.test(firstLine);
+    
+    if (alreadyNumbered) {
+      // Lines already numbered - just truncate long ones
+      return result
+        .map((line: string) => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line)
+        .join('\n');
+    }
+    
+    // Lines NOT numbered - detect offset from slice() and add numbers
+    // Patterns: .slice(N), .slice(N,M), lines.slice(N)
+    const sliceMatch = code.match(/\.slice\s*\(\s*(\d+)/);
+    const offset = sliceMatch ? parseInt(sliceMatch[1], 10) : 0;
+    
     return result
-      .map((line: string) => {
-        // Truncate long lines (keep line number prefix)
-        return line.length > 140 ? line.slice(0, 137) + '...' : line;
+      .map((line: string, i: number) => {
+        const numbered = `${offset + i + 1}: ${line}`;
+        return numbered.length > MAX_LINE_WIDTH ? numbered.slice(0, MAX_LINE_WIDTH - 3) + '...' : numbered;
       })
       .join('\n');
   }
@@ -588,7 +606,7 @@ function formatFileResult(result: unknown, code: string): string {
   // Long string → truncate long lines
   if (typeof result === 'string' && result.length > 1000) {
     return result.split('\n')
-      .map(line => line.length > 140 ? line.slice(0, 137) + '...' : line)
+      .map(line => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line)
       .join('\n');
   }
   
