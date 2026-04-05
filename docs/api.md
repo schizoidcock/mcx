@@ -49,6 +49,8 @@ MCX exposes sixteen tools to the AI agent:
 | `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
 | `mcx_file` | Process local files with `$file` injection, auto-indexes files >1KB |
+| `mcx_edit` | Edit files (string mode or line mode) - bypasses native Edit's read requirement |
+| `mcx_write` | Create/overwrite files - bypasses native Write's read requirement |
 | `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing (24h TTL cache) |
 | `mcx_find` | Fast fuzzy file search with frecency + proximity ranking |
 | `mcx_grep` | SIMD-accelerated content search with proximity ranking |
@@ -168,9 +170,51 @@ mcx_file({
 | Helper | Usage | Description |
 |--------|-------|-------------|
 | `around(file, line, ctx)` | `around($src, 100, 5)` | Lines around line 100 (±5 context) |
+| `lines(file, start, end)` | `lines($src, 100, 120)` | Get lines 100-120 (1-indexed, inclusive) |
 | `block(file, line)` | `block($src, 100)` | Extract code block containing line 100 |
 | `grep(file, pattern, ctx)` | `grep($src, 'TODO', 3)` | Find matches with 3 lines context |
 | `outline(file)` | `outline($src)` | Extract function/class signatures |
+
+### mcx_edit
+
+Edit files without native Edit's "must read first" requirement. Two modes:
+
+**String mode** (find & replace):
+```typescript
+mcx_edit({
+  file_path: "/path/to/file.ts",
+  old_string: "const x = 1",
+  new_string: "const x = 2"
+})
+// Use replace_all: true for multiple occurrences
+```
+
+**Line mode** (replace by line numbers - less context usage):
+```typescript
+mcx_edit({
+  file_path: "/path/to/file.ts",
+  start: 10,
+  end: 15,
+  new_string: "// New content for lines 10-15"
+})
+// Note: new_string replaces the range entirely (may change line count)
+```
+
+Features:
+- Auto-normalizes line endings (CRLF/LF)
+- Helpful error messages with file preview when string not found
+- Resolves relative paths from cwd
+
+### mcx_write
+
+Create or overwrite files without native Write's "must read first" requirement.
+
+```typescript
+mcx_write({
+  file_path: "/path/to/new-file.ts",
+  content: "export const hello = 'world';"
+})
+```
 
 ### mcx_fetch
 
@@ -518,10 +562,10 @@ MCX can be integrated with Claude Code hooks to automatically redirect native to
 
 Create hook scripts in `~/.claude/hooks/`:
 
-**mcx-redirect.js** (redirects Grep/Glob):
+**mcx-redirect.js** (redirects Grep/Glob/Edit/Write):
 ```javascript
 const input = await Bun.stdin.json();
-const mcx = { Grep: "mcx_grep", Glob: "mcx_find" }[input.tool_name];
+const mcx = { Grep: "mcx_grep", Glob: "mcx_find", Edit: "mcx_edit", Write: "mcx_write" }[input.tool_name];
 if (mcx) {
   console.log(JSON.stringify({
     hookSpecificOutput: {
@@ -555,6 +599,46 @@ if (filePath) {
 }
 ```
 
+**mcx-bash-check.js** (blocks cat/grep/find/heredoc in Bash):
+```javascript
+const input = await Bun.stdin.json();
+const cmd = (input.tool_input?.command || '').trim();
+
+if (/^cat\s+/.test(cmd)) {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      additionalContext: "Use mcx_file instead of cat"
+    }
+  }));
+} else if (/^grep\s+|^rg\s+/.test(cmd)) {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      additionalContext: "Use mcx_grep instead of grep/rg"
+    }
+  }));
+} else if (/^find\s+/.test(cmd)) {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      additionalContext: "Use mcx_find instead of find"
+    }
+  }));
+} else if (/<<\s*['"]?EOF|^echo\s+.*>/.test(cmd)) {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      additionalContext: "Use mcx_edit or mcx_write instead of heredoc/echo"
+    }
+  }));
+}
+```
+
 ### Settings Configuration
 
 Add to `~/.claude/settings.json`:
@@ -583,6 +667,27 @@ Add to `~/.claude/settings.json`:
           "type": "command",
           "command": "bun ~/.claude/hooks/mcx-read-check.js"
         }]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [{
+          "type": "command",
+          "command": "bun ~/.claude/hooks/mcx-redirect.js"
+        }]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [{
+          "type": "command",
+          "command": "bun ~/.claude/hooks/mcx-redirect.js"
+        }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": "bun ~/.claude/hooks/mcx-bash-check.js"
+        }]
       }
     ]
   }
@@ -596,6 +701,12 @@ Add to `~/.claude/settings.json`:
 | `Grep` | Block | `mcx_grep` | Always |
 | `Glob` | Block | `mcx_find` | Always |
 | `Read` | Block | `mcx_file` | File > 50KB |
+| `Edit` | Block | `mcx_edit` | Always |
+| `Write` | Block | `mcx_write` | Always |
+| `Bash cat` | Block | `mcx_file` | Always |
+| `Bash grep/rg` | Block | `mcx_grep` | Always |
+| `Bash find` | Block | `mcx_find` | Always |
+| `Bash heredoc` | Block | `mcx_edit/mcx_write` | Always |
 
 ### Token Savings
 

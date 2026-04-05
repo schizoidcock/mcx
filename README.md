@@ -152,6 +152,8 @@ See [Hooks Integration](docs/api.md#claude-code-hooks-integration) for hook scri
 | `mcx_search` | 3 modes: spec exploration, FTS5 search, adapter/method search |
 | `mcx_batch` | Multiple executions/searches in one call (bypasses throttling) |
 | `mcx_file` | Process local files with `$file` injection, or store-only mode with `storeAs` |
+| `mcx_edit` | Edit files (string mode or line mode) - bypasses native Edit's read requirement |
+| `mcx_write` | Create/overwrite files - bypasses native Write's read requirement |
 | `mcx_fetch` | Fetch URLs with HTML-to-markdown and auto-indexing (24h cache) |
 | `mcx_find` | Fast fuzzy file search with frecency + proximity ranking |
 | `mcx_grep` | SIMD-accelerated content search across files |
@@ -217,6 +219,7 @@ mcx_file({ path: "src/large-file.ts", storeAs: "src" })
 
 // Then query with helpers:
 around($src, 150, 10)          // 10 lines around line 150
+lines($src, 100, 120)          // Get lines 100-120 (1-indexed, inclusive)
 block($src, 150)               // Extract code block by indentation
 grep($src, "TODO", 3)          // Search with 3 lines context
 outline($src)                  // Extract function/class signatures

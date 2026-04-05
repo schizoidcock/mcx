@@ -19,7 +19,7 @@
  */
 
 import * as path from "node:path";
-import { join, basename, extname } from "node:path";
+import { join, basename, extname, isAbsolute } from "node:path";
 
 // Hoisted regex for import extraction (avoids recreation per call)
 const IMPORT_REGEX = /(?:import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
@@ -307,6 +307,10 @@ type BatchInput = z.infer<typeof BatchInputSchema>;
 const CHARACTER_LIMIT = 25000;
 /** Threshold for auto-indexing large outputs when intent is specified */
 const INTENT_THRESHOLD = 5000;
+/** Threshold for warning about full-file returns in mcx_file */
+const FULL_FILE_WARNING_BYTES = 5000;
+/** Code patterns that return entire file content (anti-pattern) */
+const FULL_FILE_CODE = new Set(['$file', '$file.text', '$file.lines']);
 /** Threshold for auto-indexing file content in mcx_file (10KB) */
 const FILE_INDEX_THRESHOLD = 10_000;
 /** Search throttling: normal results up to this many calls */
@@ -2578,8 +2582,9 @@ $file shape:
           return {
             content: [{
               type: "text" as const,
-              text: `Stored as $${params.storeAs} (${fileLines.length} lines, ${content.length} chars)
-Helpers: around($${params.storeAs}, line, ctx), block($${params.storeAs}, line), grep($${params.storeAs}, pattern, ctx), outline($${params.storeAs})`
+              text: `Stored as ${params.storeAs} (${fileLines.length} lines, ${content.length} chars)
+Helpers: around(${params.storeAs}, line, ctx), lines(${params.storeAs}, start, end), block(${params.storeAs}, line), grep(${params.storeAs}, pattern), outline(${params.storeAs})
+Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
             }]
           };
         }
@@ -2608,6 +2613,18 @@ Helpers: around($${params.storeAs}, line, ctx), block($${params.storeAs}, line),
         }
 
         const serialized = safeStringify(result.value);
+
+        // Warn if code returns entire file content (anti-pattern that fills context)
+        if (FULL_FILE_CODE.has(params.code.trim()) && serialized.length > FULL_FILE_WARNING_BYTES) {
+          const sizeKB = Math.round(serialized.length / 1024);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `⚠️ Returning full file (${sizeKB}KB) fills context. Use store-only mode instead:\n\nmcx_file({ path: "${params.path}", storeAs: "src" })\n\nThen query with: around($src, line, ctx), grep($src, pattern), outline($src)`
+            }],
+            isError: true,
+          };
+        }
 
         // Store if requested
         if (params.storeAs) {
@@ -2656,6 +2673,154 @@ Helpers: around($${params.storeAs}, line, ctx), block($${params.storeAs}, line),
       } catch (error) {
         return {
           content: [{ type: "text" as const, text: `Error reading file: ${error instanceof Error ? error.message : error}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: mcx_edit (bypass native Edit's read requirement)
+  const EditInputSchema = z.object({
+    file_path: z.string().describe("Absolute path to the file to edit"),
+    old_string: z.string().optional().describe("String mode: exact string to find and replace"),
+    new_string: z.string().describe("The replacement string/content"),
+    replace_all: z.boolean().optional().default(false).describe("String mode: replace all occurrences"),
+    start: z.number().optional().describe("Line mode: start line (1-indexed)"),
+    end: z.number().optional().describe("Line mode: end line (1-indexed, inclusive)"),
+  });
+  type EditInput = z.infer<typeof EditInputSchema>;
+
+  server.registerTool(
+    "mcx_edit",
+    {
+      title: "Edit File",
+      description: `Edit a file. Two modes:
+
+**String mode** (find & replace):
+mcx_edit({ file_path, old_string: "find", new_string: "replace" })
+Use for: small changes, renaming, single-line edits
+
+**Line mode** (replace by line numbers - less context usage):
+mcx_edit({ file_path, start: 10, end: 12, new_string: "content" })
+Use for: multi-line blocks, large replacements, refactoring
+Note: new_string replaces the range entirely (may change line count)`,
+      inputSchema: EditInputSchema,
+    },
+    async (params: EditInput): Promise<MCP.CallToolResult> => {
+      try {
+        const { file_path, old_string, new_string, replace_all, start, end } = params;
+
+        let resolvedPath = file_path;
+        if (!isAbsolute(file_path)) {
+          resolvedPath = join(process.cwd(), file_path);
+        }
+
+        // Read file
+        let content: string;
+        try {
+          content = await Bun.file(resolvedPath).text();
+        } catch {
+          return {
+            content: [{ type: "text" as const, text: `Error: File not found or unreadable: ${resolvedPath}` }],
+            isError: true,
+          };
+        }
+
+        let newContent: string;
+
+        // Line mode: replace by line numbers
+        if (start !== undefined && end !== undefined) {
+          const lines = content.split('\n');
+          if (start < 1 || end > lines.length || start > end) {
+            return {
+              content: [{ type: "text" as const, text: `Error: Invalid line range ${start}-${end} (file has ${lines.length} lines)` }],
+              isError: true,
+            };
+          }
+          const before = lines.slice(0, start - 1);
+          const after = lines.slice(end);
+          newContent = [...before, new_string, ...after].join('\n');
+        }
+        // String mode: find and replace
+        else if (old_string) {
+          // Normalize line endings: convert old_string to match file's style
+          const hasCRLF = content.includes('\r\n');
+          const normalizedOld = hasCRLF ? old_string.replace(/(?<!\r)\n/g, '\r\n') : old_string.replace(/\r\n/g, '\n');
+          const normalizedNew = hasCRLF ? new_string.replace(/(?<!\r)\n/g, '\r\n') : new_string.replace(/\r\n/g, '\n');
+          const firstIdx = content.indexOf(normalizedOld);
+          if (firstIdx === -1) {
+            // Show helpful context: first line of search string and file preview
+            const searchPreview = normalizedOld.split('\n')[0].slice(0, 60);
+            const filePreview = content.slice(0, 200).replace(/\r/g, '');
+            return {
+              content: [{ type: "text" as const, text: `Error: old_string not found.\n\nSearching for: "${searchPreview}${normalizedOld.length > 60 ? '...' : ''}"\n\nFile starts with:\n${filePreview}...` }],
+              isError: true,
+            };
+          }
+          const hasMultiple = content.indexOf(normalizedOld, firstIdx + normalizedOld.length) !== -1;
+          if (hasMultiple && !replace_all) {
+            return {
+              content: [{ type: "text" as const, text: `Error: Multiple occurrences found. Use replace_all: true or provide more context.` }],
+              isError: true,
+            };
+          }
+          newContent = replace_all ? content.replaceAll(normalizedOld, normalizedNew) : content.replace(normalizedOld, normalizedNew);
+        }
+        else {
+          return {
+            content: [{ type: "text" as const, text: `Error: Provide old_string (string mode) or start+end (line mode)` }],
+            isError: true,
+          };
+        }
+
+        await Bun.write(resolvedPath, newContent);
+        return {
+          content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}` }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: mcx_write (create/overwrite files, bypasses native Write's read requirement)
+  const WriteInputSchema = z.object({
+    file_path: z.string().describe("Absolute path to the file to create/overwrite"),
+    content: z.string().describe("The content to write to the file"),
+  });
+  type WriteInput = z.infer<typeof WriteInputSchema>;
+
+  server.registerTool(
+    "mcx_write",
+    {
+      title: "Write File",
+      description: `Create or overwrite a file. Bypasses native Write's "must read first" requirement.
+
+Example:
+mcx_write({ file_path: "/path/to/file.ts", content: "const x = 1;" })`,
+      inputSchema: WriteInputSchema,
+    },
+    async (params: WriteInput): Promise<MCP.CallToolResult> => {
+      try {
+        const { file_path, content } = params;
+
+        let resolvedPath = file_path;
+        if (!isAbsolute(file_path)) {
+          resolvedPath = join(process.cwd(), file_path);
+        }
+
+        await Bun.write(resolvedPath, content);
+
+        const lines = content.split('\n').length;
+        return {
+          content: [{ type: "text" as const, text: `✓ Wrote ${lines} lines to ${basename(resolvedPath)}` }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         };
       }
@@ -3642,7 +3807,7 @@ async function runStdio() {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 

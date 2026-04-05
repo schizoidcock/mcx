@@ -2,6 +2,24 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.21] - 2026-04-04
+
+### Features
+- **mcx_edit** - Edit files without native Edit's "read first" requirement
+  - String mode: `mcx_edit({ file_path, old_string, new_string, replace_all })`
+  - Line mode: `mcx_edit({ file_path, start, end, new_string })` - less context usage
+  - Auto-normalizes line endings (CRLF/LF)
+  - Better error messages with file preview when string not found
+- **mcx_write** - Create/overwrite files without native Write's "read first" requirement
+- **lines() helper** - Get specific line range: `lines($file, start, end)` (1-indexed, inclusive)
+- **Full-file warning** - Anti-pattern detection for `$file`, `$file.text`, `$file.lines` returning large files
+
+### Improvements
+- Updated FFF to 0.5.2 (nightly) for better fuzzy search performance
+- Bash hooks block cat/grep/find/heredoc commands, redirect to MCX tools
+
+---
+
 ## [0.3.20] - 2026-04-04
 
 ### Features

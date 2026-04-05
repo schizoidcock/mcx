@@ -349,6 +349,20 @@ export class BunWorkerSandbox implements ISandbox {
       };
 
       /**
+       * Get specific line range (1-indexed, inclusive).
+       * @param file - File object with .lines array
+       * @param start - Start line number (1-indexed)
+       * @param end - End line number (1-indexed, inclusive)
+       */
+      globalThis.lines = (file, start, end) => {
+        const fileLines = file?.lines;
+        if (!Array.isArray(fileLines)) return [];
+        if (start < 1) start = 1;
+        if (end > fileLines.length) end = fileLines.length;
+        return fileLines.slice(start - 1, end);
+      };
+
+      /**
        * Extract code block containing a line (detects by indentation).
        * @param file - File object with .lines array
        * @param line - Line number (1-indexed)
@@ -362,12 +376,11 @@ export class BunWorkerSandbox implements ISandbox {
         const targetIndent = lines[idx].search(/\\S/);
         if (targetIndent < 0) return [lines[idx]];
 
-        // Find block start
+        // Find block start (line with less indentation)
         let start = idx;
         for (let i = idx - 1; i >= 0; i--) {
           const lineIndent = lines[i].search(/\\S/);
           if (lineIndent >= 0 && lineIndent < targetIndent) { start = i; break; }
-          if (lineIndent === 0 && lines[i].trim()) { start = i; break; }
         }
 
         // Find block end
@@ -428,7 +441,7 @@ export class BunWorkerSandbox implements ISandbox {
           const line = lines[i];
           for (const pat of patterns) {
             if (pat.test(line)) {
-              signatures.push((i + 1) + ': ' + line.trim().slice(0, 80));
+              signatures.push({ line: i + 1, text: line.trim().slice(0, 80) });
               break;
             }
           }
@@ -443,7 +456,7 @@ export class BunWorkerSandbox implements ISandbox {
         'pendingCalls', 'callId', 'logs', 'console', 'adapters',
         'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource',
         'pick', 'table', 'count', 'sum', 'first', 'safeStr', 'poll', 'waitFor',
-        'around', 'block', 'grep', 'outline'
+        'around', 'lines', 'block', 'grep', 'outline'
       ]);
 
       self.onmessage = async (event) => {
