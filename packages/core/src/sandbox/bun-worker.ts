@@ -334,13 +334,116 @@ export class BunWorkerSandbox implements ISandbox {
         throw new Error('waitFor timeout after ' + timeout + 'ms');
       };
 
+      /**
+       * Get lines around a specific line number (1-indexed).
+       * @param file - File object with .lines array
+       * @param line - Line number (1-indexed)
+       * @param ctx - Context lines before/after (default 10)
+       */
+      globalThis.around = (file, line, ctx = 10) => {
+        const lines = file?.lines;
+        if (!Array.isArray(lines)) return [];
+        if (line < 1 || line > lines.length) return [];
+        const idx = line - 1;
+        return lines.slice(Math.max(0, idx - ctx), Math.min(lines.length, idx + ctx + 1));
+      };
+
+      /**
+       * Extract code block containing a line (detects by indentation).
+       * @param file - File object with .lines array
+       * @param line - Line number (1-indexed)
+       */
+      globalThis.block = (file, line) => {
+        const lines = file?.lines;
+        if (!Array.isArray(lines)) return [];
+        const idx = line - 1;
+        if (idx < 0 || idx >= lines.length) return [];
+
+        const targetIndent = lines[idx].search(/\\S/);
+        if (targetIndent < 0) return [lines[idx]];
+
+        // Find block start
+        let start = idx;
+        for (let i = idx - 1; i >= 0; i--) {
+          const lineIndent = lines[i].search(/\\S/);
+          if (lineIndent >= 0 && lineIndent < targetIndent) { start = i; break; }
+          if (lineIndent === 0 && lines[i].trim()) { start = i; break; }
+        }
+
+        // Find block end
+        const startIndent = lines[start].search(/\\S/);
+        let end = idx;
+        for (let i = idx + 1; i < lines.length; i++) {
+          const lineIndent = lines[i].search(/\\S/);
+          if (lineIndent >= 0 && lineIndent <= startIndent && lines[i].trim()) { end = i - 1; break; }
+          end = i;
+        }
+
+        return lines.slice(start, end + 1);
+      };
+
+      /**
+       * Grep with context lines.
+       * @param file - File object with .lines array
+       * @param pattern - String or regex pattern
+       * @param ctx - Context lines (default 3)
+       */
+      globalThis.grep = (file, pattern, ctx = 3) => {
+        const lines = file?.lines;
+        if (!Array.isArray(lines)) return [];
+        const regex = typeof pattern === 'string' ? new RegExp(pattern, 'i') : pattern;
+        const results = [];
+
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            results.push({
+              line: i + 1,
+              match: lines[i],
+              context: lines.slice(Math.max(0, i - ctx), i + ctx + 1)
+            });
+          }
+        }
+        return results;
+      };
+
+      /**
+       * Extract outline (function/class signatures).
+       * @param file - File object with .lines array
+       */
+      globalThis.outline = (file) => {
+        const lines = file?.lines;
+        if (!Array.isArray(lines)) return [];
+        const signatures = [];
+        const patterns = [
+          /^(export\\s+)?(async\\s+)?function\\s+\\w+/,
+          /^(export\\s+)?(const|let|var)\\s+\\w+\\s*=\\s*(async\\s+)?\\(/,
+          /^(export\\s+)?(const|let|var)\\s+\\w+\\s*=\\s*(async\\s+)?function/,
+          /^(export\\s+)?class\\s+\\w+/,
+          /^(export\\s+)?interface\\s+\\w+/,
+          /^(export\\s+)?type\\s+\\w+/,
+          /^\\s+(async\\s+)?\\w+\\s*\\([^)]*\\)\\s*[:{]/,
+        ];
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          for (const pat of patterns) {
+            if (pat.test(line)) {
+              signatures.push((i + 1) + ': ' + line.trim().slice(0, 80));
+              break;
+            }
+          }
+        }
+        return signatures;
+      };
+
       // SECURITY: Reserved keys that must not be overwritten by user-provided variables/globals
       const RESERVED_KEYS = new Set([
         'onmessage', 'postMessage', 'close', 'terminate', 'self',
         'constructor', 'prototype', '__proto__',
         'pendingCalls', 'callId', 'logs', 'console', 'adapters',
         'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource',
-        'pick', 'table', 'count', 'sum', 'first', 'safeStr', 'poll', 'waitFor'
+        'pick', 'table', 'count', 'sum', 'first', 'safeStr', 'poll', 'waitFor',
+        'around', 'block', 'grep', 'outline'
       ]);
 
       self.onmessage = async (event) => {

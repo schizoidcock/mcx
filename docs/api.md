@@ -142,7 +142,19 @@ mcx_batch({
 
 Process local files with `$file` variable injection. Files >1KB are automatically indexed in FTS5 for later search via `mcx_search`.
 
+**Store-only mode** (no code parameter): Loads file into sandbox variable without returning content to context. Ideal for large files.
+
 ```typescript
+// Store-only: 142KB file → only 50 chars to context
+mcx_file({ path: "serve.ts", storeAs: "src" })
+// → "Stored as $src (3788 lines, 142670 chars)"
+
+// Query stored file with helpers
+mcx_execute({ code: "outline($src).slice(0, 10)" })
+mcx_execute({ code: "grep($src, 'registerTool', 3)" })
+mcx_execute({ code: "block($src, 2467)" })
+
+// Process mode (with code): executes code and returns result
 mcx_file({
   path: "package.json",
   code: "({ name: $file.name, deps: Object.keys($file.dependencies) })"
@@ -150,6 +162,15 @@ mcx_file({
 // $file is parsed JSON for .json files, { text, lines } for others
 // HTML files are converted to markdown before indexing
 ```
+
+**File Query Helpers** (available after storing a file):
+
+| Helper | Usage | Description |
+|--------|-------|-------------|
+| `around(file, line, ctx)` | `around($src, 100, 5)` | Lines around line 100 (±5 context) |
+| `block(file, line)` | `block($src, 100)` | Extract code block containing line 100 |
+| `grep(file, pattern, ctx)` | `grep($src, 'TODO', 3)` | Find matches with 3 lines context |
+| `outline(file)` | `outline($src)` | Extract function/class signatures |
 
 ### mcx_fetch
 

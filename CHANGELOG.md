@@ -2,6 +2,23 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.20] - 2026-04-04
+
+### Features
+- **mcx_file store-only mode** - `mcx_file({ path, storeAs })` loads file into sandbox without returning content to context (99% token savings for large files)
+- **File query helpers** - Global functions for querying stored files:
+  - `around($file, line, ctx)` - Get lines around a specific line number
+  - `block($file, line)` - Extract code block by indentation detection
+  - `grep($file, pattern, ctx)` - Search with context lines
+  - `outline($file)` - Extract function/class signatures
+
+### Claude Code Hooks
+- **Grep/Glob redirect hooks** - Block native tools and suggest MCX alternatives
+- **Hook script** - `~/.claude/hooks/mcx-redirect.js` for tool redirection
+- **additionalContext pattern** - Clean display without verbose error messages
+
+---
+
 ## [0.3.19] - 2026-04-04
 
 ### Features

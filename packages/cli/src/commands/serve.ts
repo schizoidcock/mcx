@@ -2467,9 +2467,9 @@ Examples:
   // Tool: mcx_file
   const FileInputSchema = z.object({
     path: z.string().describe("File path to process"),
-    code: z.string().describe("JavaScript code to process $file"),
+    code: z.string().optional().describe("JavaScript code to process $file (optional if storeAs)"),
     intent: z.string().optional().describe("Auto-index if output > 5KB"),
-    storeAs: z.string().optional().describe("Store result as variable"),
+    storeAs: z.string().optional().describe("Store file as variable (without code: stores file content, not result)"),
   });
   type FileInput = z.infer<typeof FileInputSchema>;
 
@@ -2561,6 +2561,35 @@ $file shape:
           const fileLabel = basename(resolvedPath);
           const indexContent = isHtml(content) ? htmlToMarkdown(content) : content;
           store.index(indexContent, fileLabel, { contentType: ext === '.md' ? 'markdown' : 'plaintext' });
+        }
+
+        // Store-only mode: save file content without executing code (keeps content out of context)
+        if (params.storeAs && !params.code) {
+          const state = getSandboxState();
+          const fileLines = content.split('\n');
+
+          // Store plain data (no methods - they can't be cloned to sandbox)
+          state.set(params.storeAs, {
+            text: content,
+            lines: fileLines,
+            path: resolvedPath,
+          });
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Stored as $${params.storeAs} (${fileLines.length} lines, ${content.length} chars)
+Helpers: around($${params.storeAs}, line, ctx), block($${params.storeAs}, line), grep($${params.storeAs}, pattern, ctx), outline($${params.storeAs})`
+            }]
+          };
+        }
+
+        // Require code if not in store-only mode
+        if (!params.code) {
+          return {
+            content: [{ type: "text" as const, text: "Error: code is required (or use storeAs to load file into variable)" }],
+            isError: true,
+          };
         }
 
         // Execute with $file injected via variables (MCX pattern)
