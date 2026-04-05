@@ -1,6 +1,6 @@
 {
   "name": "@papicandela/mcx-cli",
-  "version": "0.3.23",
+  "version": "0.3.24",
   "description": "CLI for the MCX framework - MCP Code Execution",
   "author": "papicandela",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ff-labs/fff-bun": "^0.5.2-nightly.db4cd28",
+    "@ff-labs/fff-bun": "^0.5.2",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@opentui-ui/dialog": "^0.1.2",
     "@opentui-ui/toast": "^0.0.5",
@@ -50,10 +50,10 @@
     "typescript": "^5.7.2"
   },
   "optionalDependencies": {
-    "@ff-labs/fff-bin-darwin-arm64": "0.5.2-nightly.db4cd28",
-    "@ff-labs/fff-bin-darwin-x64": "0.5.2-nightly.db4cd28",
-    "@ff-labs/fff-bin-linux-x64-gnu": "0.5.2-nightly.db4cd28",
-    "@ff-labs/fff-bin-win32-x64": "0.5.2-nightly.db4cd28"
+    "@ff-labs/fff-bin-darwin-arm64": "0.5.2",
+    "@ff-labs/fff-bin-darwin-x64": "0.5.2",
+    "@ff-labs/fff-bin-linux-x64-gnu": "0.5.2",
+    "@ff-labs/fff-bin-win32-x64": "0.5.2"
   },
   "keywords": [
     "mcx",

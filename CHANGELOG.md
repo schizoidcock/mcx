@@ -2,6 +2,13 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.24] - 2026-04-04
+
+### Improvements
+- Updated FFF to 0.5.2 stable (from nightly)
+
+---
+
 ## [0.3.23] - 2026-04-04
 
 ### Improvements

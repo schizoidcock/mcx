@@ -5,6 +5,7 @@
     "": {
       "name": "mcx",
       "dependencies": {
+        "@ff-labs/fff-bun": "0.5.2",
         "@m234/nerd-fonts": "^0.5.0",
         "@opentui-ui/dialog": "^0.1.2",
         "@opentui-ui/toast": "^0.0.5",
@@ -35,12 +36,12 @@
     },
     "packages/cli": {
       "name": "@papicandela/mcx-cli",
-      "version": "0.3.20",
+      "version": "0.3.23",
       "bin": {
         "mcx": "./dist/index.js",
       },
       "dependencies": {
-        "@ff-labs/fff-bun": "^0.5.2-nightly.db4cd28",
+        "@ff-labs/fff-bun": "^0.5.2",
         "@modelcontextprotocol/sdk": "^1.26.0",
         "@opentui-ui/dialog": "^0.1.2",
         "@opentui-ui/toast": "^0.0.5",
@@ -59,15 +60,15 @@
         "typescript": "^5.7.2",
       },
       "optionalDependencies": {
-        "@ff-labs/fff-bin-darwin-arm64": "0.5.1",
-        "@ff-labs/fff-bin-darwin-x64": "0.5.1",
-        "@ff-labs/fff-bin-linux-x64-gnu": "0.5.1",
-        "@ff-labs/fff-bin-win32-x64": "0.5.1",
+        "@ff-labs/fff-bin-darwin-arm64": "0.5.2",
+        "@ff-labs/fff-bin-darwin-x64": "0.5.2",
+        "@ff-labs/fff-bin-linux-x64-gnu": "0.5.2",
+        "@ff-labs/fff-bin-win32-x64": "0.5.2",
       },
     },
     "packages/core": {
       "name": "@papicandela/mcx-core",
-      "version": "0.2.8",
+      "version": "0.2.9",
       "dependencies": {
         "acorn": "^8.16.0",
         "zod": "^3.23.0",
@@ -98,23 +99,23 @@
 
     "@dimforge/rapier2d-simd-compat": ["@dimforge/rapier2d-simd-compat@0.17.3", "", {}, "sha512-bijvwWz6NHsNj5e5i1vtd3dU2pDhthSaTUZSh14DUGGKJfw8eMnlWZsxwHBxB/a3AXVNDjL9abuHw1k9FGR+jg=="],
 
-    "@ff-labs/fff-bin-darwin-arm64": ["@ff-labs/fff-bin-darwin-arm64@0.5.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-sjhSI2Y/j0N297Rf+Tk75ZN1ETVaU4e/TmlGD5bBiQdmbq5ihW5LBIngAidLGEce5yRZVluKgEAzi0cxvaCpHw=="],
+    "@ff-labs/fff-bin-darwin-arm64": ["@ff-labs/fff-bin-darwin-arm64@0.5.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-6hkXiB5R5n0eDxibVTDFFXKca1PVpVysWOwgFLyXYr6b0BLI5UcuDSz4vZ1fj4eoH+9rgqIqd65YMZ7e7s3J5g=="],
 
-    "@ff-labs/fff-bin-darwin-x64": ["@ff-labs/fff-bin-darwin-x64@0.5.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-8FO3fLJGZaRuHKxPhJz/AWsY3AUAGJqBcjd4Xet4pGiz5Ckc4bbWC/B9AWySVn2YIrXw7ZtlWdyO4kIhRJ5O3g=="],
+    "@ff-labs/fff-bin-darwin-x64": ["@ff-labs/fff-bin-darwin-x64@0.5.2", "", { "os": "darwin", "cpu": "x64" }, "sha512-I7q1T9Iw/qnCzGT5dY7nxEdqS18vhTbXwWR2LKNPgxUpoGGv7sMe57QhEGAXT8eKvPh8hgZneU8VLt49wmFYRw=="],
 
-    "@ff-labs/fff-bin-linux-arm64-gnu": ["@ff-labs/fff-bin-linux-arm64-gnu@0.5.2-nightly.db4cd28", "", { "os": "linux", "cpu": "arm64" }, "sha512-DY9cV8n/GRnbDKu/CqMplOP2kfjfLHuUqkD2JUnV9sjc1Aj0c0tJAbyYEa5o7U1mKsnDuDrxiXXUd80igk6HQw=="],
+    "@ff-labs/fff-bin-linux-arm64-gnu": ["@ff-labs/fff-bin-linux-arm64-gnu@0.5.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-iputHhH4bpOegz+j14JcypuelNPdUwwx3oJavln02jNY1oouPNhC2tNMJKSXgkUgAbuGRn26iXSlUPNwIl0ftQ=="],
 
-    "@ff-labs/fff-bin-linux-arm64-musl": ["@ff-labs/fff-bin-linux-arm64-musl@0.5.2-nightly.db4cd28", "", { "os": "linux", "cpu": "arm64" }, "sha512-hf+T0sD2SLLSWzlp7hhC6cUC/VWAMY5gRdDmoUW0603mL54sezedyVpVW/hNXH64YrI8PUPpXWOFA9n3dL8u2A=="],
+    "@ff-labs/fff-bin-linux-arm64-musl": ["@ff-labs/fff-bin-linux-arm64-musl@0.5.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-5ySavoc0Q5Cr1qKIBj2s8roQEFhCgJM8ndCM6AcPv5tuFirBHJe9iT3OG0x0/u9Mm70MosIYbd3dnbC3QwIWzw=="],
 
-    "@ff-labs/fff-bin-linux-x64-gnu": ["@ff-labs/fff-bin-linux-x64-gnu@0.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-UB9P7UGwCJ/eRS5/8LvoVllNOu1WOTNH5Sl/rqRsgm+lWOStFUBON2yhL2mKKmNramY5pYLkIkclvcBGijNCZQ=="],
+    "@ff-labs/fff-bin-linux-x64-gnu": ["@ff-labs/fff-bin-linux-x64-gnu@0.5.2", "", { "os": "linux", "cpu": "x64" }, "sha512-lRMcoeNlGsqN1jVup95TfWfz74Funn8nuzVVxZUzmZbQOWEDkhfULUB8jpaz9Q7sDq5hqhMa5+zJf29sKuw0hw=="],
 
-    "@ff-labs/fff-bin-linux-x64-musl": ["@ff-labs/fff-bin-linux-x64-musl@0.5.2-nightly.db4cd28", "", { "os": "linux", "cpu": "x64" }, "sha512-g+J059g0taiK3GLodHhy9Lv52/3vFUE5FJma5Pk+4zEPhHifUEt6I7UPO621NMqWdOJXTNCON0o8EJROxuh/Ew=="],
+    "@ff-labs/fff-bin-linux-x64-musl": ["@ff-labs/fff-bin-linux-x64-musl@0.5.2", "", { "os": "linux", "cpu": "x64" }, "sha512-QvNTGvZNKj8h/ZuCY/g+/WMQagK6E8U0Zv3vCbZgUsegvMtGpVNW42w8jiUC21136DnmfF8rG0mz8SsR/99qHw=="],
 
-    "@ff-labs/fff-bin-win32-arm64": ["@ff-labs/fff-bin-win32-arm64@0.5.2-nightly.db4cd28", "", { "os": "win32", "cpu": "arm64" }, "sha512-yt1GfxJtpiuNU2GPV01By6ITMB1WNc9Q4jpSsX51J3YJnpkPjurLhA5pLEd2j4nHTziTlJ7xQCIpqZGNB+lTxA=="],
+    "@ff-labs/fff-bin-win32-arm64": ["@ff-labs/fff-bin-win32-arm64@0.5.2", "", { "os": "win32", "cpu": "arm64" }, "sha512-mT0A0FsZRgVPDsg4czksGYUuMqXodlrg97ss6jEs60upvHWGTWpgkoiRfm80u2ixVzx0z8yqhbquol1C/mvKGA=="],
 
-    "@ff-labs/fff-bin-win32-x64": ["@ff-labs/fff-bin-win32-x64@0.5.1", "", { "os": "win32", "cpu": "x64" }, "sha512-miRuws6mmMIco05IMFUA53/qIpvIL1D/TLhv97qFQTwZEX4UUuCmNorH1yeuXIJWNeUviVDcAf/NtY/HtaixlQ=="],
+    "@ff-labs/fff-bin-win32-x64": ["@ff-labs/fff-bin-win32-x64@0.5.2", "", { "os": "win32", "cpu": "x64" }, "sha512-aca29wsv0XcTTwKd0GOpDBZPgMrvs0osqGSqp2cYrznH7/wQZySHYDlXni7b4SY6oqxmuQQYXXwQzAn8CoqLsQ=="],
 
-    "@ff-labs/fff-bun": ["@ff-labs/fff-bun@0.5.2-nightly.db4cd28", "", { "optionalDependencies": { "@ff-labs/fff-bin-darwin-arm64": "0.5.2-nightly.db4cd28", "@ff-labs/fff-bin-darwin-x64": "0.5.2-nightly.db4cd28", "@ff-labs/fff-bin-linux-arm64-gnu": "0.5.2-nightly.db4cd28", "@ff-labs/fff-bin-linux-arm64-musl": "0.5.2-nightly.db4cd28", "@ff-labs/fff-bin-linux-x64-gnu": "0.5.2-nightly.db4cd28", "@ff-labs/fff-bin-linux-x64-musl": "0.5.2-nightly.db4cd28", "@ff-labs/fff-bin-win32-arm64": "0.5.2-nightly.db4cd28", "@ff-labs/fff-bin-win32-x64": "0.5.2-nightly.db4cd28" }, "peerDependencies": { "bun": ">=1.0.0" }, "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ], "bin": { "fff-demo": "examples/search.ts", "fff-grep": "examples/grep.ts" } }, "sha512-4PHOKevbcFz7ohsTCVheHRTXTlxch04IcUOkN5BpN4YoPj85V9ctXaSsky7sbQvgkm1NvjAI6DgF7wUxDHH70g=="],
+    "@ff-labs/fff-bun": ["@ff-labs/fff-bun@0.5.2", "", { "optionalDependencies": { "@ff-labs/fff-bin-darwin-arm64": "0.5.2", "@ff-labs/fff-bin-darwin-x64": "0.5.2", "@ff-labs/fff-bin-linux-arm64-gnu": "0.5.2", "@ff-labs/fff-bin-linux-arm64-musl": "0.5.2", "@ff-labs/fff-bin-linux-x64-gnu": "0.5.2", "@ff-labs/fff-bin-linux-x64-musl": "0.5.2", "@ff-labs/fff-bin-win32-arm64": "0.5.2", "@ff-labs/fff-bin-win32-x64": "0.5.2" }, "peerDependencies": { "bun": ">=1.0.0" }, "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ], "bin": { "fff-demo": "examples/search.ts", "fff-grep": "examples/grep.ts" } }, "sha512-puwgVLi7RfjzqB4biVB5ZCvtLbTf34yEorJ3PhBpwaM0pB8hFM+9VRXdNhGF+I3F0LU6twuNsS43AomgyrdDvQ=="],
 
     "@hono/node-server": ["@hono/node-server@1.19.9", "", { "peerDependencies": { "hono": "^4" } }, "sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw=="],
 
@@ -835,14 +836,6 @@
     "zod-to-json-schema": ["zod-to-json-schema@3.25.1", "", { "peerDependencies": { "zod": "^3.25 || ^4" } }, "sha512-pM/SU9d3YAggzi6MtR4h7ruuQlqKtad8e9S0fmxcMi+ueAK5Korys/aWcV9LIIHTVbj01NdzxcnXSN+O74ZIVA=="],
 
     "@clack/prompts/is-unicode-supported": ["is-unicode-supported@2.1.0", "", { "bundled": true }, "sha512-mE00Gnza5EEB3Ds0HfMyllZzbBrmLOX3vfWoj9A9PEnTfratQ/BcaJOuMhnkhjXvb2+FkY3VuHqtAGpTPmglFQ=="],
-
-    "@ff-labs/fff-bun/@ff-labs/fff-bin-darwin-arm64": ["@ff-labs/fff-bin-darwin-arm64@0.5.2-nightly.db4cd28", "", { "os": "darwin", "cpu": "arm64" }, "sha512-3THh+F0RhVVah7AKeU3K9TlVF6iCglHGD33UDE5coNVXscZ2d90CTEZafVWmwXLLaHCbSqKT33+f8Wuv+xZPag=="],
-
-    "@ff-labs/fff-bun/@ff-labs/fff-bin-darwin-x64": ["@ff-labs/fff-bin-darwin-x64@0.5.2-nightly.db4cd28", "", { "os": "darwin", "cpu": "x64" }, "sha512-UMIQxc9xCQUoOA9B/2SIy6i2r43+pEVwI8i4hbTjJ6IvRIqY+UpLyVviJ3Qx4yHHAZ8HMuBnBL9taEAFhvVw2A=="],
-
-    "@ff-labs/fff-bun/@ff-labs/fff-bin-linux-x64-gnu": ["@ff-labs/fff-bin-linux-x64-gnu@0.5.2-nightly.db4cd28", "", { "os": "linux", "cpu": "x64" }, "sha512-zV+mU888p0TerN/QjALuIdha0g7sk39bKDYpRjaitj51AVTQ9TW449zpQYUIqu8XGp8ImZ12pEZ5wQ69eP/8DQ=="],
-
-    "@ff-labs/fff-bun/@ff-labs/fff-bin-win32-x64": ["@ff-labs/fff-bin-win32-x64@0.5.2-nightly.db4cd28", "", { "os": "win32", "cpu": "x64" }, "sha512-ROowsxV8I2h5xNOS8V49GUS2HHy0ixEYglpzArdfE3PhthsDRUoWKWNRNcuPQ+71tWdSLz5cSO+q3U1F4ojZVA=="],
 
     "@langchain/core/uuid": ["uuid@10.0.0", "", { "bin": { "uuid": "dist/bin/uuid" } }, "sha512-8XkAphELsDnEGrDxUOHB3RGvXz6TeuYSGEZBOjtTtPm2lwhGBjLgOzLHB63IUWfBpNucQjND6d3AOudO+H3RWQ=="],
 
