@@ -3135,7 +3135,22 @@ Examples:
           output.push('   Without MCX: |' + barWithout + '| ' + formatBytes(tokenStats.totalRaw));
           output.push('   With MCX:    |' + barWith + '| ' + formatBytes(tokenStats.totalChars) + ' (' + savePct + '% saved)');
           output.push('');
+          
+          // Enhanced metrics (better than context-mode's arbitrary formula)
+          const tokensKept = Math.round(saved / 4);  // ~4 chars per token (industry standard)
+          const contextWindow = 200000;  // Opus/Sonnet context window
+          const contextPreserved = (tokensKept / contextWindow * 100).toFixed(1);
+          const costPer1M = 5;  // $5/1M input tokens (Opus 4.5/4.6 pricing)
+          const costSaved = (tokensKept / 1000000 * costPer1M).toFixed(3);
+          
+          // Format tokens nicely
+          const tokensStr = tokensKept >= 1000 ? (tokensKept / 1000).toFixed(1) + 'K' : String(tokensKept);
+          
           output.push('   🎯 ' + formatBytes(saved) + ' kept in sandbox');
+          output.push('      → ' + tokensStr + ' tokens preserved (' + contextPreserved + '% of context window)');
+          if (parseFloat(costSaved) >= 0.01) {
+            output.push('      → $' + costSaved + ' context cost avoided');
+          }
         } else {
           output.push('   ' + formatBytes(tokenStats.totalChars) + ' in ' + tokenStats.totalCalls + ' calls');
         }
