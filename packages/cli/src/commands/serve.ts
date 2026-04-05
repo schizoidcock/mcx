@@ -2923,12 +2923,33 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
           };
         }
 
-        // Require code if not in store-only mode
+        // Auto-preview if no code/storeAs (show first 50 lines)
         if (!params.code) {
-          return {
-            content: [{ type: "text" as const, text: "Error: code is required (or use storeAs to load file into variable)" }],
-            isError: true,
-          };
+          // For JSON files that parsed, show formatted JSON preview
+          if (ext === '.json' && typeof $file === 'object' && $file !== null && !('lines' in $file)) {
+            const jsonPreview = JSON.stringify($file, null, 2).split('\n').slice(0, 50);
+            const hasMore = JSON.stringify($file, null, 2).split('\n').length > 50;
+            const preview = jsonPreview.join('\n') + (hasMore ? '\n... (truncated)' : '');
+            const tip = `\n→ Use storeAs to load full file, or code to process`;
+            const outputText = preview + tip;
+            return {
+              content: [{ type: "text" as const, text: outputText }],
+              toolResult: outputText,
+            };
+          }
+          // For text files with numbered lines
+          const fileObj = $file as { lines?: string[] };
+          if (fileObj.lines) {
+            const previewLines = fileObj.lines.slice(0, 50);
+            const hasMore = fileObj.lines.length > 50;
+            const preview = previewLines.join('\n') + (hasMore ? `\n... +${fileObj.lines.length - 50} more lines` : '');
+            const tip = `\n→ Use storeAs to load full file, or code to process`;
+            const outputText = preview + tip;
+            return {
+              content: [{ type: "text" as const, text: outputText }],
+              toolResult: outputText,
+            };
+          }
         }
 
         // Execute with $file injected via variables (MCX pattern)
@@ -3140,8 +3161,27 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
           
           const hasMultiple = contentLF.indexOf(oldLF, firstIdx + oldLF.length) !== -1;
           if (hasMultiple && !replace_all) {
+            // Find all occurrences and their line numbers
+            const lines = contentLF.split('\n');
+            const occurrences: number[] = [];
+            let pos = 0;
+            let lineNum = 1;
+            for (const line of lines) {
+              if (contentLF.slice(pos, pos + line.length + 1).includes(oldLF.split('\n')[0])) {
+                // Check if this line starts an occurrence
+                const checkStart = contentLF.indexOf(oldLF, pos);
+                if (checkStart >= pos && checkStart <= pos + line.length) {
+                  occurrences.push(lineNum);
+                }
+              }
+              pos += line.length + 1;
+              lineNum++;
+            }
+            const linesInfo = occurrences.length > 0 
+              ? `\nFound at lines: ${occurrences.slice(0, 5).join(', ')}${occurrences.length > 5 ? ` (+${occurrences.length - 5} more)` : ''}`
+              : '';
             return {
-              content: [{ type: "text" as const, text: `Error: Multiple occurrences found. Use replace_all: true or provide more context.` }],
+              content: [{ type: "text" as const, text: `Error: Multiple occurrences found.${linesInfo}\n\nUse replace_all: true or provide more context.` }],
               isError: true,
             };
           }
