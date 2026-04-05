@@ -4,6 +4,12 @@ All notable changes to MCX will be documented in this file.
 
 ## [0.3.21] - 2026-04-04
 
+### Added
+- **hooks/** directory with ready-to-use Claude Code hooks:
+  - `mcx-redirect.js` - Redirects Grep/Glob/Edit/Write to MCX
+  - `mcx-read-check.js` - Blocks large file reads, suggests mcx_file
+  - `mcx-bash-check.js` - Blocks cat/grep/find/heredoc in Bash
+
 ### Features
 - **mcx_edit** - Edit files without native Edit's "read first" requirement
   - String mode: `mcx_edit({ file_path, old_string, new_string, replace_all })`

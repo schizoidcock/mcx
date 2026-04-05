@@ -110,7 +110,10 @@ Redirect native tools to MCX alternatives for better performance:
     "PreToolUse": [
       { "matcher": "Grep", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-redirect.js" }] },
       { "matcher": "Glob", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-redirect.js" }] },
-      { "matcher": "Read", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-read-check.js" }] }
+      { "matcher": "Edit", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-redirect.js" }] },
+      { "matcher": "Write", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-redirect.js" }] },
+      { "matcher": "Read", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-read-check.js" }] },
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "bun ~/.claude/hooks/mcx-bash-check.js" }] }
     ]
   }
 }
@@ -120,7 +123,10 @@ Redirect native tools to MCX alternatives for better performance:
 |-------------|-----------------|-----------|
 | `Glob` | `mcx_find` | Frecency ranking, git status, proximity boost |
 | `Grep` | `mcx_grep` | SIMD-accelerated, fuzzy search |
+| `Edit` | `mcx_edit` | No "read first" requirement, CRLF normalization |
+| `Write` | `mcx_write` | No "read first" requirement |
 | `Read` (>50KB) | `mcx_file({ storeAs })` | File stays in sandbox, 99% token savings |
+| `Bash cat/grep/find` | `mcx_file/mcx_grep/mcx_find` | Redirects shell commands to MCX |
 
 See [Hooks Integration](docs/api.md#claude-code-hooks-integration) for hook scripts.
 
