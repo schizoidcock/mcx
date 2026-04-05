@@ -295,12 +295,18 @@ const SearchInputSchema = z.object({
 }).strict();
 
 const BatchInputSchema = z.object({
+  operations: coerceJsonArray(z.array(z.object({
+    code: z.string().describe("Code to execute"),
+    storeAs: z.string().optional().describe("Variable name to store result"),
+  })))
+    .optional()
+    .describe("Array of code operations to run sequentially"),
   executions: coerceJsonArray(z.array(z.object({
     code: z.string().describe("Code to execute"),
     storeAs: z.string().optional().describe("Variable name to store result"),
   })))
     .optional()
-    .describe("Array of code executions to run sequentially"),
+    .describe("Deprecated alias for operations"),
   queries: coerceJsonArray(z.array(z.string()))
     .optional()
     .describe("FTS5 search queries to run on indexed content"),
@@ -1308,13 +1314,18 @@ async function createMcxServerCore(
 
   // File helpers code to prepend to user code (functions can't be passed via postMessage)
   const FILE_HELPERS_CODE = `
+const isNumbered = (lines) => lines.length > 0 && /^\\d+:\\s/.test(lines[0]);
 const around = (stored, line, ctx = 10) => {
   const start = Math.max(0, line - ctx - 1);
   const end = Math.min(stored.lines.length, line + ctx);
-  return stored.lines.slice(start, end).map((l, i) => (start + i + 1) + '\\t' + l).join('\\n');
+  const slice = stored.lines.slice(start, end);
+  if (isNumbered(stored.lines)) return slice.join('\\n');
+  return slice.map((l, i) => (start + i + 1) + ':\\t' + l).join('\\n');
 };
 const lines = (stored, start, end) => {
-  return stored.lines.slice(start - 1, end).map((l, i) => (start + i) + '\\t' + l).join('\\n');
+  const slice = stored.lines.slice(start - 1, end);
+  if (isNumbered(stored.lines)) return slice.join('\\n');
+  return slice.map((l, i) => (start + i) + ':\\t' + l).join('\\n');
 };
 const block = (stored, line) => {
   const lns = stored.lines;
@@ -1322,7 +1333,7 @@ const block = (stored, line) => {
   for (let i = line - 1; i >= 0; i--) {
     if (lns[i].includes('{')) braceCount++;
     if (lns[i].includes('}')) braceCount--;
-    if (braceCount > 0 || /^(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/.test(lns[i])) {
+    if (braceCount > 0 || /^(\\d+:\\s*)?(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/.test(lns[i])) {
       blockStart = i; break;
     }
   }
@@ -1332,14 +1343,23 @@ const block = (stored, line) => {
     blockEnd = i;
     if (braceCount <= 0 && i > blockStart) break;
   }
-  return lns.slice(blockStart, blockEnd + 1).map((l, i) => (blockStart + i + 1) + '\\t' + l).join('\\n');
+  const slice = lns.slice(blockStart, blockEnd + 1);
+  if (isNumbered(lns)) return slice.join('\\n');
+  return slice.map((l, i) => (blockStart + i + 1) + ':\\t' + l).join('\\n');
 };
 const grep = (stored, pattern) => {
   const re = new RegExp(pattern, 'gi');
-  return stored.lines.map((l, i) => re.test(l) ? (i + 1) + '\\t' + l : null).filter(Boolean).join('\\n');
+  const matches = stored.lines.map((l, i) => [l, i]).filter(([l]) => re.test(l));
+  if (isNumbered(stored.lines)) return matches.map(([l]) => l).join('\\n');
+  return matches.map(([l, i]) => (i + 1) + ':\\t' + l).join('\\n');
 };
 const outline = (stored) => {
-  return stored.lines.map((l, i) => /^(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/.test(l.trim()) ? (i + 1) + '\\t' + l : null).filter(Boolean).join('\\n');
+  const pat = isNumbered(stored.lines) 
+    ? /^\\d+:\\s*(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/
+    : /^(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/;
+  const matches = stored.lines.map((l, i) => [l, i]).filter(([l]) => pat.test(l));
+  if (isNumbered(stored.lines)) return matches.map(([l]) => l).join('\\n');
+  return matches.map(([l, i]) => (i + 1) + ':\\t' + l).join('\\n');
 };
 `;
 
@@ -1918,6 +1938,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
 
               return {
                 content: [{ type: "text" as const, text: indexedOutput }, ...images],
+                toolResult: indexedOutput,
                 structuredContent: {
                   indexed: true,
                   sourceId,
@@ -1973,7 +1994,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         // Format result as readable string - best we can do
         return { 
           content,
-          structuredContent: { result: formatToolResult(summarized.value) },
+          toolResult: formatToolResult(summarized.value),
           _rawBytes: summarized.rawBytes 
         };
       } catch (error) {
@@ -2116,6 +2137,7 @@ ${skillList}`,
 
       return {
         content: [{ type: "text" as const, text: summary }],
+        toolResult: summary,
         structuredContent: {
           storedAs: ['list'],
           counts: output.total,
@@ -2178,6 +2200,7 @@ Use storeAs to save results and return summary only:
               : `Stored result as $${params.storeAs}`;
             return {
               content: [{ type: "text" as const, text: summary }],
+              toolResult: summary,
               structuredContent: { mode: 'spec', storedAs: params.storeAs, itemCount: Array.isArray(result) ? result.length : 1 },
             };
           }
@@ -2195,6 +2218,7 @@ Use storeAs to save results and return summary only:
 
           return {
             content: [{ type: "text" as const, text }],
+            toolResult: text,
             ...(Object.keys(structured).length > 0 ? { structuredContent: structured } : {}),
           };
         } catch (error) {
@@ -2260,6 +2284,7 @@ Use storeAs to save results and return summary only:
 
           return {
             content: [{ type: "text" as const, text: output }],
+            toolResult: output,
             structuredContent: { mode: 'content', storedAs: ['search'], results: allResults.length, truncated },
           };
         } catch (error) {
@@ -2480,9 +2505,10 @@ Use storeAs to save results and return summary only:
       const filterDesc = filters.join(", ");
 
       if (totalMatches === 0) {
+        const msg = `No results found for ${filterDesc}`;
         return {
-          content: [{ type: "text" as const, text: `No results found for ${filterDesc}` }],
-          structuredContent: results,
+          content: [{ type: "text" as const, text: msg }],
+          toolResult: msg,
         };
       }
 
@@ -2580,6 +2606,7 @@ Use storeAs to save results and return summary only:
         const summary = `Stored ${results.methods.length} methods, ${results.adapters.length} adapters as ${storedVars}\nExplore: $search.methods[0].parameters` + suggestNextTool("mcx_search");
         return {
           content: [{ type: "text" as const, text: summary }],
+          toolResult: summary,
           structuredContent: {
             storedAs: params.storeAs !== 'search' ? ['search', params.storeAs] : ['search'],
             counts: {
@@ -2601,6 +2628,7 @@ Use storeAs to save results and return summary only:
 
       return {
         content: [{ type: "text" as const, text: finalText }],
+        toolResult: finalText,
         structuredContent: {
           storedAs: ['search'],
           counts: {
@@ -2618,10 +2646,10 @@ Use storeAs to save results and return summary only:
     "mcx_batch",
     {
       title: "Batch Execute and Search",
-      description: `Run multiple executions and searches in one call. Bypasses throttling.
+      description: `Run multiple operations and searches in one call. Bypasses throttling.
 
 Examples:
-- mcx_batch({ executions: [{ code: "alegra.getInvoices()", storeAs: "inv" }], queries: ["overdue"] })
+- mcx_batch({ operations: [{ code: "alegra.getInvoices()", storeAs: "inv" }], queries: ["overdue"] })
 - mcx_batch({ queries: ["error", "timeout", "failed"] })`,
       inputSchema: BatchInputSchema,
       annotations: {
@@ -2632,22 +2660,25 @@ Examples:
       },
     },
     async (params: BatchInput) => {
+      // Support 'operations' as alias for 'executions'
+      const operations = params.operations || params.executions;
+      
       const output: string[] = [];
       const results: {
         executions: Array<{ storeAs?: string; success: boolean; error?: string }>;
         searches: Array<{ query: string; count: number }>;
       } = { executions: [], searches: [] };
 
-      // Run executions sequentially
-      if (params.executions && params.executions.length > 0) {
-        output.push("## Executions");
+      // Run operations sequentially
+      if (operations && operations.length > 0) {
+        output.push("## Operations");
         output.push("");
 
         // Hoist singletons outside loop
         const state = getSandboxState();
         const store = getContentStore();
 
-        for (const exec of params.executions) {
+        for (const exec of operations) {
           try {
             // Get stored variables fresh each iteration (state mutates via storeAs)
             const result = await sandbox.execute(FILE_HELPERS_CODE + exec.code, {
@@ -2745,6 +2776,7 @@ Examples:
 
       return {
         content: [{ type: "text" as const, text: summary }],
+        toolResult: summary,
         structuredContent: {
           storedAs: ['batch'],
           counts: { executions: execCount, searches: searchCount },
