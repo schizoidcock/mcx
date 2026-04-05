@@ -25,12 +25,14 @@ else if (/^grep\s+/.test(cmd) || /^rg\s+/.test(cmd)) {
 }
 
 // Block find/ls patterns -> mcx_find
+// Note: mcx_find is fuzzy name search only. For advanced find options
+// (-exec, -mtime, -size, -type, -newer), user should allow the command.
 else if (/^find\s+/.test(cmd) || /^ls\s+.*\*/.test(cmd)) {
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      additionalContext: "Use mcx_find instead of find/ls"
+      additionalContext: "Use mcx_find instead of find/ls (for -exec/-mtime/-size options, allow this command)"
     }
   }));
 }

@@ -705,7 +705,9 @@ Add to `~/.claude/settings.json`:
 | `Write` | Block | `mcx_write` | Always |
 | `Bash cat` | Block | `mcx_file` | Always |
 | `Bash grep/rg` | Block | `mcx_grep` | Always |
-| `Bash find` | Block | `mcx_find` | Always |
+| `Bash find` | Block | `mcx_find` | Always* |
+
+*`mcx_find` is fuzzy name search only. For advanced `find` options (`-exec`, `-mtime`, `-size`, `-type`, `-newer`), allow the command manually.
 | `Bash heredoc` | Block | `mcx_edit/mcx_write` | Always |
 
 ### Token Savings
