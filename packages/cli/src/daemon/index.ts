@@ -6,6 +6,7 @@
  */
 
 import { readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { relative, extname, basename } from 'path';
 import { getContentStore } from '../search';
 import type { FileFinder } from '@ff-labs/fff-bun';
@@ -72,8 +73,16 @@ export class FileIndexerDaemon {
             const ext = extname(fullPath).toLowerCase();
             if (!INDEXABLE_EXTENSIONS.has(ext)) continue;
 
-            const content = await readFile(fullPath, 'utf-8');
             const label = relative(projectPath, fullPath);
+
+            // Check if file was deleted
+            if (!existsSync(fullPath)) {
+              store.deleteByLabel(label);
+              this.onIndex?.(fullPath, projectPath); // Still notify (deletion)
+              continue;
+            }
+
+            const content = await readFile(fullPath, 'utf-8');
             
             store.reindex(content, label, {
               contentType: this.getContentType(fullPath),

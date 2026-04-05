@@ -70,7 +70,7 @@ export class ContentStore {
     if (!source) return false;
     
     // Delete chunks first (FTS5 tables)
-    this.db.prepare('DELETE FROM chunks_fts WHERE source_id = ?').run(source.id);
+    this.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(source.id);
     this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?').run(source.id);
     this.db.prepare('DELETE FROM sources WHERE id = ?').run(source.id);
     return true;
