@@ -589,15 +589,19 @@ interface SummarizedResult {
   value: unknown;
   truncated: boolean;
   originalSize?: string;
+  rawBytes: number;  // Size before truncation for token tracking
 }
 
 function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResult {
+  // Calculate raw size before any truncation
+  const rawBytes = JSON.stringify(value).length;
+  
   if (!opts.enabled) {
-    return { value, truncated: false };
+    return { value, truncated: false, rawBytes };
   }
 
   if (value === undefined || value === null) {
-    return { value, truncated: false };
+    return { value, truncated: false, rawBytes };
   }
 
   // Create a shared seen set for circular reference detection
@@ -609,13 +613,14 @@ function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResul
         value: value.slice(0, opts.maxItems).map(v => summarizeObject(v, opts, 0, seen)),
         truncated: true,
         originalSize: `${value.length} items, showing first ${opts.maxItems}`,
+        rawBytes,
       };
     }
-    return { value: value.map(v => summarizeObject(v, opts, 0, seen)), truncated: false };
+    return { value: value.map(v => summarizeObject(v, opts, 0, seen)), truncated: false, rawBytes };
   }
 
   if (typeof value === "object") {
-    return { value: summarizeObject(value, opts, 0, seen), truncated: false };
+    return { value: summarizeObject(value, opts, 0, seen), truncated: false, rawBytes };
   }
 
   if (typeof value === "string" && value.length > opts.maxStringLength) {
@@ -623,10 +628,11 @@ function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResul
       value: `${value.slice(0, opts.maxStringLength)}... [${value.length} chars]`,
       truncated: true,
       originalSize: `${value.length} chars`,
+      rawBytes,
     };
   }
 
-  return { value, truncated: false };
+  return { value, truncated: false, rawBytes };
 }
 
 /** Max recursion depth to prevent stack overflow on deeply nested objects */
@@ -1217,6 +1223,35 @@ async function createMcxServerCore(
   let networkBytesIn = 0;
   let networkBytesOut = 0;
 
+  // Token tracking for context efficiency stats
+  const tokenStats = {
+    byTool: new Map<string, { calls: number; chars: number; raw: number }>(),
+    totalCalls: 0,
+    totalChars: 0,
+    totalRaw: 0,
+    sessionStart: Date.now(),
+  };
+
+  function trackTokenOutput(toolName: string, response: MCP.CallToolResult, rawBytes?: number): MCP.CallToolResult {
+    if (!response?.content) return response;  // Guard for tools without content
+    const chars = JSON.stringify(response.content).length;
+    // Calculate response overhead (text wrapper, helpers, etc.) to make raw comparable to chars
+    const structuredResult = (response as any).structuredContent?.result;
+    const truncatedValueSize = structuredResult ? JSON.stringify(structuredResult).length : 0;
+    const responseOverhead = chars - truncatedValueSize;
+    // Add same overhead to rawBytes so percentages reflect actual value savings
+    const raw = rawBytes ? rawBytes + responseOverhead : chars;
+    const stats = tokenStats.byTool.get(toolName) || { calls: 0, chars: 0, raw: 0 };
+    stats.calls++;
+    stats.chars += chars;
+    stats.raw += raw;
+    tokenStats.byTool.set(toolName, stats);
+    tokenStats.totalCalls++;
+    tokenStats.totalChars += chars;
+    tokenStats.totalRaw += raw;
+    return response;
+  }
+
   function trackNetworkBytes(bytesIn: number, bytesOut: number = 0): void {
     networkBytesIn += bytesIn;
     networkBytesOut += bytesOut;
@@ -1468,6 +1503,19 @@ async function createMcxServerCore(
     version: "0.1.0",
   });
 
+  // Wrap registerTool to track all tool outputs
+  const originalRegisterTool = server.registerTool.bind(server);
+  server.registerTool = ((name: string, config: any, handler: any) => {
+    const trackedHandler = async (params: any) => {
+      const result = await handler(params);
+      // Extract _rawBytes if present (tools set this to track pre-truncation size)
+      const rawBytes = (result as any)._rawBytes;
+      if (rawBytes !== undefined) delete (result as any)._rawBytes;
+      return trackTokenOutput(name, result, rawBytes);
+    };
+    return originalRegisterTool(name, config, trackedHandler);
+  }) as typeof server.registerTool;
+
   // Tool: mcx_execute
   server.registerTool(
     "mcx_execute",
@@ -1705,7 +1753,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         if (summarized.truncated || charLimitTruncated) structured.truncated = true;
         if (params.storeAs && params.storeAs !== 'result') structured.storedAs = params.storeAs;
 
-        return { content, structuredContent: structured };
+        return { content, structuredContent: structured, _rawBytes: summarized.rawBytes };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -1774,6 +1822,7 @@ ${skillList}`,
         return {
           content: [{ type: "text" as const, text: finalText }],
           structuredContent: { result: summarized.value, truncated: summarized.truncated || charLimitTruncated },
+          _rawBytes: summarized.rawBytes,
         };
       } catch (error) {
         if (timeoutId) clearTimeout(timeoutId);
@@ -2664,6 +2713,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
           }
         }
 
+        const rawBytes = serialized.length;  // Track size before truncation
         const { text: finalText, truncated } = enforceCharacterLimit(serialized);
         const storedMsg = params.storeAs ? `\n${formatStoredAs(params.storeAs)}` : '';
 
@@ -2674,6 +2724,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
             truncated,
             storeAs: params.storeAs,
           },
+          _rawBytes: rawBytes,
         };
       } catch (error) {
         return {
@@ -2748,29 +2799,34 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
           newContent = [...before, new_string, ...after].join('\n');
         }
         // String mode: find and replace
+        // String mode: find and replace
         else if (old_string) {
-          // Normalize line endings: convert old_string to match file's style
+          // Simple approach: normalize everything to LF, do replacement, then restore CRLF if needed
           const hasCRLF = content.includes('\r\n');
-          const normalizedOld = hasCRLF ? old_string.replace(/(?<!\r)\n/g, '\r\n') : old_string.replace(/\r\n/g, '\n');
-          const normalizedNew = hasCRLF ? new_string.replace(/(?<!\r)\n/g, '\r\n') : new_string.replace(/\r\n/g, '\n');
-          const firstIdx = content.indexOf(normalizedOld);
+          const contentLF = content.replace(/\r\n/g, '\n');
+          const oldLF = old_string.replace(/\r\n/g, '\n');
+          const newLF = new_string.replace(/\r\n/g, '\n');
+          
+          const firstIdx = contentLF.indexOf(oldLF);
           if (firstIdx === -1) {
-            // Show helpful context: first line of search string and file preview
-            const searchPreview = normalizedOld.split('\n')[0].slice(0, 60);
-            const filePreview = content.slice(0, 200).replace(/\r/g, '');
+            const searchPreview = oldLF.split('\n')[0].slice(0, 60);
             return {
-              content: [{ type: "text" as const, text: `Error: old_string not found.\n\nSearching for: "${searchPreview}${normalizedOld.length > 60 ? '...' : ''}"\n\nFile starts with:\n${filePreview}...` }],
+              content: [{ type: "text" as const, text: `Error: old_string not found.\n\nSearching for: "${searchPreview}${oldLF.length > 60 ? '...' : ''}"\n\nTip: Use line mode (start/end) for complex edits.` }],
               isError: true,
             };
           }
-          const hasMultiple = content.indexOf(normalizedOld, firstIdx + normalizedOld.length) !== -1;
+          
+          const hasMultiple = contentLF.indexOf(oldLF, firstIdx + oldLF.length) !== -1;
           if (hasMultiple && !replace_all) {
             return {
               content: [{ type: "text" as const, text: `Error: Multiple occurrences found. Use replace_all: true or provide more context.` }],
               isError: true,
             };
           }
-          newContent = replace_all ? content.replaceAll(normalizedOld, normalizedNew) : content.replace(normalizedOld, normalizedNew);
+          
+          // Do replacement in LF mode, then restore original line endings
+          const resultLF = replace_all ? contentLF.replaceAll(oldLF, () => newLF) : contentLF.replace(oldLF, () => newLF);
+          newContent = hasCRLF ? resultLF.replace(/\n/g, '\r\n') : resultLF;
         }
         else {
           return {
@@ -3041,27 +3097,62 @@ Examples:
           return `${abbreviate(adapter, 4)}.${abbreviate(fn)}(${count})`;
         });
 
-      const output = [
-        'Session Stats',
-        '─────────────',
-        `Indexed: ${sources.length} sources, ${totalChunks} chunks`,
-        `Searches: ${searchCallCount} calls (${throttleStatus})`,
-        `Executions: ${executionCounter}`,
-        `Network: ↓${formatBytes(networkBytesIn)} ↑${formatBytes(networkBytesOut)}`,
-        `Variables: ${variables.length > 0 ? variables.map(v => '$' + v).join(', ') : 'none'}`,
-        `Frecency: ${topMethods.length > 0 ? topMethods.join(', ') : 'no methods tracked yet'}`,
-      ];
+      // Context efficiency calculations
+      const sessionMin = Math.floor((Date.now() - tokenStats.sessionStart) / 60000);
+      const sessionTime = sessionMin < 60 ? sessionMin + 'm' : Math.floor(sessionMin/60) + 'h' + (sessionMin%60) + 'm';
+      const saved = tokenStats.totalRaw - tokenStats.totalChars;
+      const savePct = tokenStats.totalRaw > 0 ? Math.round((saved / tokenStats.totalRaw) * 100) : 0;
+      const barWidth = 20;
+      const filledActual = tokenStats.totalRaw > 0 ? Math.min(barWidth, Math.max(1, Math.round((tokenStats.totalChars / tokenStats.totalRaw) * barWidth))) : 0;
+      const barWithout = '█'.repeat(barWidth);
+      const barWith = '█'.repeat(filledActual) + '░'.repeat(barWidth - filledActual);
+      // Build table for tool breakdown
+      const toolData = [...tokenStats.byTool.entries()]
+        .sort((a, b) => b[1].chars - a[1].chars)
+        .slice(0, 8)
+        .map(([tool, s]) => ({
+          tool: tool.replace('mcx_', ''),
+          calls: s.calls,
+          bytes: formatBytes(s.chars),
+          saved: s.raw > 0 && s.raw > s.chars ? '-' + Math.round(((s.raw - s.chars) / s.raw) * 100) + '%' : '',
+        }));
+      
+      const toolBreakdown = toolData.length > 0 ? [
+        '┌──────────────┬───────┬──────────┬─────────┐',
+        '│ Tool         │ Calls │ Bytes    │ Saved   │',
+        '├──────────────┼───────┼──────────┼─────────┤',
+        ...toolData.map(t => 
+          '│ ' + t.tool.padEnd(12) + ' │ ' + String(t.calls).padStart(5) + ' │ ' + t.bytes.padStart(8) + ' │ ' + t.saved.padStart(7) + ' │'
+        ),
+        '└──────────────┴───────┴──────────┴─────────┘',
+      ] : [];
 
-      if (sources.length > 0) {
+      const output: string[] = ['MCX Session Stats', '─────────────────', ''];
+      
+      if (tokenStats.totalCalls > 0) {
+        output.push('📊 Context Efficiency');
+        if (saved > 0) {
+          output.push('   Without MCX: |' + barWithout + '| ' + formatBytes(tokenStats.totalRaw));
+          output.push('   With MCX:    |' + barWith + '| ' + formatBytes(tokenStats.totalChars) + ' (' + savePct + '% saved)');
+          output.push('');
+          output.push('   🎯 ' + formatBytes(saved) + ' kept in sandbox');
+        } else {
+          output.push('   ' + formatBytes(tokenStats.totalChars) + ' in ' + tokenStats.totalCalls + ' calls');
+        }
         output.push('');
-        output.push('Sources:');
-        for (const s of sources.slice(0, 10)) {
-          output.push(`  ${s.label}: ${s.chunkCount} chunks`);
+        if (toolBreakdown.length > 0) {
+          output.push('📈 By Tool');
+          output.push(...toolBreakdown);
+          output.push('');
         }
-        if (sources.length > 10) {
-          output.push(`  ... and ${sources.length - 10} more`);
-        }
+      } else {
+        output.push('No tool calls yet.');
+        output.push('');
       }
+      
+      output.push('⏱️ Session: ' + sessionTime + ' | ' + executionCounter + ' executions | ' + searchCallCount + ' searches');
+      if (variables.length > 0) output.push('📦 Variables: ' + variables.map(v => '$' + v).join(', '));
+      if (sources.length > 0) output.push('📚 Indexed: ' + sources.length + ' sources, ' + totalChunks + ' chunks');
 
       return { content: [{ type: "text" as const, text: output.join('\n') }] };
     }
@@ -3517,6 +3608,10 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
           ? [...items].sort((a, b) => (proxScores.get(b.path) || 0) - (proxScores.get(a.path) || 0))
           : items;
 
+        // Calculate raw size of full result for token tracking
+        const fullOutput = items.map(f => f.relativePath + (f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : ""));
+        const rawBytes = JSON.stringify(fullOutput).length;
+        
         const output = [
           `Found ${totalMatched} files (showing ${rankedItems.length}):`,
           "",
@@ -3527,7 +3622,7 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
           }),
         ];
 
-        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_find") }] };
+        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_find") }], _rawBytes: rawBytes };
       });
     }
   );
@@ -3590,6 +3685,9 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
           return { content: [{ type: "text" as const, text: `No matches in ${totalFilesSearched} files.` }] };
         }
 
+        // Calculate raw size for token tracking (full items before truncation)
+        const rawBytes = JSON.stringify(items).length;
+
         const output = [`${totalMatched} matches in ${totalFilesSearched} files (showing ${items.length}):`, ""];
 
         // Group by file
@@ -3616,7 +3714,7 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
           if (matches.length > 5) output.push(`  ... +${matches.length - 5} more matches`);
         }
 
-        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_grep") }] };
+        return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_grep") }], _rawBytes: rawBytes };
       });
     }
   );
