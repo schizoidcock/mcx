@@ -2494,7 +2494,12 @@ Examples:
 
 $file shape:
 - JSON files: parsed object
-- Other files: { text: string, lines: string[] }`,
+- Other files: { text: string, lines: string[] }
+
+**Tips:**
+- Use \`storeAs\` for large files: \`mcx_file({ path, storeAs: "src" })\` → query with helpers
+- Helpers: around(), lines(), block(), grep(), outline()
+- For edits: find line numbers with grep(), then use mcx_edit line mode`,
       inputSchema: FileInputSchema,
       annotations: {
         readOnlyHint: true,
@@ -2801,7 +2806,9 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
       description: `Create or overwrite a file. Bypasses native Write's "must read first" requirement.
 
 Example:
-mcx_write({ file_path: "/path/to/file.ts", content: "const x = 1;" })`,
+mcx_write({ file_path: "/path/to/file.ts", content: "const x = 1;" })
+
+Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
       inputSchema: WriteInputSchema,
     },
     async (params: WriteInput): Promise<MCP.CallToolResult> => {
@@ -3556,7 +3563,9 @@ Use path param to search in a different directory (e.g., path: "D:/projects/myap
 Modes:
 - plain: Literal text match (fast)
 - regex: Regular expression
-- fuzzy: Typo-tolerant fuzzy match`,
+- fuzzy: Typo-tolerant fuzzy match
+
+Tip: Use results to find line numbers, then mcx_edit with line mode.`,
       inputSchema: GrepInputSchema,
       annotations: {
         readOnlyHint: true,

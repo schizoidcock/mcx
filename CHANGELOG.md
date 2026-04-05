@@ -2,6 +2,16 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.23] - 2026-04-04
+
+### Improvements
+- **Tool tips added:**
+  - mcx_file: storeAs workflow, helpers list, edit workflow
+  - mcx_write: use mcx_edit for partial changes
+  - mcx_grep: find line numbers for mcx_edit
+
+---
+
 ## [0.3.22] - 2026-04-04
 
 ### Improvements
