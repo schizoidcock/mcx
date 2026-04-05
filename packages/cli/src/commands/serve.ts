@@ -3025,14 +3025,18 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
             dynamicTip = `\n⚠️ Call #${callCount} to same file. Use around(${line}, 20) or mcx_edit directly.`;
           }
 
+          const outputText = finalText + storedMsg + dynamicTip;
           return {
-            content: [{ type: "text" as const, text: finalText + storedMsg + dynamicTip }],
+            content: [{ type: "text" as const, text: outputText }],
+            toolResult: outputText,
             _rawBytes: rawBytes,
           };
         }
 
+        const outputText = finalText + storedMsg;
         return {
-          content: [{ type: "text" as const, text: finalText + storedMsg }],
+          content: [{ type: "text" as const, text: outputText }],
+          toolResult: outputText,
           structuredContent: {
             result: result.value,
             truncated,
@@ -3275,7 +3279,8 @@ Examples:
               }
             }
 
-            return { content: [{ type: "text" as const, text: output.join('\n') + suggestNextTool("mcx_fetch") }] };
+            const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
+            return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
           }
         }
 
@@ -3367,7 +3372,8 @@ Examples:
           }
         }
 
-        return { content: [{ type: "text" as const, text: output.join('\n') + suggestNextTool("mcx_fetch") }] };
+        const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
+        return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
       } catch (error) {
         logger.error("mcx_fetch error", error);
         return {
@@ -4075,7 +4081,8 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
           ? `\n→ Next: mcx_file({ path: "${rankedItems[0].relativePath}" })`
           : suggestNextTool("mcx_find");
 
-        return { content: [{ type: "text" as const, text: output.join("\n") + dynamicTip }], _rawBytes: rawBytes };
+        const outputText = output.join("\n") + dynamicTip;
+        return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: rawBytes };
 
       });
     }
@@ -4174,7 +4181,8 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
           ? `\n→ Next: mcx_file({ path: "${firstFile[0]}", code: "around(${firstFile[1][0].lineNumber}, 20)" })`
           : suggestNextTool("mcx_grep");
 
-        return { content: [{ type: "text" as const, text: output.join("\n") + dynamicTip }], _rawBytes: rawBytes };
+        const outputText = output.join("\n") + dynamicTip;
+        return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: rawBytes };
 
       });
     }
@@ -4294,7 +4302,8 @@ Useful for understanding code dependencies before making changes.`,
       updateProximityContext(targetFile);
 
       if (related.size === 0) {
-        return { content: [{ type: "text" as const, text: `No related files found for: ${targetFile}` }] };
+        const msg = `No related files found for: ${targetFile}`;
+        return { content: [{ type: "text" as const, text: msg }], toolResult: msg };
       }
 
       // Format output grouped by relation type
@@ -4324,7 +4333,8 @@ Useful for understanding code dependencies before making changes.`,
         output.push("");
       }
 
-      return { content: [{ type: "text" as const, text: output.join("\n") + suggestNextTool("mcx_related") }] };
+      const outputText = output.join("\n") + suggestNextTool("mcx_related");
+      return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
     }
   );
 
