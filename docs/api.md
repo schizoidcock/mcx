@@ -179,31 +179,36 @@ mcx_file({
 
 Edit files without native Edit's "must read first" requirement. Two modes:
 
-**String mode** (find & replace):
+**Line mode** (PREFERRED - minimal context):
 ```typescript
-mcx_edit({
-  file_path: "/path/to/file.ts",
-  old_string: "const x = 1",
-  new_string: "const x = 2"
-})
-// Use replace_all: true for multiple occurrences
-```
+// First, find line numbers:
+mcx_file({ path: "file.ts", storeAs: "src" })
+mcx_execute({ code: "grep($src, 'functionName')" })
 
-**Line mode** (replace by line numbers - less context usage):
-```typescript
+// Then edit by line numbers:
 mcx_edit({
   file_path: "/path/to/file.ts",
   start: 10,
   end: 15,
-  new_string: "// New content for lines 10-15"
+  new_string: "// New content"
 })
-// Note: new_string replaces the range entirely (may change line count)
+```
+
+**String mode** (when line numbers unknown):
+```typescript
+mcx_edit({
+  file_path: "/path/to/file.ts",
+  old_string: "uniqueIdentifier",
+  new_string: "replacement",
+  replace_all: true  // optional
+})
 ```
 
 Features:
+- Line mode sends only line numbers + new content (minimal context)
+- String mode sends full old_string (use for renaming, unique matches)
 - Auto-normalizes line endings (CRLF/LF)
 - Helpful error messages with file preview when string not found
-- Resolves relative paths from cwd
 
 ### mcx_write
 

@@ -2696,14 +2696,15 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
       title: "Edit File",
       description: `Edit a file. Two modes:
 
-**String mode** (find & replace):
-mcx_edit({ file_path, old_string: "find", new_string: "replace" })
-Use for: small changes, renaming, single-line edits
+**Line mode** (PREFERRED - minimal context):
+mcx_edit({ file_path, start: 10, end: 12, new_string: "new content" })
+Use: most edits. Only sends line numbers + new content.
 
-**Line mode** (replace by line numbers - less context usage):
-mcx_edit({ file_path, start: 10, end: 12, new_string: "content" })
-Use for: multi-line blocks, large replacements, refactoring
-Note: new_string replaces the range entirely (may change line count)`,
+**String mode** (when line numbers unknown):
+mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
+Use: renaming, when you have unique identifier. Sends full old_string.
+
+Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
       inputSchema: EditInputSchema,
     },
     async (params: EditInput): Promise<MCP.CallToolResult> => {

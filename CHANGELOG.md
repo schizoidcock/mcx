@@ -2,6 +2,14 @@
 
 All notable changes to MCX will be documented in this file.
 
+## [0.3.22] - 2026-04-04
+
+### Improvements
+- **mcx_edit** - Line mode now PREFERRED in description (minimal context vs string mode)
+- Docs updated to recommend `mcx_file + grep()` to find line numbers first
+
+---
+
 ## [0.3.21] - 2026-04-04
 
 ### Added
