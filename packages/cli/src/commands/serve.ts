@@ -724,9 +724,11 @@ function formatFileResult(result: unknown, code: string): string {
       .join('\n');
   }
   
-  // Long string → truncate long lines
-  if (typeof result === 'string' && result.length > 1000) {
-    return result.split('\n')
+  // String → return directly with line truncation (like formatToolResult)
+  if (typeof result === 'string') {
+    return result
+      .replace(/\r\n/g, '\n')  // Normalize Windows line endings
+      .split('\n')
       .map(line => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line)
       .join('\n');
   }
