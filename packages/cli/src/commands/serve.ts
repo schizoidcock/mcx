@@ -25,7 +25,7 @@ import { join, basename, extname, isAbsolute, resolve } from "node:path";
 const IMPORT_REGEX = /(?:import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
 const RESOLVE_EXTENSIONS = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"];
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -4302,7 +4302,17 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
         return { content: [{ type: "text" as const, text: "Missing query or pattern parameter." }], isError: true };
       }
 
-      return withFinder(params.path, (finder) => {
+      // Resolve symlinks so FFF searches the actual directory
+      let searchPath = params.path;
+      if (searchPath) {
+        try {
+          searchPath = await realpath(searchPath);
+        } catch {
+          // If realpath fails (e.g., path doesn't exist), use original path
+        }
+      }
+
+      return withFinder(searchPath, (finder) => {
         const result = finder.fileSearch(params.query, { pageSize: params.limit });
         if (!result.ok) {
           return { content: [{ type: "text" as const, text: `Search failed: ${result.error}` }], isError: true };
@@ -4395,7 +4405,17 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
         return { content: [{ type: "text" as const, text: "Missing query or pattern parameter." }], isError: true };
       }
 
-      return withFinder(params.path, (finder) => {
+      // Resolve symlinks so FFF searches the actual directory
+      let searchPath = params.path;
+      if (searchPath) {
+        try {
+          searchPath = await realpath(searchPath);
+        } catch {
+          // If realpath fails (e.g., path doesn't exist), use original path
+        }
+      }
+
+      return withFinder(searchPath, (finder) => {
         const result = finder.grep(params.query, { mode: params.mode, pageLimit: params.limit });
         if (!result.ok) {
           return { content: [{ type: "text" as const, text: `Grep failed: ${result.error}` }], isError: true };
