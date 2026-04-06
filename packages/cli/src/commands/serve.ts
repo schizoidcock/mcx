@@ -3298,15 +3298,19 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
       title: "Edit File",
       description: `Edit a file. Two modes:
 
-**Line mode** (PREFERRED - minimal context):
+**Line mode** (PREFERRED - minimal tokens):
 mcx_edit({ file_path, start: 10, end: 12, new_string: "new content" })
-Use: most edits. Only sends line numbers + new content.
+Only sends line numbers + new content. ~80% fewer tokens than string mode.
 
-**String mode** (when line numbers unknown):
+**String mode** (fallback when line numbers unknown):
 mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
-Use: renaming, when you have unique identifier. Sends full old_string.
 
-Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
+**Why mcx_edit over native Edit?**
+- Line mode: send 2 numbers instead of full old_string (massive token savings)
+- No "must read first" requirement - edit directly if you know line numbers
+- Stale line detection: warns if file changed since last storeAs
+
+**Workflow:** mcx_file({ storeAs }) → grep/around to find lines → mcx_edit({ start, end })`,
       inputSchema: EditInputSchema,
     },
     async (params: EditInput): Promise<MCP.CallToolResult> => {
