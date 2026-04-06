@@ -351,6 +351,8 @@ const FULL_FILE_WARNING_BYTES = 5000;
 const FULL_FILE_CODE = new Set(['$file', '$file.text', '$file.lines']);
 /** Threshold for auto-indexing file content in mcx_file (10KB) */
 const FILE_INDEX_THRESHOLD = 10_000;
+/** Hard cap on shell/process output to prevent OOM (100MB) */
+const HARD_CAP_BYTES = 100 * 1024 * 1024;
 /** Search throttling: normal results up to this many calls */
 const THROTTLE_AFTER = 3;
 /** Search throttling: block after this many calls */
@@ -1982,6 +1984,16 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             const exitCode = raceResult.code;
             const stdout = await new Response(proc.stdout).text();
             const stderr = await new Response(proc.stderr).text();
+            
+            // Hard cap check to prevent OOM
+            const totalBytes = stdout.length + stderr.length;
+            if (totalBytes > HARD_CAP_BYTES) {
+              return {
+                content: [{ type: "text" as const, text: `Output exceeded 100MB limit (${Math.round(totalBytes / 1024 / 1024)}MB). Use filters or pagination.` }],
+                isError: true,
+              };
+            }
+            
             const duration = Math.round(performance.now() - startTime);
 
             // Store result for subsequent queries
@@ -3382,7 +3394,10 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             const stderr = await new Response(proc.stderr).text();
             const exitCode = await proc.exited;
             
-            if (exitCode !== 0) {
+            // Hard cap check
+            if (stdout.length + stderr.length > HARD_CAP_BYTES) {
+              result = { success: false, error: { message: 'Output exceeded 100MB limit. Use filters or pagination.' } };
+            } else if (exitCode !== 0) {
               result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
             } else {
               result = { success: true, value: stdout.trim() };
@@ -3407,7 +3422,10 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             const stderr = await new Response(proc.stderr).text();
             const exitCode = await proc.exited;
             
-            if (exitCode !== 0) {
+            // Hard cap check
+            if (stdout.length + stderr.length > HARD_CAP_BYTES) {
+              result = { success: false, error: { message: 'Output exceeded 100MB limit. Use filters or pagination.' } };
+            } else if (exitCode !== 0) {
               result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
             } else {
               result = { success: true, value: stdout.trim() };
