@@ -366,6 +366,46 @@ const FULL_FILE_CODE = new Set(['$file', '$file.text', '$file.lines']);
 const FILE_INDEX_THRESHOLD = 10_000;
 /** Hard cap on shell/process output to prevent OOM (100MB) */
 const HARD_CAP_BYTES = 100 * 1024 * 1024;
+/** Cross-platform shell path */
+const SHELL_PATH = process.platform === 'win32' 
+  ? 'C:\\Program Files\\Git\\bin\\sh.exe' 
+  : '/bin/sh';
+/** Dangerous env vars to filter from shell execution */
+const DENIED_ENV = new Set([
+  // Shell — auto-execute scripts
+  "BASH_ENV", "ENV", "PROMPT_COMMAND", "PS4", "BASH_FUNC_",
+  // Node.js — require injection
+  "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+  // Python — startup injection
+  "PYTHONSTARTUP", "PYTHONHOME", "PYTHONBREAKPOINT", "PYTHONPATH",
+  // Dynamic linker — .so injection
+  "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+  // Git — hook/config injection
+  "GIT_TEMPLATE_DIR", "GIT_SSH", "GIT_ASKPASS", "GIT_CONFIG_GLOBAL",
+  // Editor/pager — command execution
+  "EDITOR", "VISUAL", "PAGER", "LESS", "LESSOPEN", "LESSCLOSE",
+  // Perl/Ruby — library injection
+  "PERL5LIB", "PERL5OPT", "RUBYOPT", "RUBYLIB",
+  // SSH — agent hijacking
+  "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+  // Curl/wget — config injection
+  "CURL_HOME", "WGETRC",
+  // AWS/Cloud — credential exposure
+  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+  "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
+  // Generic secrets
+  "DATABASE_URL", "REDIS_URL", "API_KEY", "SECRET_KEY", "PRIVATE_KEY",
+]);
+/** Get safe environment for shell execution (filters dangerous vars) */
+function getSafeEnv(): Record<string, string> {
+  const safeEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && !DENIED_ENV.has(key) && !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('TOKEN') && !key.includes('CREDENTIAL')) {
+      safeEnv[key] = value;
+    }
+  }
+  return safeEnv;
+}
 /** Search throttling: normal results up to this many calls */
 const THROTTLE_AFTER = 3;
 /** Search throttling: block after this many calls */
@@ -1966,16 +2006,11 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           
           try {
             const startTime = performance.now();
+            const safeEnv = getSafeEnv();
             
-            // Cross-platform shell detection
-            const isWindows = process.platform === 'win32';
-            const shellPath = isWindows 
-              ? 'C:\\Program Files\\Git\\bin\\sh.exe'
-              : '/bin/sh';
-            
-            const proc = Bun.spawn([shellPath, '-c', cmd], {
+            const proc = Bun.spawn([SHELL_PATH, '-c', cmd], {
               cwd: process.cwd(),
-              env: { ...process.env, ...(config?.env || {}) },
+              env: { ...safeEnv, ...(config?.env || {}) },
               stdout: 'pipe',
               stderr: 'pipe',
             });
@@ -3040,8 +3075,6 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
 
       // Run shell commands first
       if (params.commands && params.commands.length > 0) {
-        const isWindows = process.platform === 'win32';
-        const shellPath = isWindows ? 'C:\\Program Files\\Git\\bin\\sh.exe' : '/bin/sh';
         const safeEnv = getSafeEnv();
 
         for (const cmd of params.commands) {
@@ -3049,7 +3082,7 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
           output.push('');
           
           try {
-            const proc = Bun.spawn([shellPath, '-c', cmd.command], {
+            const proc = Bun.spawn([SHELL_PATH, '-c', cmd.command], {
               cwd: process.cwd(),
               env: { ...safeEnv, ...(config?.env || {}) },
               stdout: 'pipe',
@@ -3247,42 +3280,6 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
   );
 
   // Tool: mcx_file
-  // Safe environment: filter dangerous env vars for shell/python execution
-  const DENIED_ENV = new Set([
-    // Shell — auto-execute scripts
-    "BASH_ENV", "ENV", "PROMPT_COMMAND", "PS4", "BASH_FUNC_",
-    // Node.js — require injection
-    "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
-    // Python — startup injection
-    "PYTHONSTARTUP", "PYTHONHOME", "PYTHONBREAKPOINT", "PYTHONPATH",
-    // Dynamic linker — .so injection
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
-    // Git — hook/config injection
-    "GIT_TEMPLATE_DIR", "GIT_SSH", "GIT_ASKPASS", "GIT_CONFIG_GLOBAL",
-    // Editor/pager — command execution
-    "EDITOR", "VISUAL", "PAGER", "LESS", "LESSOPEN", "LESSCLOSE",
-    // Perl/Ruby — library injection
-    "PERL5LIB", "PERL5OPT", "RUBYOPT", "RUBYLIB",
-    // SSH — agent hijacking
-    "SSH_AUTH_SOCK", "SSH_AGENT_PID",
-    // Curl/wget — config injection
-    "CURL_HOME", "WGETRC",
-    // AWS/Cloud — credential exposure
-    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-    "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
-    // Generic secrets
-    "DATABASE_URL", "REDIS_URL", "API_KEY", "SECRET_KEY", "PRIVATE_KEY",
-  ]);
-
-  const getSafeEnv = (): Record<string, string> => {
-    const safeEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value && !DENIED_ENV.has(key) && !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('TOKEN') && !key.includes('CREDENTIAL')) {
-        safeEnv[key] = value;
-      }
-    }
-    return safeEnv;
-  };
 
   const FileInputSchema = z.object({
     path: z.string().describe("File path to process"),
@@ -3498,11 +3495,9 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
         if (lang === 'shell') {
           // Shell execution with $FILE_PATH
           try {
-            const isWindows = process.platform === 'win32';
-            const shellPath = isWindows ? 'C:\\Program Files\\Git\\bin\\sh.exe' : '/bin/sh';
             const safeEnv = getSafeEnv();
             
-            const proc = Bun.spawn([shellPath, '-c', params.code!], {
+            const proc = Bun.spawn([SHELL_PATH, '-c', params.code!], {
               cwd: process.cwd(),
               env: { ...safeEnv, FILE_PATH: resolvedPath },
               stdout: 'pipe',
