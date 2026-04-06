@@ -343,6 +343,10 @@ const BLOCK_AFTER = 8;
 const THROTTLE_WINDOW_MS = 60_000;
 /** File access tracking for progressive tips (Optimization #2+#3) */
 const fileAccessLog = new Map<string, { count: number; firstAccess: number }>();
+/** Track when files were stored with storeAs (for stale line number detection) */
+const fileStoreTime = new Map<string, number>();
+/** Track when files were edited (for stale line number detection) */
+const fileEditTime = new Map<string, number>();
 /** Max params to show in full (above this, truncate) */
 const MAX_PARAMS_FULL = 10;
 /** Max params to show when truncating */
@@ -2913,6 +2917,9 @@ $file shape:
             path: resolvedPath,
           });
 
+          // Track storeAs timestamp for stale line number detection
+          fileStoreTime.set(resolvedPath, Date.now());
+
           return {
             content: [{
               type: "text" as const,
@@ -3127,6 +3134,21 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
 
         // Line mode: replace by line numbers (or append if start > lines.length)
         if (start !== undefined && end !== undefined) {
+          // Check for stale line numbers (file was edited after storeAs)
+          const storeTime = fileStoreTime.get(resolvedPath);
+          const editTime = fileEditTime.get(resolvedPath);
+          if (storeTime && editTime && editTime > storeTime) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `⚠️ File was edited since last storeAs. Line numbers may be stale.\n\n` +
+                      `Re-read with: mcx_file({ path: "${basename(resolvedPath)}", storeAs: "..." })\n` +
+                      `Or use string mode: mcx_edit({ old_string: "...", new_string: "..." })`
+              }],
+              isError: true,
+            };
+          }
+
           const lines = content.split('\n');
           // Allow append: start can be lines.length + 1
           if (start < 1 || start > lines.length + 1 || end < start) {
@@ -3198,6 +3220,10 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
         }
 
         await Bun.write(resolvedPath, newContent);
+
+        // Track edit timestamp for stale line number detection
+        fileEditTime.set(resolvedPath, Date.now());
+
         return {
           content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}` }],
         };
@@ -3240,6 +3266,9 @@ Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
         }
 
         await Bun.write(resolvedPath, content);
+
+        // Track edit timestamp for stale line number detection
+        fileEditTime.set(resolvedPath, Date.now());
 
         const lines = content.split('\n').length;
         return {
