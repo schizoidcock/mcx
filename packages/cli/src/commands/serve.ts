@@ -3116,9 +3116,47 @@ Examples:
   );
 
   // Tool: mcx_file
+  // Safe environment: filter dangerous env vars for shell/python execution
+  const DENIED_ENV = new Set([
+    // Shell — auto-execute scripts
+    "BASH_ENV", "ENV", "PROMPT_COMMAND", "PS4", "BASH_FUNC_",
+    // Node.js — require injection
+    "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+    // Python — startup injection
+    "PYTHONSTARTUP", "PYTHONHOME", "PYTHONBREAKPOINT", "PYTHONPATH",
+    // Dynamic linker — .so injection
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+    // Git — hook/config injection
+    "GIT_TEMPLATE_DIR", "GIT_SSH", "GIT_ASKPASS", "GIT_CONFIG_GLOBAL",
+    // Editor/pager — command execution
+    "EDITOR", "VISUAL", "PAGER", "LESS", "LESSOPEN", "LESSCLOSE",
+    // Perl/Ruby — library injection
+    "PERL5LIB", "PERL5OPT", "RUBYOPT", "RUBYLIB",
+    // SSH — agent hijacking
+    "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+    // Curl/wget — config injection
+    "CURL_HOME", "WGETRC",
+    // AWS/Cloud — credential exposure
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
+    // Generic secrets
+    "DATABASE_URL", "REDIS_URL", "API_KEY", "SECRET_KEY", "PRIVATE_KEY",
+  ]);
+
+  const getSafeEnv = (): Record<string, string> => {
+    const safeEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value && !DENIED_ENV.has(key) && !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('TOKEN') && !key.includes('CREDENTIAL')) {
+        safeEnv[key] = value;
+      }
+    }
+    return safeEnv;
+  };
+
   const FileInputSchema = z.object({
     path: z.string().describe("File path to process"),
-    code: z.string().optional().describe("JavaScript code to process $file (optional if storeAs)"),
+    code: z.string().optional().describe("Code to process file (JS default, or shell/python with language param)"),
+    language: z.enum(["js", "shell", "python"]).optional().default("js").describe("Execution language: js (default), shell, python"),
     intent: z.string().optional().describe("Auto-index if output > 5KB"),
     storeAs: z.string().optional().describe("Store file as variable (without code: stores file content, not result)"),
   });
@@ -3128,32 +3166,32 @@ Examples:
     "mcx_file",
     {
       title: "Process File",
-      description: `Process file with code. File content available as $file.
+      description: `Process file with code. Supports JavaScript (default), shell, and Python.
 
 Supports fuzzy paths - partial names are resolved via FFF:
 - mcx_file({ path: "serve", code: "..." }) → serve.ts
-- mcx_file({ path: "chrome adapter", code: "..." }) → chrome-devtools.ts
 
-Examples:
+## JavaScript (default)
+File content available as $file.
 - mcx_file({ path: "data.json", code: "$file.items.length" })
 - mcx_file({ path: "config.yaml", code: "$file.lines.filter(l => l.includes('port'))" })
-- mcx_file({ path: "report.csv", code: "$file.lines.slice(0, 10)" })
 
 $file shape:
-- JSON files: parsed object
-- Other files: { text: string, lines: string[] } (lines are numbered: "1: content")
+- JSON files: parsed object with __raw for line access
+- Other files: { text, lines } (lines are numbered: "1: content")
+
+## Shell
+File path available as $FILE_PATH.
+- mcx_file({ path: "package.json", language: "shell", code: "jq '.dependencies | keys' $FILE_PATH" })
+- mcx_file({ path: "data.csv", language: "shell", code: "wc -l $FILE_PATH" })
+
+## Python
+File path available as FILE_PATH variable.
+- mcx_file({ path: "data.csv", language: "python", code: "import pandas as pd; df = pd.read_csv(FILE_PATH); print(df.describe())" })
 
 **Tips:**
 - Use \`storeAs\` for large files: \`mcx_file({ path, storeAs: "src" })\` → query with helpers
-- Helpers (use after storeAs):
-  - around(line, ctx=20) → lines around line number
-  - lines(start, end) → specific line range
-  - head(n=20) → first n lines
-  - tail(n=20) → last n lines
-  - grep(pattern) → matching lines with numbers
-  - grepContext(pattern, ctx=5) → matches with surrounding context
-  - block(line) → full code block containing line
-  - outline() → functions/classes with line numbers
+- Helpers (JS only, use after storeAs): around(), lines(), grep(), block(), outline()
 - For edits: find line numbers with grep(), then use mcx_edit line mode`,
       inputSchema: FileInputSchema,
       annotations: {
@@ -3320,13 +3358,72 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
           }
         }
 
-        // Execute with $file injected via variables (MCX pattern)
+        // Execute based on language
         const state = getSandboxState();
-        const result = await sandbox.execute(FILE_HELPERS_CODE + params.code, {
-          adapters: adapterContext,
-          variables: { ...state.getAllPrefixed(), $file },
-          env: config?.env || {},
-        });
+        const lang = params.language || 'js';
+        
+        let result: { success: boolean; value?: unknown; error?: { message: string } };
+        
+        if (lang === 'shell') {
+          // Shell execution with $FILE_PATH
+          try {
+            const isWindows = process.platform === 'win32';
+            const shellPath = isWindows ? 'C:\\Program Files\\Git\\bin\\sh.exe' : '/bin/sh';
+            const safeEnv = getSafeEnv();
+            
+            const proc = Bun.spawn([shellPath, '-c', params.code!], {
+              cwd: process.cwd(),
+              env: { ...safeEnv, FILE_PATH: resolvedPath },
+              stdout: 'pipe',
+              stderr: 'pipe',
+            });
+            
+            const stdout = await new Response(proc.stdout).text();
+            const stderr = await new Response(proc.stderr).text();
+            const exitCode = await proc.exited;
+            
+            if (exitCode !== 0) {
+              result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
+            } else {
+              result = { success: true, value: stdout.trim() };
+            }
+          } catch (err) {
+            result = { success: false, error: { message: err instanceof Error ? err.message : String(err) } };
+          }
+        } else if (lang === 'python') {
+          // Python execution with FILE_PATH variable
+          try {
+            const safeEnv = getSafeEnv();
+            const pythonCode = `FILE_PATH = ${JSON.stringify(resolvedPath)}\n${params.code}`;
+            
+            const proc = Bun.spawn(['python3', '-c', pythonCode], {
+              cwd: process.cwd(),
+              env: safeEnv,
+              stdout: 'pipe',
+              stderr: 'pipe',
+            });
+            
+            const stdout = await new Response(proc.stdout).text();
+            const stderr = await new Response(proc.stderr).text();
+            const exitCode = await proc.exited;
+            
+            if (exitCode !== 0) {
+              result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
+            } else {
+              result = { success: true, value: stdout.trim() };
+            }
+          } catch (err) {
+            result = { success: false, error: { message: err instanceof Error ? err.message : String(err) } };
+          }
+        } else {
+          // JavaScript execution with $file (default)
+          const sandboxResult = await sandbox.execute(FILE_HELPERS_CODE + params.code, {
+            adapters: adapterContext,
+            variables: { ...state.getAllPrefixed(), $file },
+            env: config?.env || {},
+          });
+          result = sandboxResult;
+        }
 
         if (!result.success) {
           return {
