@@ -347,6 +347,76 @@ const fileAccessLog = new Map<string, { count: number; firstAccess: number }>();
 const fileStoreTime = new Map<string, number>();
 /** Track when files were edited (for stale line number detection) */
 const fileEditTime = new Map<string, number>();
+
+/** Workflow tracking for inefficiency detection (Optimization #5) */
+const sessionWorkflow = {
+  lastTools: [] as Array<{ tool: string; file?: string; timestamp: number }>,
+  maxHistory: 10,
+};
+
+/** Detect inefficient usage patterns and return suggestion */
+function detectInefficiency(tool: string, file?: string): string | null {
+  const recent = sessionWorkflow.lastTools.slice(-5);
+  if (recent.length < 2) return null;
+
+  // Pattern: Edit → Read same file (no need to re-read after edit)
+  // BUT: if file was edited after storeAs, user DOES need to re-read for line mode
+  const last = recent[recent.length - 1];
+  const storeTime = file ? fileStoreTime.get(file) : undefined;
+  const editTime = file ? fileEditTime.get(file) : undefined;
+  const needsReloadForLineMode = storeTime && editTime && editTime > storeTime;
+
+  if (tool === 'mcx_file' && file && last?.tool === 'mcx_edit' && last?.file === file) {
+    // Don't warn if user needs to reload for line mode to work
+    if (!needsReloadForLineMode) {
+      return `💡 Edit was successful. No need to re-read "${file}" to verify.`;
+    }
+  }
+
+  // Pattern: Read → Edit → Read same file
+  if (tool === 'mcx_file' && file && recent.length >= 2) {
+    const prev = recent[recent.length - 2];
+    if (last?.tool === 'mcx_edit' && last?.file === file && 
+        prev?.tool === 'mcx_file' && prev?.file === file) {
+      // Don't warn if user needs to reload for line mode to work
+      if (!needsReloadForLineMode) {
+        return `💡 You just edited "${file}". The edit succeeded - no need to re-read.`;
+      }
+    }
+  }
+
+  // Pattern: Multiple greps in short succession (suggest batch or mcx_search)
+  const recentGreps = recent.filter(t => t.tool === 'mcx_grep');
+  if (tool === 'mcx_grep' && recentGreps.length >= 2) {
+    const now = Date.now();
+    const recentGrepCount = recentGreps.filter(t => now - t.timestamp < 30000).length;
+    if (recentGrepCount >= 2) {
+      return `💡 Multiple greps detected. Consider mcx_batch for parallel searches or mcx_search if content is indexed.`;
+    }
+  }
+
+  // Pattern: Same file read 3+ times WITHOUT edits (suggest storeAs)
+  // Skip if user needs to reload after edit (that's legitimate)
+  if (tool === 'mcx_file' && file && !needsReloadForLineMode) {
+    const sameFileReads = recent.filter(t => t.tool === 'mcx_file' && t.file === file);
+    const hasEditBetween = recent.some(t => t.tool === 'mcx_edit' && t.file === file);
+    // Only warn if reading 3+ times without edits (pure read inefficiency)
+    if (sameFileReads.length >= 2 && !hasEditBetween) {
+      return `💡 Reading "${file}" again. Use storeAs to keep it in memory: mcx_file({ path: "${file}", storeAs: "src" })`;
+    }
+  }
+
+  return null;
+}
+
+/** Track tool usage for workflow detection */
+function trackToolUsage(tool: string, file?: string): void {
+  sessionWorkflow.lastTools.push({ tool, file, timestamp: Date.now() });
+  if (sessionWorkflow.lastTools.length > sessionWorkflow.maxHistory) {
+    sessionWorkflow.lastTools.shift();
+  }
+}
+
 /** Max params to show in full (above this, truncate) */
 const MAX_PARAMS_FULL = 10;
 /** Max params to show when truncating */
@@ -2896,6 +2966,10 @@ $file shape:
         // Update proximity context for reranking
         updateProximityContext(resolvedPath);
 
+        // Workflow tracking and inefficiency detection (Optimization #5)
+        const inefficiencyWarning = detectInefficiency('mcx_file', resolvedPath);
+        trackToolUsage('mcx_file', resolvedPath);
+
         // Auto-index file content for later search (sync, like context-mode)
         if (content.length > FILE_INDEX_THRESHOLD) {
           const store = getContentStore();
@@ -2920,13 +2994,16 @@ $file shape:
           // Track storeAs timestamp for stale line number detection
           fileStoreTime.set(resolvedPath, Date.now());
 
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Stored as ${params.storeAs} (${rawLines.length} lines, ${content.length} chars)
+          const storeAsOutput = `Stored as ${params.storeAs} (${rawLines.length} lines, ${content.length} chars)
 Helpers: around($${params.storeAs}, line, ctx), lines($${params.storeAs}, start, end), block($${params.storeAs}, line), grep($${params.storeAs}, pattern), outline($${params.storeAs})
-Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`
-            }]
+Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
+
+          const finalOutput = inefficiencyWarning 
+            ? `${inefficiencyWarning}\n\n${storeAsOutput}`
+            : storeAsOutput;
+
+          return {
+            content: [{ type: "text" as const, text: finalOutput }]
           };
         }
 
@@ -3223,6 +3300,9 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
 
         // Track edit timestamp for stale line number detection
         fileEditTime.set(resolvedPath, Date.now());
+
+        // Workflow tracking (Optimization #5)
+        trackToolUsage('mcx_edit', resolvedPath);
 
         return {
           content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}` }],
@@ -4211,6 +4291,11 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
         }
 
         const { items, totalMatched, totalFilesSearched } = result.value;
+
+        // Workflow tracking (Optimization #5)
+        const grepWarning = detectInefficiency('mcx_grep');
+        trackToolUsage('mcx_grep');
+
         if (items.length === 0) {
           return { content: [{ type: "text" as const, text: `No matches in ${totalFilesSearched} files.` }] };
         }
@@ -4250,7 +4335,8 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
           ? `\n→ Next: mcx_file({ path: "${firstFile[0]}", code: "around(${firstFile[1][0].lineNumber}, 20)" })`
           : suggestNextTool("mcx_grep");
 
-        const outputText = output.join("\n") + dynamicTip;
+        const warningPrefix = grepWarning ? `${grepWarning}\n\n` : '';
+        const outputText = warningPrefix + output.join("\n") + dynamicTip;
         return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: rawBytes };
 
       });
