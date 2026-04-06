@@ -3334,6 +3334,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
         }
 
         let newContent: string;
+        let isAppend = false;
 
         // Line mode: replace by line numbers (or append if start > lines.length)
         if (start !== undefined && end !== undefined) {
@@ -3361,7 +3362,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
             };
           }
           // Append mode: start > lines.length
-          const isAppend = start > lines.length;
+          isAppend = start > lines.length;
           const before = isAppend ? lines : lines.slice(0, start - 1);
           const after = isAppend ? [] : lines.slice(end);
           newContent = [...before, new_string, ...after].join('\n');
@@ -3433,9 +3434,13 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
         // Workflow tracking (Optimization #5)
         trackToolUsage('mcx_edit', resolvedPath);
 
+        // Build success message with appropriate tip
+        const appendTip = isAppend ? ' (appended to end of file)' : '';
+        const actionWord = isAppend ? 'Appended to' : 'Replaced in';
+
         if (patternHTip) {
           return {
-            content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}\n${patternHTip}` }],
+            content: [{ type: "text" as const, text: `✓ ${actionWord} ${basename(resolvedPath)}${appendTip}\n${patternHTip}` }],
           };
         }
 
@@ -3446,7 +3451,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           : '';
 
         return {
-          content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}${editTip}` }],
+          content: [{ type: "text" as const, text: `✓ ${actionWord} ${basename(resolvedPath)}${appendTip}${editTip}` }],
         };
       } catch (error) {
         logger.error("mcx_edit error", error);
