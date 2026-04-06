@@ -311,6 +311,12 @@ const SearchInputSchema = z.object({
 }).strict();
 
 const BatchInputSchema = z.object({
+  commands: coerceJsonArray(z.array(z.object({
+    label: z.string().describe("Label for this command (used as section header)"),
+    command: z.string().describe("Shell command to execute"),
+  })))
+    .optional()
+    .describe("Array of shell commands to run with labels"),
   operations: coerceJsonArray(z.array(z.object({
     code: z.string().describe("Code to execute"),
     storeAs: z.string().optional().describe("Variable name to store result"),
@@ -329,6 +335,13 @@ const BatchInputSchema = z.object({
   source: z.string()
     .optional()
     .describe("Filter searches to specific source label"),
+  timeout: z.coerce.number()
+    .int()
+    .min(1000)
+    .max(300000)
+    .optional()
+    .default(30000)
+    .describe("Timeout per command in ms (default: 30000)"),
 }).strict();
 
 type ExecuteInput = z.infer<typeof ExecuteInputSchema>;
@@ -2990,11 +3003,21 @@ Use storeAs to save results and return summary only:
     "mcx_batch",
     {
       title: "Batch Execute and Search",
-      description: `Run multiple operations and searches in one call. Bypasses throttling.
+      description: `Run shell commands, code operations, and searches in one call. Bypasses throttling.
 
-Examples:
-- mcx_batch({ operations: [{ code: "alegra.getInvoices()", storeAs: "inv" }], queries: ["overdue"] })
-- mcx_batch({ queries: ["error", "timeout", "failed"] })`,
+## Shell Commands
+mcx_batch({ commands: [
+  { label: "Git Status", command: "git status" },
+  { label: "Tests", command: "npm test" }
+]})
+
+## Code Operations  
+mcx_batch({ operations: [{ code: "alegra.getInvoices()", storeAs: "inv" }] })
+
+## FTS5 Searches
+mcx_batch({ queries: ["error", "timeout"] })
+
+Output is auto-indexed with markdown headings (# label) for chunking.`,
       inputSchema: BatchInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -3006,12 +3029,85 @@ Examples:
     async (params: BatchInput) => {
       // Support 'operations' as alias for 'executions'
       const operations = params.operations || params.executions;
+      const timeout = params.timeout ?? 30000;
       
       const output: string[] = [];
       const results: {
+        commands: Array<{ label: string; success: boolean; exitCode?: number; error?: string }>;
         executions: Array<{ storeAs?: string; success: boolean; error?: string }>;
         searches: Array<{ query: string; count: number }>;
-      } = { executions: [], searches: [] };
+      } = { commands: [], executions: [], searches: [] };
+
+      // Run shell commands first
+      if (params.commands && params.commands.length > 0) {
+        const isWindows = process.platform === 'win32';
+        const shellPath = isWindows ? 'C:\\Program Files\\Git\\bin\\sh.exe' : '/bin/sh';
+        const safeEnv = getSafeEnv();
+
+        for (const cmd of params.commands) {
+          output.push(`# ${cmd.label}`);
+          output.push('');
+          
+          try {
+            const proc = Bun.spawn([shellPath, '-c', cmd.command], {
+              cwd: process.cwd(),
+              env: { ...safeEnv, ...(config?.env || {}) },
+              stdout: 'pipe',
+              stderr: 'pipe',
+            });
+
+            // Race with timeout
+            const timeoutPromise = new Promise<'timeout'>((resolve) => 
+              setTimeout(() => resolve('timeout'), timeout)
+            );
+            const exitPromise = proc.exited.then(code => ({ code }));
+            const raceResult = await Promise.race([exitPromise, timeoutPromise]);
+
+            if (raceResult === 'timeout') {
+              proc.kill();
+              output.push(`[TIMEOUT after ${timeout}ms]`);
+              output.push('');
+              results.commands.push({ label: cmd.label, success: false, error: 'timeout' });
+              continue;
+            }
+
+            const exitCode = raceResult.code;
+            const stdout = await new Response(proc.stdout).text();
+            const stderr = await new Response(proc.stderr).text();
+
+            // Hard cap check
+            if (stdout.length + stderr.length > HARD_CAP_BYTES) {
+              output.push(`[OUTPUT EXCEEDED 100MB LIMIT]`);
+              output.push('');
+              results.commands.push({ label: cmd.label, success: false, error: 'output exceeded 100MB' });
+              continue;
+            }
+
+            if (stdout.trim()) {
+              output.push(stdout.trim());
+            }
+            if (stderr.trim()) {
+              output.push(`stderr: ${stderr.trim()}`);
+            }
+            if (!stdout.trim() && !stderr.trim()) {
+              output.push('(no output)');
+            }
+            output.push('');
+
+            results.commands.push({ 
+              label: cmd.label, 
+              success: exitCode === 0, 
+              exitCode,
+              error: exitCode !== 0 ? `exit code ${exitCode}` : undefined
+            });
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            output.push(`[ERROR: ${errorMsg}]`);
+            output.push('');
+            results.commands.push({ label: cmd.label, success: false, error: errorMsg });
+          }
+        }
+      }
 
       // Run operations sequentially
       if (operations && operations.length > 0) {
@@ -3106,24 +3202,45 @@ Examples:
         }
       }
 
+      // Auto-index combined output if substantial
+      const combinedOutput = output.join('\n');
+      if (combinedOutput.length > INTENT_THRESHOLD) {
+        try {
+          const store = getContentStore();
+          store.index(combinedOutput, 'batch', { contentType: 'markdown' });
+        } catch {
+          // Indexing failed, continue
+        }
+      }
+
       // Store in $batch
       const state = getSandboxState();
       state.set('batch', results);
 
       // Compact summary
+      const cmdCount = results.commands.length;
       const execCount = results.executions.length;
       const searchCount = results.searches.length;
+      
+      const parts: string[] = [];
+      if (cmdCount > 0) parts.push(`${cmdCount} commands`);
+      if (execCount > 0) parts.push(`${execCount} operations`);
+      if (searchCount > 0) parts.push(`${searchCount} searches`);
+      
       const summary = [
-        `Batch complete: ${execCount} executions, ${searchCount} searches`,
-        `Stored as $batch. Access: $batch.executions, $batch.searches`,
-      ].join('\n');
+        `Batch complete: ${parts.join(', ') || 'nothing to run'}`,
+        combinedOutput.length > INTENT_THRESHOLD 
+          ? `Indexed ${combinedOutput.length} chars. Use mcx_search to query.`
+          : '',
+        `Stored as $batch. Access: $batch.commands, $batch.executions, $batch.searches`,
+      ].filter(Boolean).join('\n');
 
       return {
         content: [{ type: "text" as const, text: summary }],
         toolResult: summary,
         structuredContent: {
           storedAs: ['batch'],
-          counts: { executions: execCount, searches: searchCount },
+          counts: { commands: cmdCount, executions: execCount, searches: searchCount },
         },
       };
     }
