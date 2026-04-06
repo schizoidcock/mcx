@@ -351,6 +351,9 @@ const fileEditTime = new Map<string, number>();
 /** Track execution failures for retry loop detection (Pattern D) */
 const executeFailures = new Map<string, { count: number; lastTime: number; lastError: string }>();
 
+/** Grep call tracking for progressive tips (Optimization #9) */
+const grepCallLog = { count: 0, firstCall: 0 };
+
 /** Get signature for code (first 100 chars normalized) */
 function getCodeSignature(code: string): string {
   return code.replace(/\s+/g, ' ').trim().slice(0, 100);
@@ -393,15 +396,7 @@ function detectInefficiency(tool: string, file?: string): string | null {
     }
   }
 
-  // Pattern: Multiple greps in short succession (suggest batch or mcx_search)
-  const recentGreps = recent.filter(t => t.tool === 'mcx_grep');
-  if (tool === 'mcx_grep' && recentGreps.length >= 2) {
-    const now = Date.now();
-    const recentGrepCount = recentGreps.filter(t => now - t.timestamp < 30000).length;
-    if (recentGrepCount >= 2) {
-      return `💡 Multiple greps detected. Consider mcx_batch for parallel searches or mcx_search if content is indexed.`;
-    }
-  }
+  // Pattern: Multiple greps - now handled by progressive tips in mcx_grep handler (Optimization #9)
 
   // Pattern: Same file read 3+ times WITHOUT edits (suggest storeAs or reuse)
   // Skip if user needs to reload after edit (that's legitimate)
@@ -4424,8 +4419,16 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
         const { items, totalMatched, totalFilesSearched } = result.value;
 
         // Workflow tracking (Optimization #5)
-        const grepWarning = detectInefficiency('mcx_grep');
         trackToolUsage('mcx_grep');
+
+        // Track grep calls for progressive tips (Optimization #9)
+        const now = Date.now();
+        if (now - grepCallLog.firstCall > THROTTLE_WINDOW_MS) {
+          grepCallLog.count = 1;
+          grepCallLog.firstCall = now;
+        } else {
+          grepCallLog.count++;
+        }
 
         if (items.length === 0) {
           return { content: [{ type: "text" as const, text: `No matches in ${totalFilesSearched} files.` }] };
@@ -4460,14 +4463,24 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
           if (matches.length > 5) output.push(`  ... +${matches.length - 5} more matches`);
         }
 
-        // Dynamic tip from first match (Optimization #4)
+        // Progressive tips based on grep call count (Optimization #9)
         const firstFile = sortedFiles[0];
-        const dynamicTip = firstFile 
-          ? `\n→ Next: mcx_file({ path: "${firstFile[0]}", code: "around(${firstFile[1][0].lineNumber}, 20)" })`
-          : suggestNextTool("mcx_grep");
+        const firstLineNum = firstFile?.[1][0]?.lineNumber || 1;
+        const firstPath = firstFile?.[0] || '';
+        
+        let dynamicTip: string;
+        if (grepCallLog.count === 1) {
+          // 1st grep: suggest exploring the match
+          dynamicTip = `\n→ Next: mcx_file({ path: "${firstPath}", code: "around(${firstLineNum}, 20)" })`;
+        } else if (grepCallLog.count === 2) {
+          // 2nd grep: hint about batch/search options
+          dynamicTip = `\n→ For multiple patterns: mcx_batch, or mode: "regex" with "p1|p2"`;
+        } else {
+          // 3rd+: warning about inefficiency
+          dynamicTip = `\n💡 Multiple greps detected. Consider mcx_batch for parallel searches or mcx_search if content is indexed.`;
+        }
 
-        const warningPrefix = grepWarning ? `${grepWarning}\n\n` : '';
-        const outputText = warningPrefix + output.join("\n") + dynamicTip;
+        const outputText = output.join("\n") + dynamicTip;
         return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: rawBytes };
 
       });
