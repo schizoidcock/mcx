@@ -425,6 +425,45 @@ const executeFailures = new Map<string, { count: number; lastTime: number; lastE
 /** Grep call tracking for progressive tips (Optimization #9) */
 const grepCallLog = { count: 0, firstCall: 0 };
 
+/** TTL for Map cleanup (30 minutes) */
+const MAP_TTL_MS = 30 * 60 * 1000;
+/** Max entries per Map to prevent unbounded growth */
+const MAP_MAX_ENTRIES = 500;
+
+/** Cleanup stale Map entries (called periodically) */
+function cleanupStaleMaps(): void {
+  const now = Date.now();
+  
+  // Clean fileAccessLog (entries older than TTL)
+  for (const [key, val] of fileAccessLog) {
+    if (now - val.firstAccess > MAP_TTL_MS) fileAccessLog.delete(key);
+  }
+  
+  // Clean fileStoreTime and fileEditTime
+  for (const [key, time] of fileStoreTime) {
+    if (now - time > MAP_TTL_MS) fileStoreTime.delete(key);
+  }
+  for (const [key, time] of fileEditTime) {
+    if (now - time > MAP_TTL_MS) fileEditTime.delete(key);
+  }
+  
+  // Clean executeFailures
+  for (const [key, val] of executeFailures) {
+    if (now - val.lastTime > MAP_TTL_MS) executeFailures.delete(key);
+  }
+  
+  // Cap sizes if still too large (LRU-ish: delete oldest)
+  if (fileAccessLog.size > MAP_MAX_ENTRIES) {
+    const entries = [...fileAccessLog.entries()].sort((a, b) => a[1].firstAccess - b[1].firstAccess);
+    for (let i = 0; i < entries.length - MAP_MAX_ENTRIES; i++) {
+      fileAccessLog.delete(entries[i][0]);
+    }
+  }
+}
+
+// Run cleanup every 5 minutes
+setInterval(cleanupStaleMaps, 5 * 60 * 1000);
+
 /** Get signature for code (first 100 chars normalized) */
 function getCodeSignature(code: string): string {
   return code.replace(/\s+/g, ' ').trim().slice(0, 100);
@@ -3493,7 +3532,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
         let result: { success: boolean; value?: unknown; error?: { message: string } };
         
         if (lang === 'shell') {
-          // Shell execution with $FILE_PATH
+          // Shell execution with $FILE_PATH (30s timeout)
           try {
             const safeEnv = getSafeEnv();
             
@@ -3503,24 +3542,34 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
               stdout: 'pipe',
               stderr: 'pipe',
             });
-            
-            const stdout = await new Response(proc.stdout).text();
-            const stderr = await new Response(proc.stderr).text();
-            const exitCode = await proc.exited;
-            
-            // Hard cap check
-            if (stdout.length + stderr.length > HARD_CAP_BYTES) {
-              result = { success: false, error: { message: 'Output exceeded 100MB limit. Use filters or pagination.' } };
-            } else if (exitCode !== 0) {
-              result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
+
+            // Timeout race (30s default)
+            const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 30000));
+            const exitPromise = proc.exited.then(code => ({ code }));
+            const raceResult = await Promise.race([exitPromise, timeoutPromise]);
+
+            if (raceResult === 'timeout') {
+              proc.kill();
+              result = { success: false, error: { message: 'Shell command timed out after 30s' } };
             } else {
-              result = { success: true, value: stdout.trim() };
+              const stdout = await new Response(proc.stdout).text();
+              const stderr = await new Response(proc.stderr).text();
+              const exitCode = raceResult.code;
+              
+              // Hard cap check
+              if (stdout.length + stderr.length > HARD_CAP_BYTES) {
+                result = { success: false, error: { message: 'Output exceeded 100MB limit. Use filters or pagination.' } };
+              } else if (exitCode !== 0) {
+                result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
+              } else {
+                result = { success: true, value: stdout.trim() };
+              }
             }
           } catch (err) {
             result = { success: false, error: { message: err instanceof Error ? err.message : String(err) } };
           }
         } else if (lang === 'python') {
-          // Python execution with FILE_PATH variable
+          // Python execution with FILE_PATH variable (30s timeout)
           try {
             const safeEnv = getSafeEnv();
             const pythonCode = `FILE_PATH = ${JSON.stringify(resolvedPath)}\n${params.code}`;
@@ -3531,18 +3580,28 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
               stdout: 'pipe',
               stderr: 'pipe',
             });
-            
-            const stdout = await new Response(proc.stdout).text();
-            const stderr = await new Response(proc.stderr).text();
-            const exitCode = await proc.exited;
-            
-            // Hard cap check
-            if (stdout.length + stderr.length > HARD_CAP_BYTES) {
-              result = { success: false, error: { message: 'Output exceeded 100MB limit. Use filters or pagination.' } };
-            } else if (exitCode !== 0) {
-              result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
+
+            // Timeout race (30s default)
+            const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 30000));
+            const exitPromise = proc.exited.then(code => ({ code }));
+            const raceResult = await Promise.race([exitPromise, timeoutPromise]);
+
+            if (raceResult === 'timeout') {
+              proc.kill();
+              result = { success: false, error: { message: 'Python command timed out after 30s' } };
             } else {
-              result = { success: true, value: stdout.trim() };
+              const stdout = await new Response(proc.stdout).text();
+              const stderr = await new Response(proc.stderr).text();
+              const exitCode = raceResult.code;
+              
+              // Hard cap check
+              if (stdout.length + stderr.length > HARD_CAP_BYTES) {
+                result = { success: false, error: { message: 'Output exceeded 100MB limit. Use filters or pagination.' } };
+              } else if (exitCode !== 0) {
+                result = { success: false, error: { message: stderr || `Exit code ${exitCode}` } };
+              } else {
+                result = { success: true, value: stdout.trim() };
+              }
             }
           } catch (err) {
             result = { success: false, error: { message: err instanceof Error ? err.message : String(err) } };
