@@ -395,14 +395,19 @@ function detectInefficiency(tool: string, file?: string): string | null {
     }
   }
 
-  // Pattern: Same file read 3+ times WITHOUT edits (suggest storeAs)
+  // Pattern: Same file read 3+ times WITHOUT edits (suggest storeAs or reuse)
   // Skip if user needs to reload after edit (that's legitimate)
   if (tool === 'mcx_file' && file && !needsReloadForLineMode) {
     const sameFileReads = recent.filter(t => t.tool === 'mcx_file' && t.file === file);
     const hasEditBetween = recent.some(t => t.tool === 'mcx_edit' && t.file === file);
     // Only warn if reading 3+ times without edits (pure read inefficiency)
     if (sameFileReads.length >= 2 && !hasEditBetween) {
-      return `💡 Reading "${file}" again. Use storeAs to keep it in memory: mcx_file({ path: "${file}", storeAs: "src" })`;
+      // Check if file was already stored (has storeTime)
+      const alreadyStored = storeTime !== undefined;
+      if (alreadyStored) {
+        return `💡 File already loaded. Use existing variable and helpers instead of re-reading.`;
+      }
+      return `💡 Reading "${basename(file)}" again. Use storeAs to keep it in memory.`;
     }
   }
 
@@ -1434,6 +1439,44 @@ const outline = (stored) => {
   const matches = stored.lines.map((l, i) => [l, i]).filter(([l]) => pat.test(l));
   if (isNumbered(stored.lines)) return matches.map(([l]) => l).join('\\n');
   return matches.map(([l, i]) => (i + 1) + ':\\t' + l).join('\\n');
+};
+const head = (stored, n = 20) => {
+  const slice = stored.lines.slice(0, n);
+  if (isNumbered(stored.lines)) return slice.join('\\n');
+  return slice.map((l, i) => (i + 1) + ':\\t' + l).join('\\n');
+};
+const tail = (stored, n = 20) => {
+  const total = stored.lines.length;
+  const start = Math.max(0, total - n);
+  const slice = stored.lines.slice(start);
+  if (isNumbered(stored.lines)) return slice.join('\\n');
+  return slice.map((l, i) => (start + i + 1) + ':\\t' + l).join('\\n');
+};
+const grepContext = (stored, pattern, ctx = 5) => {
+  const re = new RegExp(pattern, 'gi');
+  const lns = stored.lines;
+  const matchIndices = lns.map((l, i) => re.test(l) ? i : -1).filter(i => i >= 0);
+  if (matchIndices.length === 0) return 'No matches';
+  const ranges = [];
+  for (const idx of matchIndices) {
+    const start = Math.max(0, idx - ctx);
+    const end = Math.min(lns.length - 1, idx + ctx);
+    if (ranges.length > 0 && ranges[ranges.length - 1].end >= start - 1) {
+      ranges[ranges.length - 1].end = end;
+    } else {
+      ranges.push({ start, end, match: idx });
+    }
+  }
+  const output = [];
+  for (const r of ranges) {
+    const slice = lns.slice(r.start, r.end + 1);
+    if (isNumbered(lns)) {
+      output.push(slice.join('\\n'));
+    } else {
+      output.push(slice.map((l, i) => (r.start + i + 1) + ':\\t' + l).join('\\n'));
+    }
+  }
+  return output.join('\\n---\\n');
 };
 `;
 
@@ -2892,7 +2935,10 @@ $file shape:
 - Helpers (use after storeAs):
   - around(line, ctx=20) → lines around line number
   - lines(start, end) → specific line range
+  - head(n=20) → first n lines
+  - tail(n=20) → last n lines
   - grep(pattern) → matching lines with numbers
+  - grepContext(pattern, ctx=5) → matches with surrounding context
   - block(line) → full code block containing line
   - outline() → functions/classes with line numbers
 - For edits: find line numbers with grep(), then use mcx_edit line mode`,
@@ -2995,7 +3041,7 @@ $file shape:
           fileStoreTime.set(resolvedPath, Date.now());
 
           const storeAsOutput = `Stored as ${params.storeAs} (${rawLines.length} lines, ${content.length} chars)
-Helpers: around($${params.storeAs}, line, ctx), lines($${params.storeAs}, start, end), block($${params.storeAs}, line), grep($${params.storeAs}, pattern), outline($${params.storeAs})
+Helpers: around($${params.storeAs}, line, ctx), lines($${params.storeAs}, start, end), head($${params.storeAs}, n), tail($${params.storeAs}, n), grep($${params.storeAs}, pattern), grepContext($${params.storeAs}, pattern, ctx), block($${params.storeAs}, line), outline($${params.storeAs})
 Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
 
           const finalOutput = inefficiencyWarning 
