@@ -419,6 +419,21 @@ function detectInefficiency(tool: string, file?: string): string | null {
     }
   }
 
+  // Pattern H: Detect edit→build/test→edit cycle (suggest batching edits before running build)
+  // Only triggers when mcx_execute (build/lint/test) is run between edits, NOT for mcx_file reads
+  if (tool === 'mcx_edit' && file && recent.length >= 2) {
+    const prevEditIdx = recent.findLastIndex(t => t.tool === 'mcx_edit' && t.file === file);
+    
+    if (prevEditIdx >= 0 && prevEditIdx < recent.length - 1) {
+      // Only check for mcx_execute (build/test commands), not mcx_file (legitimate reloads)
+      const betweenTools = recent.slice(prevEditIdx + 1).map(t => t.tool);
+      const hasBuildOrTest = betweenTools.includes('mcx_execute');
+      if (hasBuildOrTest) {
+        return `💡 Edit→build→edit cycle detected. Batch all edits first, then run build/test once at the end.`;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -2133,6 +2148,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           ...images,
         ];
 
+        // Track for workflow detection (Pattern H: edit→build→edit cycle)
+        trackToolUsage('mcx_execute');
+
         // Claude Code only shows structuredContent to user (ignores content)
         // This is a client limitation, not MCP spec behavior
         // Format result as readable string - best we can do
@@ -3379,8 +3397,17 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
         // Track edit timestamp for stale line number detection
         fileEditTime.set(resolvedPath, Date.now());
 
+        // Pattern H: Check for edit→build→edit cycle BEFORE tracking (so current edit isn't in history yet)
+        const patternHTip = detectInefficiency('mcx_edit', resolvedPath);
+
         // Workflow tracking (Optimization #5)
         trackToolUsage('mcx_edit', resolvedPath);
+
+        if (patternHTip) {
+          return {
+            content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}\n${patternHTip}` }],
+          };
+        }
 
         // Pattern C: Tip after edit - suggest batching more changes
         const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
