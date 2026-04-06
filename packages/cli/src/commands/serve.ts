@@ -1496,6 +1496,24 @@ const grepContext = (stored, pattern, ctx = 5) => {
   }
   return output.join('\\n---\\n');
 };
+// JSON helpers (for parsed objects with __raw)
+const keys = (obj) => Object.keys(obj).filter(k => k !== '__raw');
+const values = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => k !== '__raw'));
+const pick = (obj, ks) => Object.fromEntries(ks.map(k => [k, obj[k]]));
+const paths = (obj, prefix = '', _depth = 0) => {
+  if (_depth > 5) return [];
+  const result = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === '__raw') continue;
+    const path = prefix ? prefix + '.' + k : k;
+    result.push(path);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      result.push(...paths(v, path, _depth + 1));
+    }
+  }
+  if (_depth > 0) return result;
+  return result.slice(0, 50).join('\\n') + (result.length > 50 ? '\\n... +' + (result.length - 50) : '');
+};
 `;
 
   const adapterContext = buildAdapterContext(adapters);
@@ -3033,20 +3051,22 @@ $file shape:
 
         // Parse based on extension
         let $file: unknown;
+        const rawLines = content.split('\n');
+        const numberedLines = rawLines.map((l, i) => `${i + 1}: ${l}`);
+        const __raw = { text: numberedLines.join('\n'), lines: numberedLines };
+
         if (ext === '.json') {
           try {
-            $file = JSON.parse(content);
+            const parsed = JSON.parse(content);
+            // Add __raw for line-based access (editing, grep)
+            $file = { ...parsed, __raw };
           } catch {
             // JSON parse failed, treat as text with numbered lines
-            const rawLines = content.split('\n');
-            const numberedLines = rawLines.map((l, i) => `${i + 1}: ${l}`);
-            $file = { text: numberedLines.join('\n'), lines: numberedLines };
+            $file = __raw;
           }
         } else {
           // Text file with numbered lines (Optimization #1)
-          const rawLines = content.split('\n');
-          const numberedLines = rawLines.map((l, i) => `${i + 1}: ${l}`);
-          $file = { text: numberedLines.join('\n'), lines: numberedLines };
+          $file = __raw;
         }
 
         // Update proximity context for reranking
@@ -3079,22 +3099,33 @@ $file shape:
         // Store-only mode: save file content without executing code (keeps content out of context)
         if (params.storeAs && !params.code) {
           const state = getSandboxState();
-          const rawLines = content.split('\n');
-          const numberedLines = rawLines.map((l, i) => `${i + 1}: ${l}`);
-
-          // Store with numbered lines (Optimization #1)
-          state.set(params.storeAs, {
-            text: numberedLines.join('\n'),
-            lines: numberedLines,
-            path: resolvedPath,
-          });
-
+          
           // Track storeAs timestamp for stale line number detection
           fileStoreTime.set(resolvedPath, Date.now());
 
-          const storeAsOutput = `Stored as ${params.storeAs} (${rawLines.length} lines, ${content.length} chars)
+          // For JSON: store parsed object with __raw for line access
+          // For text: store { text, lines } structure
+          // Check if JSON actually parsed (has __raw), not just extension
+          const isValidJson = typeof $file === 'object' && $file !== null && '__raw' in $file;
+          let storedValue: unknown;
+          let storeAsOutput: string;
+
+          if (isValidJson) {
+            // Store parsed JSON with __raw (same as $file in code mode)
+            state.set(params.storeAs, $file);
+            storedValue = $file;
+            storeAsOutput = `Stored as ${params.storeAs} (JSON object with ${__raw.lines.length} lines)
+JSON helpers: keys($${params.storeAs}), values($${params.storeAs}), pick($${params.storeAs}, ['key1']), paths($${params.storeAs})
+Line helpers: $${params.storeAs}.__raw.lines, grep($${params.storeAs}.__raw, 'pattern')
+Tip: Access properties directly: $${params.storeAs}.name, $${params.storeAs}.version`;
+          } else {
+            // Store text with numbered lines (Optimization #1)
+            state.set(params.storeAs, __raw);
+            storedValue = __raw;
+            storeAsOutput = `Stored as ${params.storeAs} (${__raw.lines.length} lines, ${content.length} chars)
 Helpers: around($${params.storeAs}, line, ctx), lines($${params.storeAs}, start, end), head($${params.storeAs}, n), tail($${params.storeAs}, n), grep($${params.storeAs}, pattern), grepContext($${params.storeAs}, pattern, ctx), block($${params.storeAs}, line), outline($${params.storeAs})
 Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
+          }
 
           const finalOutput = inefficiencyWarning 
             ? `${inefficiencyWarning}\n\n${storeAsOutput}`
