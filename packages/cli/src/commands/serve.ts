@@ -2036,9 +2036,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
       try {
         const state = getSandboxState();
 
-        // ═══════════════════════════════════════════════════════════════════
-        // SHELL EXECUTION MODE
-        // ═══════════════════════════════════════════════════════════════════
+        // Shell execution mode
         if (params.shell) {
           const cmd = params.shell.trim();
           const timeout = params.timeout ?? 30000;
@@ -2164,9 +2162,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           }
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        // CODE EXECUTION MODE (existing logic)
-        // ═══════════════════════════════════════════════════════════════════
+        // Code execution mode
         const code = params.code?.trim() || '';
 
         // Handle special variable commands
