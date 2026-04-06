@@ -186,8 +186,11 @@ interface MCXConfig {
 
 const ExecuteInputSchema = z.object({
   code: z.string()
-    .min(1, "Code cannot be empty")
+    .optional()
     .describe("JavaScript/TypeScript code to execute in the sandbox"),
+  shell: z.string()
+    .optional()
+    .describe("Shell command to execute (bash/sh). Returns stdout, stderr, exitCode."),
   truncate: z.boolean()
     .optional()
     .default(true)
@@ -212,7 +215,20 @@ const ExecuteInputSchema = z.object({
   storeAs: z.string()
     .optional()
     .describe("Variable name to store result for use in subsequent executions (e.g., 'invoices' → access as $invoices)"),
-}).strict();
+  timeout: z.coerce.number()
+    .int()
+    .min(1000)
+    .max(300000)
+    .optional()
+    .default(30000)
+    .describe("Shell command timeout in ms (default: 30000, max: 300000)"),
+}).strict().refine(
+  data => data.code || data.shell,
+  "Either code or shell must be provided"
+).refine(
+  data => !(data.code && data.shell),
+  "Cannot use both code and shell - choose one"
+);
 
 const RunSkillInputSchema = z.object({
   skill: z.string()
@@ -1866,33 +1882,45 @@ const paths = (obj, prefix = '', _depth = 0) => {
   server.registerTool(
     "mcx_execute",
     {
-      title: "Execute Code in MCX Sandbox",
-      description: `Execute JavaScript/TypeScript code in an isolated sandbox.
+      title: "Execute Code or Shell in MCX Sandbox",
+      description: `Execute JavaScript/TypeScript code OR shell commands.
 
+## Mode 1: Code Execution (code parameter)
 NOT for file/content search - use mcx_find (files) or mcx_grep (content) instead.
 
-## Calling Adapters
+### Calling Adapters
 Adapters are available as globals. Use camelCase for names with hyphens:
 - supabase.list_projects()
 - chromeDevtools.listPages()  // chrome-devtools → chromeDevtools
 - adapters['chrome-devtools'].listPages()  // bracket notation also works
 
-## Available Adapters
+### Available Adapters
 ${typeSummary}
 
 Use mcx_search({ adapter: "name" }) for method details.
 
-## Built-in Helpers
+### Built-in Helpers
 - pick(arr, ['id', 'name']) - Extract fields
 - first(arr, 5) - First N items
 - count(arr, 'field') - Count by field
 - sum(arr, 'field') - Sum numeric field
 
-## Variables
+### Variables
 - Results auto-stored as $result
 - storeAs: "name" → $name
 - $clear: Clear all
 - delete $varname: Delete specific variable
+
+## Mode 2: Shell Execution (shell parameter)
+Run system commands with proper timeout and output capture.
+
+Examples:
+- { shell: "npm test" }
+- { shell: "git status", truncate: false }
+- { shell: "docker ps -a", storeAs: "containers" }
+- { shell: "make build", timeout: 120000 }
+
+Returns: { exitCode, stdout, stderr, duration, command }
 
 ## Large Output Handling
 - intent: Auto-index output >5KB and search. Returns snippets instead of full data.
@@ -1911,7 +1939,134 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
     async (params: ExecuteInput) => {
       try {
         const state = getSandboxState();
-        const code = params.code.trim();
+
+        // ═══════════════════════════════════════════════════════════════════
+        // SHELL EXECUTION MODE
+        // ═══════════════════════════════════════════════════════════════════
+        if (params.shell) {
+          const cmd = params.shell.trim();
+          const timeout = params.timeout ?? 30000;
+          
+          try {
+            const startTime = performance.now();
+            
+            // Cross-platform shell detection
+            const isWindows = process.platform === 'win32';
+            const shellPath = isWindows 
+              ? 'C:\\Program Files\\Git\\bin\\sh.exe'
+              : '/bin/sh';
+            
+            const proc = Bun.spawn([shellPath, '-c', cmd], {
+              cwd: process.cwd(),
+              env: { ...process.env, ...(config?.env || {}) },
+              stdout: 'pipe',
+              stderr: 'pipe',
+            });
+
+            // Race between process completion and timeout
+            const timeoutPromise = new Promise<'timeout'>((resolve) => 
+              setTimeout(() => resolve('timeout'), timeout)
+            );
+            const exitPromise = proc.exited.then(code => ({ code }));
+            
+            const raceResult = await Promise.race([exitPromise, timeoutPromise]);
+            
+            if (raceResult === 'timeout') {
+              proc.kill();
+              return {
+                content: [{ type: "text" as const, text: `Shell command timed out after ${timeout}ms` }],
+                isError: true,
+              };
+            }
+
+            const exitCode = raceResult.code;
+            const stdout = await new Response(proc.stdout).text();
+            const stderr = await new Response(proc.stderr).text();
+            const duration = Math.round(performance.now() - startTime);
+
+            // Store result for subsequent queries
+            const shellResult = {
+              exitCode,
+              stdout: stdout.trim(),
+              stderr: stderr.trim(),
+              duration,
+              command: cmd,
+            };
+            state.set('result', shellResult);
+            if (params.storeAs && params.storeAs !== 'result') {
+              state.set(params.storeAs, shellResult);
+            }
+
+            // Smart output formatting
+            const outputParts: string[] = [];
+            
+            // Success/failure header
+            if (exitCode === 0) {
+              outputParts.push(`✓ Completed in ${duration}ms`);
+            } else {
+              outputParts.push(`✗ Exit code ${exitCode} (${duration}ms)`);
+            }
+
+            // Apply truncation if enabled
+            let finalStdout = stdout.trim();
+            let finalStderr = stderr.trim();
+            
+            if (params.truncate) {
+              const maxLen = params.maxStringLength ?? 500;
+              if (finalStdout.length > maxLen) {
+                finalStdout = finalStdout.slice(0, maxLen) + `\n... (${finalStdout.length - maxLen} chars truncated)`;
+              }
+              if (finalStderr.length > maxLen) {
+                finalStderr = finalStderr.slice(0, maxLen) + `\n... (${finalStderr.length - maxLen} chars truncated)`;
+              }
+            }
+
+            // Add output sections
+            if (finalStdout) {
+              outputParts.push('');
+              outputParts.push(finalStdout);
+            }
+            if (finalStderr) {
+              outputParts.push('');
+              outputParts.push(`stderr:\n${finalStderr}`);
+            }
+            if (!finalStdout && !finalStderr) {
+              outputParts.push('(no output)');
+            }
+
+            // Intent auto-index for large outputs
+            if (params.intent && (stdout.length + stderr.length) > INTENT_THRESHOLD) {
+              const store = getContentStore();
+              const sourceLabel = params.storeAs || `shell:${cmd.slice(0, 30)}`;
+              const content = stdout + (stderr ? `\n\n--- stderr ---\n${stderr}` : '');
+              const sourceId = store.index(content, sourceLabel, { contentType: 'plaintext' });
+              const searchResults = searchWithFallback(store, params.intent, { limit: 5, sourceId });
+              
+              outputParts.push('');
+              outputParts.push(`Indexed as "${sourceLabel}". Search results for "${params.intent}":`);
+              searchResults.forEach(r => outputParts.push(`- ${r.title}: ${r.snippet.slice(0, 150)}...`));
+            }
+
+            trackToolUsage('mcx_execute');
+            
+            return {
+              content: [{ type: "text" as const, text: outputParts.join('\n') + suggestNextTool("mcx_execute") }],
+              toolResult: outputParts.join('\n'),
+              structuredContent: shellResult,
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              content: [{ type: "text" as const, text: `Shell error: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // CODE EXECUTION MODE (existing logic)
+        // ═══════════════════════════════════════════════════════════════════
+        const code = params.code?.trim() || '';
 
         // Handle special variable commands
         if (code === '$clear') {
