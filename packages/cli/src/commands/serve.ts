@@ -348,6 +348,14 @@ const fileStoreTime = new Map<string, number>();
 /** Track when files were edited (for stale line number detection) */
 const fileEditTime = new Map<string, number>();
 
+/** Track execution failures for retry loop detection (Pattern D) */
+const executeFailures = new Map<string, { count: number; lastTime: number; lastError: string }>();
+
+/** Get signature for code (first 100 chars normalized) */
+function getCodeSignature(code: string): string {
+  return code.replace(/\s+/g, ' ').trim().slice(0, 100);
+}
+
 /** Workflow tracking for inefficiency detection (Optimization #5) */
 const sessionWorkflow = {
   lastTools: [] as Array<{ tool: string; file?: string; timestamp: number }>,
@@ -1944,6 +1952,15 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           }
         }
 
+        // Pattern D: Check for retry loop before executing
+        const codeSig = getCodeSignature(code);
+        const prevFailure = executeFailures.get(codeSig);
+        const isRetry = prevFailure && (Date.now() - prevFailure.lastTime) < 60000;
+        let retryWarning = '';
+        if (isRetry && prevFailure.count >= 2) {
+          retryWarning = `\n⚠️ This code failed ${prevFailure.count}x recently. Last error: ${prevFailure.lastError.slice(0, 100)}`;
+        }
+
         // Execute code in sandbox
         const result = await sandbox.execute(FILE_HELPERS_CODE + code, {
           adapters: adapterContext,
@@ -2000,11 +2017,21 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             }
           }
 
+          // Pattern D: Track failure for retry loop detection
+          const failureRecord = executeFailures.get(codeSig) || { count: 0, lastTime: 0, lastError: '' };
+          failureRecord.count++;
+          failureRecord.lastTime = Date.now();
+          failureRecord.lastError = errorMsg;
+          executeFailures.set(codeSig, failureRecord);
+
           return {
-            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}${logsSection}${contextSection}` }],
+            content: [{ type: "text" as const, text: `Execution error: ${errorMsg}${retryWarning}${logsSection}${contextSection}` }],
             isError: true,
           };
         }
+
+        // Clear failure record on success
+        executeFailures.delete(codeSig);
 
         // Track method usage for frecency ranking in mcx_search
         trackMethodUsage(params.code);
@@ -3016,8 +3043,20 @@ $file shape:
         const inefficiencyWarning = detectInefficiency('mcx_file', resolvedPath);
         trackToolUsage('mcx_file', resolvedPath);
 
+        // Track file access count (Pattern A: auto-index frequently accessed files)
+        const now = Date.now();
+        const accessLog = fileAccessLog.get(resolvedPath);
+        if (accessLog && (now - accessLog.firstAccess) < THROTTLE_WINDOW_MS) {
+          accessLog.count++;
+        } else {
+          fileAccessLog.set(resolvedPath, { count: 1, firstAccess: now });
+        }
+        const accessCount = fileAccessLog.get(resolvedPath)!.count;
+
         // Auto-index file content for later search (sync, like context-mode)
-        if (content.length > FILE_INDEX_THRESHOLD) {
+        // Index if: large file (>10KB) OR frequently accessed (3+ times)
+        const shouldAutoIndex = content.length > FILE_INDEX_THRESHOLD || accessCount >= 3;
+        if (shouldAutoIndex) {
           const store = getContentStore();
           const fileLabel = basename(resolvedPath);
           const indexContent = isHtml(content) ? htmlToMarkdown(content) : content;
@@ -3153,15 +3192,8 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
         const isLinesArray = Array.isArray(result.value) && result.value.every((r: unknown) => typeof r === 'string');
 
         if (isLinesArray) {
-          // Track file access for progressive tips (Optimization #2+#3)
-          const now = Date.now();
-          const accessLog = fileAccessLog.get(resolvedPath);
-          if (accessLog && (now - accessLog.firstAccess) < THROTTLE_WINDOW_MS) {
-            accessLog.count++;
-          } else {
-            fileAccessLog.set(resolvedPath, { count: 1, firstAccess: now });
-          }
-          const callCount = fileAccessLog.get(resolvedPath)!.count;
+          // Use accessCount from earlier tracking (Pattern A)
+          const callCount = accessCount;
 
           // Dynamic tip based on first line number + call count (Optimization #1.2 + #2+#3)
           const lineMatch = finalText.match(/^(\d+):/m);
@@ -3350,8 +3382,14 @@ Tip: Use mcx_file({ path, storeAs }) + around() to find line numbers first.`,
         // Workflow tracking (Optimization #5)
         trackToolUsage('mcx_edit', resolvedPath);
 
+        // Pattern C: Tip after edit - suggest batching more changes
+        const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
+        const editTip = recentEdits >= 2 
+          ? '\n💡 Multiple edits done. Batch remaining changes before build/test.'
+          : '';
+
         return {
-          content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}` }],
+          content: [{ type: "text" as const, text: `✓ Replaced in ${basename(resolvedPath)}${editTip}` }],
         };
       } catch (error) {
         logger.error("mcx_edit error", error);
