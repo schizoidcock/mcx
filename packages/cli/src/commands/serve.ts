@@ -2725,6 +2725,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               content: [{ type: "text" as const, text: outputParts.join('\n') + suggestNextTool("mcx_execute") }],
               toolResult: outputParts.join('\n'),
               structuredContent: shellResult,
+              _rawBytes: totalBytes,  // Track pre-truncation size for stats
             };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -2775,6 +2776,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             const stderr = await new Response(proc.stderr).text();
             const duration = Math.round(performance.now() - startTime);
 
+            const totalBytes = stdout.length + stderr.length;
             const pythonResult = { exitCode, stdout: stdout.trim(), stderr: stderr.trim(), duration };
             state.set('result', pythonResult);
             if (params.storeAs && params.storeAs !== 'result') {
@@ -2784,11 +2786,24 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             const outputParts: string[] = [];
             outputParts.push(exitCode === 0 ? `✓ Python completed in ${duration}ms` : `✗ Exit code ${exitCode} (${duration}ms)`);
             
-            if (stdout.trim()) outputParts.push('', stdout.trim());
-            if (stderr.trim()) outputParts.push('', `stderr:\n${stderr.trim()}`);
-            if (!stdout.trim() && !stderr.trim()) outputParts.push('(no output)');
+            // Truncate output if needed
+            let finalStdout = stdout.trim();
+            let finalStderr = stderr.trim();
+            if (params.truncate !== false) {
+              const maxLen = params.maxStringLength ?? 500;
+              if (finalStdout.length > maxLen) {
+                finalStdout = finalStdout.slice(0, maxLen) + `\n... (${finalStdout.length - maxLen} chars truncated)`;
+              }
+              if (finalStderr.length > maxLen) {
+                finalStderr = finalStderr.slice(0, maxLen) + `\n... (${finalStderr.length - maxLen} chars truncated)`;
+              }
+            }
+            
+            if (finalStdout) outputParts.push('', finalStdout);
+            if (finalStderr) outputParts.push('', `stderr:\n${finalStderr}`);
+            if (!finalStdout && !finalStderr) outputParts.push('(no output)');
 
-            return { content: [{ type: "text" as const, text: outputParts.join('\n') }] };
+            return { content: [{ type: "text" as const, text: outputParts.join('\n') }], _rawBytes: totalBytes };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { content: [{ type: "text" as const, text: `Python error: ${message}` }], isError: true };
