@@ -4233,8 +4233,9 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
           };
         }
 
-        // Store if requested
-        if (params.storeAs) {
+        // Auto-store as $result (like mcx_execute) + user-specified storeAs
+        state.set('result', result.value);
+        if (params.storeAs && params.storeAs !== 'result') {
           state.set(params.storeAs, result.value);
         }
 
@@ -4266,9 +4267,22 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
           }
         }
 
+        // Auto-index large results >50KB (without intent) - híbrido: $result + FTS5
+        let autoIndexedLabel: string | null = null;
+        if (!params.intent && serialized.length > AUTO_INDEX_THRESHOLD) {
+          try {
+            const store = getContentStore();
+            autoIndexedLabel = params.storeAs || basename(resolvedPath);
+            store.index(serialized, autoIndexedLabel, { contentType: 'plaintext' });
+          } catch { autoIndexedLabel = null; } // Auto-index failed silently
+        }
+
         const rawBytes = serialized.length;  // Track size before truncation
         const { text: finalText, truncated } = enforceCharacterLimit(serialized);
         const storedMsg = params.storeAs ? `\n${formatStoredAs(params.storeAs)}` : '';
+        const autoIndexMsg = autoIndexedLabel 
+          ? `\n📦 Auto-indexed as "${autoIndexedLabel}" (${Math.round(serialized.length/1024)}KB). Use mcx_search to query.`
+          : '';
 
         // For line arrays, return just text (Optimization #1 + #10)
         // For other types, include structuredContent for programmatic access
@@ -4292,7 +4306,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
           }
 
           const warningPrefix = inefficiencyWarning ? `${inefficiencyWarning}\n\n` : '';
-          const outputText = warningPrefix + finalText + storedMsg + dynamicTip;
+          const outputText = warningPrefix + finalText + storedMsg + autoIndexMsg + dynamicTip;
           return {
             content: [{ type: "text" as const, text: outputText }],
             toolResult: outputText,
@@ -4301,7 +4315,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
         }
 
         const warningPrefix2 = inefficiencyWarning ? `${inefficiencyWarning}\n\n` : '';
-        const finalOutput = warningPrefix2 + finalText + storedMsg;
+        const finalOutput = warningPrefix2 + finalText + storedMsg + autoIndexMsg;
         return {
           content: [{ type: "text" as const, text: finalOutput }],
           toolResult: finalOutput,
@@ -5532,6 +5546,8 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
     glob: z.string().optional().describe("File pattern filter (e.g., *.tsx, **/*.ts)"),
     mode: z.enum(["plain", "regex", "fuzzy"]).optional().default("plain").describe("Search mode"),
     limit: z.coerce.number().optional().default(50).describe("Max matches (default: 50)"),
+    maxPerFile: z.coerce.number().optional().describe("Max matches per file (default: 5)"),
+    maxLineWidth: z.coerce.number().optional().describe("Max line width before truncation (default: 100)"),
   }).transform(({ pattern, glob, ...rest }) => ({
     ...rest,
     // Prepend glob filter to query if provided (FFF query syntax)
@@ -5620,7 +5636,12 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
           items,
           totalMatched,
           totalFilesSearched,
-          { pattern: searchPattern, proxScores }
+          { 
+            pattern: searchPattern, 
+            proxScores,
+            maxPerFile: params.maxPerFile,
+            maxLineWidth: params.maxLineWidth,
+          }
         );
 
         // Progressive tips based on grep call count (Optimization #9)
@@ -5652,7 +5673,7 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
 
         // Add hidden match tip if significant truncation occurred
         if (hiddenMatches > 10) {
-          dynamicTip += `\n💡 ${hiddenMatches} matches hidden. Use limit param for more, or refine query.`;
+          dynamicTip += `\n💡 ${hiddenMatches} matches hidden. Use maxPerFile/maxLineWidth params or refine query.`;
         }
 
         const outputText = formattedOutput + dynamicTip;
