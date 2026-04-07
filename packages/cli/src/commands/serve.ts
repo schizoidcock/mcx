@@ -449,6 +449,8 @@ const THROTTLE_WINDOW_MS = 60_000;
 const fileAccessLog = new Map<string, { count: number; firstAccess: number }>();
 /** Track when files were stored with storeAs (for stale line number detection) */
 const fileStoreTime = new Map<string, number>();
+/** Track stored file variable names for enforcement (Optimization #13) */
+const storedFileVars = new Map<string, string>();
 /** Track when files were edited (for stale line number detection) */
 const fileEditTime = new Map<string, number>();
 
@@ -472,9 +474,12 @@ function cleanupStaleMaps(): void {
     if (now - val.firstAccess > MAP_TTL_MS) fileAccessLog.delete(key);
   }
   
-  // Clean fileStoreTime and fileEditTime
+  // Clean fileStoreTime, storedFileVars, and fileEditTime
   for (const [key, time] of fileStoreTime) {
-    if (now - time > MAP_TTL_MS) fileStoreTime.delete(key);
+    if (now - time > MAP_TTL_MS) {
+      fileStoreTime.delete(key);
+      storedFileVars.delete(key); // Clean variable name when store time expires
+    }
   }
   for (const [key, time] of fileEditTime) {
     if (now - time > MAP_TTL_MS) fileEditTime.delete(key);
@@ -1327,51 +1332,29 @@ function checkBraceBalance(content: string): number {
 }
 
 /**
- * Find NEW duplicate lines introduced by an edit.
- * Compares old and new content - only flags duplicates that didn't exist before.
+ * Find duplicate lines within new content being added.
+ * Only checks for internal duplicates (e.g., two return statements)
+ * to catch careless edits. Does NOT compare against surrounding context.
  */
-function findNewDuplicates(
-  oldContent: string,
-  newContent: string,
-  editStart: number,
-  windowSize: number = 10
-): string[] {
-  const getWindowDuplicates = (content: string): Set<string> => {
-    const lines = content.split('\n');
-    const start = Math.max(0, editStart - windowSize);
-    const end = Math.min(lines.length, editStart + windowSize);
-    const window = lines.slice(start, end);
-    
-    const seen = new Map<string, number>();
-    const duplicates = new Set<string>();
-    
-    for (const line of window) {
-      const trimmed = line.trim();
-      // Skip empty lines, comments, and simple braces
-      if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//')) continue;
-      
-      const count = (seen.get(trimmed) || 0) + 1;
-      seen.set(trimmed, count);
-      
-      if (count >= 2) {
-        duplicates.add(trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed);
-      }
-    }
-    return duplicates;
-  };
+function findDuplicatesInNewString(newString: string): string[] {
+  const lines = newString.split('\n');
+  const seen = new Map<string, number>();
+  const duplicates: string[] = [];
   
-  const oldDuplicates = getWindowDuplicates(oldContent);
-  const newDuplicates = getWindowDuplicates(newContent);
-  
-  // Only return duplicates that are NEW (not in old content)
-  const newOnly: string[] = [];
-  for (const dup of newDuplicates) {
-    if (!oldDuplicates.has(dup)) {
-      newOnly.push(dup);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip empty lines, comments, and simple braces
+    if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//')) continue;
+    
+    const count = (seen.get(trimmed) || 0) + 1;
+    seen.set(trimmed, count);
+    
+    if (count === 2) {
+      duplicates.push(trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed);
     }
   }
   
-  return newOnly;
+  return duplicates;
 }
 
 interface TruncateOptions {
@@ -4002,6 +3985,64 @@ File path available as FILE_PATH variable.
           }
         }
 
+        // === Optimization #13: Enforced storeAs ===
+        const existingVar = storedFileVars.get(resolvedPath);
+        const storeTime = fileStoreTime.get(resolvedPath);
+        const editTime = fileEditTime.get(resolvedPath);
+        const isStale = storeTime && editTime && editTime > storeTime;
+
+        // Rule 1: If file already stored and no storeAs provided, block re-read
+        if (existingVar && !params.storeAs && !params.code) {
+          return {
+            content: [{ type: "text" as const, text: `❌ Already stored as $${existingVar}. Use helpers:\n` +
+              `  grep($${existingVar}, 'pattern')\n` +
+              `  around($${existingVar}, lineNum, ctx)\n` +
+              `  lines($${existingVar}, start, end)\n` +
+              (isStale ? `\n⚠️ Note: $${existingVar} is stale (file edited). Use storeAs to refresh.` : '')
+            }],
+            isError: true,
+          };
+        }
+
+        // Rule 2: If no storeAs and no code, require storeAs (except for shell/python with code)
+        if (!params.storeAs && !params.code && params.language === 'js') {
+          const suggestedVar = basename(resolvedPath).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
+          return {
+            content: [{ type: "text" as const, text: `❌ Use storeAs to read files:\n` +
+              `  mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })\n\n` +
+              `Then query with helpers: grep($${suggestedVar}, 'pattern'), around($${suggestedVar}, line, ctx)`
+            }],
+            isError: true,
+          };
+        }
+
+        // Rule 3: Block if using stale stored variable in code
+        if (params.code && existingVar && isStale) {
+          const varPattern = new RegExp(`\\$${existingVar}\\b`);
+          if (varPattern.test(params.code)) {
+            const staleMsg = `⚠️ $${existingVar} is stale (file edited since storeAs). Re-store to refresh:\n` +
+              `  mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })`;
+            return { content: [{ type: "text" as const, text: staleMsg }], isError: true };
+          }
+        }
+
+        // Rule 4: Block shell/python if file not stored or is stale
+        if (params.language !== 'js' && params.code) {
+          const suggestedVar = existingVar || basename(resolvedPath).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
+          if (!existingVar) {
+            const msg1 = `❌ First store the file, then use ${params.language}:\n` +
+              `  mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })\n` +
+              `  mcx_file({ path: "${params.path}", language: "${params.language}", code: "..." })`;
+            return { content: [{ type: "text" as const, text: msg1 }], isError: true };
+          }
+          if (isStale) {
+            const msg2 = `⚠️ $${existingVar} is stale. Re-store before using ${params.language}:\n` +
+              `  mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })\n` +
+              `  mcx_file({ path: "${params.path}", language: "${params.language}", code: "..." })`;
+            return { content: [{ type: "text" as const, text: msg2 }], isError: true };
+          }
+        }
+
         const ext = extname(resolvedPath).toLowerCase();
 
         // Parse based on extension
@@ -4028,7 +4069,7 @@ File path available as FILE_PATH variable.
         updateProximityContext(resolvedPath);
 
         // Workflow tracking and inefficiency detection (Optimization #5)
-        const inefficiencyWarning = detectInefficiency('mcx_file', resolvedPath);
+        const inefficiencyWarning = params.language === "js" ? detectInefficiency('mcx_file', resolvedPath) : null;
         trackToolUsage('mcx_file', resolvedPath);
 
         // Track file access count (Pattern A: auto-index frequently accessed files)
@@ -4055,8 +4096,9 @@ File path available as FILE_PATH variable.
         if (params.storeAs && !params.code) {
           const state = getSandboxState();
           
-          // Track storeAs timestamp for stale line number detection
+          // Track storeAs timestamp and variable name (Optimization #13)
           fileStoreTime.set(resolvedPath, Date.now());
+          storedFileVars.set(resolvedPath, params.storeAs);
 
           // For JSON: store parsed object with __raw for line access
           // For text: store { text, lines } structure
@@ -4314,7 +4356,9 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
           };
         }
 
-        const warningPrefix2 = inefficiencyWarning ? `${inefficiencyWarning}\n\n` : '';
+        const warningPrefix2 = inefficiencyWarning ? `${inefficiencyWarning}
+
+` : '';
         const finalOutput = warningPrefix2 + finalText + storedMsg + autoIndexMsg;
         return {
           content: [{ type: "text" as const, text: finalOutput }],
@@ -4516,7 +4560,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           
           // Check for duplicate lines near edit (skip for append)
           if (!isAppend) {
-            const duplicates = findNewDuplicates(content, newContent, editStartLine);
+            const duplicates = findDuplicatesInNewString(params.new_string);
             if (duplicates.length > 0) {
               return {
                 content: [{
@@ -4542,13 +4586,29 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
         // Workflow tracking (Optimization #5)
         trackToolUsage('mcx_edit', resolvedPath);
 
-        // Build success message with appropriate tip
-        const appendTip = isAppend ? ' (appended to end of file)' : '';
-        const actionWord = isAppend ? 'Appended to' : 'Replaced in';
+        // Calculate line change info for success message
+        const oldLineCount = params.start && params.end 
+          ? params.end - params.start + 1 
+          : (params.old_string?.split('\n').length || 1);
+        const newLineCount = params.new_string.split('\n').length;
+        const lineDiff = newLineCount - oldLineCount;
+        const editEndLine = editStartLine + oldLineCount - 1;
+        
+        // Format: L45 (single line), L45-50 (range)
+        const lineRange = editStartLine === editEndLine 
+          ? `L${editStartLine}` 
+          : `L${editStartLine}-${editEndLine}`;
+        
+        // Format: +3, -2, ~0 (same)
+        const changeIndicator = lineDiff > 0 ? `+${lineDiff}` : lineDiff < 0 ? `${lineDiff}` : '~';
+        
+        // Build success message
+        const appendTip = isAppend ? ' (appended)' : '';
+        const lineInfo = isAppend ? '' : `:${lineRange} (${changeIndicator})`;
 
         if (patternHTip) {
           return {
-            content: [{ type: "text" as const, text: `✓ ${actionWord} ${basename(resolvedPath)}${appendTip}\n${patternHTip}` }],
+            content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n${patternHTip}` }],
           };
         }
 
@@ -4559,7 +4619,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           : '';
 
         return {
-          content: [{ type: "text" as const, text: `✓ ${actionWord} ${basename(resolvedPath)}${appendTip}${editTip}` }],
+          content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}${editTip}` }],
         };
       } catch (error) {
         logger.error("mcx_edit error", error);
