@@ -308,6 +308,9 @@ const SearchInputSchema = z.object({
   storeAs: z.string()
     .optional()
     .describe("Store result as variable (e.g., 'methods' → access as $methods). Returns summary instead of full result."),
+  clear: z.boolean()
+    .optional()
+    .describe("Clear all indexed content (FTS5). Use to free memory or start fresh."),
 }).strict();
 
 const BatchInputSchema = z.object({
@@ -1747,6 +1750,10 @@ const paths = (obj, prefix = '', _depth = 0) => {
   let networkRequests = 0;
   let networkBytesOut = 0;
 
+  // Cache tracking
+  let cacheHits = 0;
+  let cacheBytesSaved = 0;
+
   // Token tracking for context efficiency stats
   const tokenStats = {
     byTool: new Map<string, { calls: number; chars: number; raw: number }>(),
@@ -2733,6 +2740,18 @@ Use storeAs to save results and return summary only:
     },
     async (params: SearchInput) => {
       const requestedLimit = params.limit || 20;
+
+      // Clear mode: wipe FTS5 index
+      if (params.clear) {
+        const store = getContentStore();
+        const sources = store.getSources();
+        const count = sources.length;
+        store.clear();
+        return {
+          content: [{ type: "text" as const, text: `Cleared ${count} indexed sources.` }],
+          toolResult: `Cleared ${count} indexed sources.`,
+        };
+      }
 
       // Mode 1: Spec exploration with code (no throttling - local operation)
       if (params.code) {
@@ -4112,6 +4131,7 @@ Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
     url: z.string().describe("URL to fetch"),
     queries: coerceJsonArray(z.array(z.string())).optional().describe("Search after indexing"),
     force: z.boolean().optional().default(false).describe("Bypass cache and re-fetch"),
+    preview: z.boolean().optional().default(false).describe("Return 3KB preview (full content still indexed)"),
   });
   type FetchInput = z.infer<typeof FetchInputSchema>;
 
@@ -4167,9 +4187,14 @@ Examples:
               }
             }
 
+            // Track cache hit
+            const chunks = store.getChunks(cached.sourceId);
+            const cachedSize = chunks.reduce((sum, c) => sum + c.content.length, 0);
+            cacheHits++;
+            cacheBytesSaved += cachedSize;
+
             const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
             trackToolUsage('mcx_fetch');
-            return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
           }
         }
 
@@ -4264,9 +4289,19 @@ Examples:
           }
         }
 
+        // Add preview if requested
+        if (params.preview) {
+          const PREVIEW_SIZE = 3000;
+          const preview = content.length > PREVIEW_SIZE 
+            ? content.slice(0, PREVIEW_SIZE) + `\n\n... (${content.length - PREVIEW_SIZE} more chars indexed)`
+            : content;
+          output.push('');
+          output.push('Preview:');
+          output.push(preview);
+        }
+
         const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
         trackToolUsage('mcx_fetch');
-        return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: content.length };
       } catch (error) {
         logger.error("mcx_fetch error", error);
         return {
@@ -4389,10 +4424,19 @@ Examples:
       if (fsBytesRead > 0 || networkBytesIn > 0) {
         output.push('🔒 Sandbox I/O');
         if (fsBytesRead > 0) output.push('   FS reads: ' + formatBytes(fsBytesRead) + ' across ' + fsFilesRead + ' file' + (fsFilesRead !== 1 ? 's' : ''));
-        if (networkBytesIn > 0) output.push('   Network: ' + formatBytes(networkBytesIn) + ' across ' + networkRequests + ' request' + (networkRequests !== 1 ? 's' : ''));
+        if (networkBytesIn > 0) output.push('   Network: ' + formatBytes(networkBytesIn) + ' across ' + networkRequests + ' requests');
+      }
+      if (cacheHits > 0) {
+        output.push('💾 Cache');
+        output.push('   Hits: ' + cacheHits + ' (saved ' + formatBytes(cacheBytesSaved) + ')');
       }
       if (variables.length > 0) output.push('📦 Variables: ' + variables.map(v => '$' + v).join(', '));
       if (sources.length > 0) output.push('📚 Indexed: ' + sources.length + ' sources, ' + totalChunks + ' chunks');
+      
+      // Version info
+      const currentVersion = '0.3.24';
+      output.push('');
+      output.push('📦 Version: v' + currentVersion);
 
       return { content: [{ type: "text" as const, text: output.join('\n') }] };
     }

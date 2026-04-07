@@ -12,6 +12,7 @@ import { listCommand } from "./commands/list.js";
 import { genCommand } from "./commands/gen.js";
 import { updateCommand } from "./commands/update.js";
 import { logsCommand } from "./commands/logs.js";
+import { doctorCommand } from "./commands/doctor.js";
 import { logger } from "./utils/logger.js";
 
 // ============================================================================
@@ -210,6 +211,11 @@ program
       clear: options.clear,
     });
   }));
+
+program
+  .command("doctor")
+  .description("Run diagnostics to check MCX health")
+  .action(handleCommand("Doctor", doctorCommand));
 
 // Default to serve if no command provided
 if (process.argv.length === 2) {
