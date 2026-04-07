@@ -5659,18 +5659,19 @@ The daemon automatically indexes file changes in watched projects for later sear
     "mcx_find",
     {
       title: "Fuzzy File Search",
-      description: `Fast fuzzy file search with frecency ranking.
+      description: `Find FILES by name. NOT for searching content inside files.
+
+USE THIS FOR: "where is config.ts?", "find all *.test.ts files"
+DO NOT USE FOR: "find useState in code" → use mcx_grep instead
 
 Query syntax:
-- "main.ts" - Fuzzy match filename
-- "*.ts" - Extension filter
-- "!test" - Exclude pattern
-- "src/" - Path contains
+- "config.ts" - Find file by name
+- "*.ts" - All TypeScript files
+- "!test" - Exclude test files
+- "src/" - Files in src directory
 - "status:modified" - Git modified files
 
-Use path param to search in a different directory (e.g., path: "D:/projects/myapp").
-
-Results ranked by: match score + frecency (recent files boosted) + git status.`,
+Use path param to search in a different directory (e.g., path: "D:/projects/myapp").`,
       inputSchema: FindInputSchema,
       annotations: {
         readOnlyHint: true,
@@ -5763,21 +5764,21 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
     "mcx_grep",
     {
       title: "Content Search",
-      description: `SIMD-accelerated content search across files.
+      description: `Search CONTENT inside files. NOT for finding files by name.
 
-Query examples:
-- "TODO" - Plain text search
-- "*.ts useState" - Search in TypeScript files
-- "src/ handleClick" - Search in src directory
+USE THIS FOR: "find useState in code", "search for TODO comments"
+DO NOT USE FOR: "where is config.ts?" → use mcx_find instead
 
-Use path param to search in a different directory (e.g., path: "D:/projects/myapp").
+Query syntax:
+- "TODO" - Search for text in all files
+- "*.ts useState" - Search "useState" only in .ts files
+- "src/ handleClick" - Search "handleClick" only in src/
 
-Modes:
-- plain: Literal text match (fast)
-- regex: Regular expression
-- fuzzy: Typo-tolerant fuzzy match
+WRONG: mcx_grep({ query: "config.ts" }) ← finds nothing, use mcx_find
+RIGHT: mcx_grep({ query: "*.ts useState" }) ← finds useState in .ts files
 
-Tip: Use results to find line numbers, then mcx_edit with line mode.`,
+Use path param to search in a different directory.
+Modes: plain (default), regex, fuzzy.`,
       inputSchema: GrepInputSchema,
       annotations: {
         readOnlyHint: true,
