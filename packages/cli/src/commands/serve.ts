@@ -4813,8 +4813,10 @@ Examples:
     "mcx_stats",
     {
       title: "Session Statistics",
-      description: "Session statistics: indexed content, searches, executions, variables.",
-      inputSchema: z.object({}),
+      description: "Session statistics: indexed content, searches, executions, variables. Use graph:true for visual bar charts.",
+      inputSchema: z.object({
+        graph: z.boolean().optional().describe("Show ASCII bar charts for tool usage"),
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -4822,7 +4824,7 @@ Examples:
         openWorldHint: false,
       },
     },
-    async () => {
+    async (params: { graph?: boolean }) => {
       const store = getContentStore();
       const sources = store.getSources();
       const totalChunks = sources.reduce((sum, s) => sum + s.chunkCount, 0);
@@ -4906,9 +4908,24 @@ Examples:
           output.push('   ' + formatBytes(tokenStats.totalChars) + ' in ' + tokenStats.totalCalls + ' calls');
         }
         output.push('');
-        if (toolBreakdown.length > 0) {
+        if (toolData.length > 0) {
           output.push('📈 By Tool');
-          output.push(...toolBreakdown);
+          if (params.graph) {
+            // ASCII bar chart mode
+            const maxChars = Math.max(...[...tokenStats.byTool.values()].map(s => s.chars), 1);
+            const totalChars = [...tokenStats.byTool.values()].reduce((sum, s) => sum + s.chars, 0);
+            const barMaxWidth = 20;
+            for (const t of toolData) {
+              const stats = tokenStats.byTool.get('mcx_' + t.tool);
+              const bytes = stats?.chars || 0;
+              const pct = totalChars > 0 ? Math.round((bytes / totalChars) * 100) : 0;
+              const barLen = Math.max(1, Math.round((bytes / maxChars) * barMaxWidth));
+              const bar = '█'.repeat(barLen) + '░'.repeat(barMaxWidth - barLen);
+              output.push(`   ${t.tool.padEnd(10)} |${bar}| ${pct}% (${t.calls} calls)`);
+            }
+          } else {
+            output.push(...toolBreakdown);
+          }
           output.push('');
         }
       } else {
