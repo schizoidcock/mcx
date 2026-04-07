@@ -42,8 +42,8 @@ export const BUILTIN_FILTERS: FilterRule[] = [
       stripAnsi: true,
       stripLines: [
         '^\\s*$',
-        '^\\(use "git',
-        '^\\(create/copy files',
+        '^\\s*\\(use "',
+        '^\\s*\\(create/copy',
       ],
       onEmpty: '✓ Working tree clean',
     },
@@ -57,8 +57,8 @@ export const BUILTIN_FILTERS: FilterRule[] = [
       stripAnsi: true,
       stripLines: [
         '^\\s*$',
-        '^hint:',
-        '^\\(use "git',
+        '^\\s*hint:',
+        '^\\s*\\(use "',
       ],
       maxLines: 10,
       onEmpty: '✓ Done',
