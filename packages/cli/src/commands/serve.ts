@@ -3762,7 +3762,7 @@ File path available as FILE_PATH variable.
         }
         const accessCount = fileAccessLog.get(resolvedPath)!.count;
 
-        // Auto-index file content for later search (sync, like context-mode)
+        // Auto-index file content for later search
         // Index if: large file (>10KB) OR frequently accessed (3+ times)
         const shouldAutoIndex = content.length > FILE_INDEX_THRESHOLD || accessCount >= 3;
         if (shouldAutoIndex) {
@@ -4594,7 +4594,7 @@ Examples:
           output.push('   With MCX:    |' + barWith + '| ' + formatBytes(tokenStats.totalChars) + ' (' + savePct + '% saved)');
           output.push('');
           
-          // Enhanced metrics (better than context-mode's arbitrary formula)
+          // Token savings metrics
           const tokensKept = Math.round(saved / 4);  // ~4 chars per token (industry standard)
           const contextWindow = 200000;  // Opus/Sonnet context window
           const contextPreserved = (tokensKept / contextWindow * 100).toFixed(1);
