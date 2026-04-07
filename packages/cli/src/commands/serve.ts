@@ -1373,10 +1373,13 @@ function findDuplicatesInNewString(newString: string): string[] {
   
   for (const line of lines) {
     const trimmed = line.trim();
-    // Skip empty lines, comments, braces, and common chained methods
+    // Skip empty lines, comments, braces, common chained methods
     if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//') ||
         trimmed === '.optional()' || trimmed.startsWith('.describe(') || 
         trimmed === '.default(true)' || trimmed === '.default(false)') continue;
+    // Skip JSX patterns: opening tags, props, short lines (common to repeat in components)
+    if (trimmed.startsWith('<') || trimmed.startsWith('/>') || trimmed === '/>' ||
+        (trimmed.includes('=') && trimmed.length < 40) || trimmed.length < 20) continue;
     
     const count = (seen.get(trimmed) || 0) + 1;
     seen.set(trimmed, count);
