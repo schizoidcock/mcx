@@ -572,6 +572,23 @@ function detectInefficiency(tool: string, file?: string): string | null {
     }
   }
 
+  // Pattern: 5+ unique files read without processing (suggest mcx_batch or storeAs)
+  if (tool === 'mcx_file') {
+    const recentFileReads = sessionWorkflow.lastTools.filter(t => 
+      t.tool === 'mcx_file' && t.file && Date.now() - t.timestamp < 120000 // last 2 min
+    );
+    const uniqueFiles = new Set(recentFileReads.map(t => t.file));
+    if (uniqueFiles.size >= 5) {
+      const hasExecute = sessionWorkflow.lastTools.some(t => 
+        t.tool === 'mcx_execute' && Date.now() - t.timestamp < 120000
+      );
+      if (!hasExecute) {
+        return `⚠️ Reading ${uniqueFiles.size} files without processing.\n` +
+               `Consider: mcx_batch({ commands: [...] }) or process each file with code.`;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -950,8 +967,145 @@ function enforceCharacterLimit(text: string, limit: number = CHARACTER_LIMIT): {
   if (text.length <= limit) {
     return { text, truncated: false };
   }
-  const truncatedText = text.slice(0, limit) + `\n\n... [Response truncated at ${limit} chars, original was ${text.length} chars. Use more specific queries or lower truncation limits.]`;
+  const truncatedText = text.slice(0, limit) + `\n\n... [Response truncated at ${limit} chars, original was ${text.length}]`;
   return { text: truncatedText, truncated: true };
+}
+
+/** Threshold for raw data warning */
+const RAW_DATA_THRESHOLD = 10000;
+
+/**
+ * Detect if result looks like unfiltered raw data that should be processed
+ * Returns warning message if raw data detected, null otherwise
+ */
+function detectRawData(value: unknown, serializedLength: number): string | null {
+  if (serializedLength < RAW_DATA_THRESHOLD) return null;
+  
+  // Array with many objects (likely API response)
+  if (Array.isArray(value) && value.length > 20) {
+    const firstItem = value[0];
+    if (firstItem && typeof firstItem === 'object') {
+      const keys = Object.keys(firstItem);
+      
+      // Detect common patterns and suggest contextual templates
+      const hasId = keys.some(k => k.toLowerCase().includes('id'));
+      const hasName = keys.some(k => k.toLowerCase().includes('name') || k.toLowerCase().includes('title'));
+      const hasStatus = keys.some(k => k.toLowerCase().includes('status') || k.toLowerCase().includes('state'));
+      const hasDate = keys.some(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('created') || k.toLowerCase().includes('updated'));
+      const hasAmount = keys.some(k => k.toLowerCase().includes('amount') || k.toLowerCase().includes('price') || k.toLowerCase().includes('total'));
+      
+      const suggestions: string[] = [];
+      
+      // Build contextual suggestions based on detected fields
+      if (hasId && hasName) {
+        suggestions.push(`pick($result, ['${keys.find(k => k.toLowerCase().includes('id'))}', '${keys.find(k => k.toLowerCase().includes('name') || k.toLowerCase().includes('title'))}'])`);
+      }
+      if (hasStatus) {
+        const statusKey = keys.find(k => k.toLowerCase().includes('status') || k.toLowerCase().includes('state'));
+        suggestions.push(`count($result, '${statusKey}')`);
+      }
+      if (hasAmount) {
+        const amountKey = keys.find(k => k.toLowerCase().includes('amount') || k.toLowerCase().includes('price') || k.toLowerCase().includes('total'));
+        suggestions.push(`sum($result, '${amountKey}')`);
+      }
+      if (hasDate) {
+        suggestions.push(`first($result.sort((a,b) => new Date(b.${keys.find(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('created'))}) - new Date(a.${keys.find(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('created'))})), 10)`);
+      }
+      
+      if (suggestions.length === 0) {
+        suggestions.push(`pick($result, ['${keys.slice(0, 2).join("', '")}'])`);
+        suggestions.push('first($result, 10)');
+      }
+      
+      return `⚠️ Large array (${value.length} items, ${Math.round(serializedLength/1024)}KB). Try:\n` +
+             suggestions.slice(0, 3).map(s => `   • ${s}`).join('\n');
+    }
+  }
+  
+  // Large object with many keys
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const keys = Object.keys(value);
+    if (keys.length > 20) {
+      return `⚠️ Large object (${keys.length} keys, ${Math.round(serializedLength/1024)}KB). Try:\n` +
+             `   • $result.${keys[0]} — access specific key\n` +
+             `   • pick($result, ['${keys.slice(0, 3).join("', '")}'])`;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Check brace balance in code content
+ * Returns 0 if balanced, positive if too many opening, negative if too many closing
+ */
+function checkBraceBalance(content: string): number {
+  let balance = 0;
+  let inString = false;
+  let stringChar = '';
+  let escaped = false;
+  
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    const prev = i > 0 ? content[i - 1] : '';
+    
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    
+    if (inString) {
+      if (char === stringChar && prev !== '\\') {
+        inString = false;
+      }
+      continue;
+    }
+    
+    if (char === '"' || char === "'" || char === '`') {
+      inString = true;
+      stringChar = char;
+      continue;
+    }
+    
+    if (char === '{') balance++;
+    if (char === '}') balance--;
+  }
+  
+  return balance;
+}
+
+/**
+ * Find duplicate lines near the edit location
+ * Returns array of duplicate line contents
+ */
+function findDuplicatesNear(content: string, editStart: number, windowSize: number = 10): string[] {
+  const lines = content.split('\n');
+  const start = Math.max(0, editStart - windowSize);
+  const end = Math.min(lines.length, editStart + windowSize);
+  
+  const window = lines.slice(start, end);
+  const seen = new Map<string, number>();
+  const duplicates: string[] = [];
+  
+  for (const line of window) {
+    const trimmed = line.trim();
+    // Skip empty lines, comments, and simple braces
+    if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//')) continue;
+    
+    const count = (seen.get(trimmed) || 0) + 1;
+    seen.set(trimmed, count);
+    
+    if (count === 2) {
+      duplicates.push(trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed);
+    }
+  }
+  
+  return duplicates;
 }
 
 interface TruncateOptions {
@@ -2119,7 +2273,12 @@ Returns: { exitCode, stdout, stderr, duration, command }
 ## Large Output Handling
 - intent: Auto-index output >5KB and search. Returns snippets instead of full data.
 
-Example: { code: "alegra.getInvoices()", storeAs: "invoices", intent: "find overdue" }
+## Think in Code: Filter Before Returning
+❌ BAD: api.getUsers() → returns 500 users, 50KB of data
+✅ GOOD: api.getUsers().filter(u => u.active).map(u => ({ id: u.id, name: u.name }))
+
+❌ BAD: api.getOrders() → returns full order objects
+✅ GOOD: count(api.getOrders(), 'status') → { pending: 5, shipped: 12 }
 
 IMPORTANT: Always filter/transform data before returning to minimize context.`,
       inputSchema: ExecuteInputSchema,
@@ -2544,15 +2703,19 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         // Track for workflow detection (Pattern H: edit→build→edit cycle)
         trackToolUsage('mcx_execute');
 
+        // Detect raw/unfiltered data and warn (use original value, not truncated)
+        const rawDataWarning = detectRawData(valueWithoutImages, serialized.length);
+
         // Claude Code only shows structuredContent to user (ignores content)
         // This is a client limitation, not MCP spec behavior
         // Format result as readable string - best we can do
         const autoIndexMsg = autoIndexedLabel 
           ? `📦 Auto-indexed as "${autoIndexedLabel}" (${Math.round(serialized.length/1024)}KB). Use mcx_search to query.\n\n`
           : '';
+        const warningMsg = rawDataWarning ? rawDataWarning + '\n\n' : '';
         return { 
           content,
-          toolResult: autoIndexMsg + formatToolResult(summarized.value),
+          toolResult: warningMsg + autoIndexMsg + formatToolResult(summarized.value),
           _rawBytes: summarized.rawBytes 
         };
       } catch (error) {
@@ -3849,7 +4012,8 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             dynamicTip = `\n⚠️ Call #${callCount} to same file. Use around(${line}, 20) or mcx_edit directly.`;
           }
 
-          const outputText = finalText + storedMsg + dynamicTip;
+          const warningPrefix = inefficiencyWarning ? `${inefficiencyWarning}\n\n` : '';
+          const outputText = warningPrefix + finalText + storedMsg + dynamicTip;
           return {
             content: [{ type: "text" as const, text: outputText }],
             toolResult: outputText,
@@ -3857,10 +4021,11 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
           };
         }
 
-        const outputText = finalText + storedMsg;
+        const warningPrefix2 = inefficiencyWarning ? `${inefficiencyWarning}\n\n` : '';
+        const finalOutput = warningPrefix2 + finalText + storedMsg;
         return {
-          content: [{ type: "text" as const, text: outputText }],
-          toolResult: outputText,
+          content: [{ type: "text" as const, text: finalOutput }],
+          toolResult: finalOutput,
           structuredContent: {
             result: result.value,
             truncated,
@@ -3932,6 +4097,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
 
         let newContent: string;
         let isAppend = false;
+        let editStartLine = 1; // Track where edit starts for validation
 
         // Line mode: replace by line numbers (or append if start > lines.length)
         if (start !== undefined && end !== undefined) {
@@ -3963,6 +4129,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           const before = isAppend ? lines : lines.slice(0, start - 1);
           const after = isAppend ? [] : lines.slice(end);
           newContent = [...before, new_string, ...after].join('\n');
+          editStartLine = start;
         }
         // String mode: find and replace
         else if (old_string) {
@@ -4027,12 +4194,48 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           // Do replacement in LF mode, then restore original line endings
           const resultLF = replace_all ? contentLF.replaceAll(oldLF, () => newLF) : contentLF.replace(oldLF, () => newLF);
           newContent = hasCRLF ? resultLF.replace(/\n/g, '\r\n') : resultLF;
+          // Calculate edit start line from character index
+          editStartLine = contentLF.slice(0, firstIdx).split('\n').length;
         }
         else {
           return {
             content: [{ type: "text" as const, text: `Error: Provide old_string (string mode) or start+end (line mode)` }],
             isError: true,
           };
+        }
+
+        // Validate edit result BEFORE writing (catch broken code early)
+        const ext = extname(resolvedPath).toLowerCase();
+        if (['.ts', '.tsx', '.js', '.jsx', '.json', '.mjs', '.cjs'].includes(ext)) {
+          // Check brace balance
+          const originalBalance = checkBraceBalance(content);
+          const newBalance = checkBraceBalance(newContent);
+          if (originalBalance === 0 && newBalance !== 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `⚠️ Edit would break brace balance (${newBalance > 0 ? '+' : ''}${newBalance} braces).\n\n` +
+                      `Check your edit - likely missing or extra { or }.`
+              }],
+              isError: true,
+            };
+          }
+          
+          // Check for duplicate lines near edit (skip for append)
+          if (!isAppend) {
+            const duplicates = findDuplicatesNear(newContent, editStartLine);
+            if (duplicates.length > 0) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `⚠️ Edit would create duplicate lines:\n` +
+                        duplicates.slice(0, 3).map(d => `  "${d}"`).join('\n') +
+                        `\n\nCheck your edit range and content.`
+                }],
+                isError: true,
+              };
+            }
+          }
         }
 
         await Bun.write(resolvedPath, newContent);
