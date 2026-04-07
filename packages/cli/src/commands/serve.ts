@@ -4153,6 +4153,7 @@ Examples:
             }
 
             const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
+            trackToolUsage('mcx_fetch');
             return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
           }
         }
@@ -4174,9 +4175,10 @@ Examples:
           };
         }
 
-        const contentType = response.headers.get('content-type') || '';
+        const httpContentType = response.headers.get('content-type') || '';
         let content: string;
         let label: string;
+        let indexContentType: 'json' | 'markdown' | 'plaintext' = 'plaintext';
 
         try {
           label = new URL(params.url).hostname;
@@ -4184,9 +4186,10 @@ Examples:
           label = 'fetched';
         }
 
-        if (contentType.includes('json')) {
+        if (httpContentType.includes('json')) {
           const json = await response.json() as Record<string, unknown>;
           content = JSON.stringify(json, null, 2);
+          indexContentType = 'json';  // Use JSON chunking
           // Try to extract title from OpenAPI or common JSON structures
           const info = json.info as Record<string, unknown> | undefined;
           if (info?.title && typeof info.title === 'string') label = info.title;
@@ -4200,6 +4203,7 @@ Examples:
           // Convert HTML to markdown for cleaner indexing
           if (isHtml(content)) {
             content = htmlToMarkdown(content);
+            indexContentType = 'markdown';
           }
         }
 
@@ -4215,7 +4219,7 @@ Examples:
           try { store.deleteSource(oldCached.sourceId); } catch { /* ignore */ }
         }
 
-        const sourceId = store.index(content, label, { contentType: 'plaintext' });
+        const sourceId = store.index(content, label, { contentType: indexContentType });
         const chunks = store.getChunkCount(sourceId);
         const terms = getDistinctiveTerms(store.getChunks(sourceId));
 
@@ -4246,7 +4250,8 @@ Examples:
         }
 
         const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
-        return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
+        trackToolUsage('mcx_fetch');
+        return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: content.length };
       } catch (error) {
         logger.error("mcx_fetch error", error);
         return {

@@ -1,5 +1,5 @@
 /** Content type for indexing */
-export type ContentType = 'markdown' | 'plaintext';
+export type ContentType = 'markdown' | 'plaintext' | 'json';
 
 export interface Chunk {
   title: string;

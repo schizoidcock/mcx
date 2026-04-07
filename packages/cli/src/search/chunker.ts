@@ -127,11 +127,90 @@ export function chunkPlainText(text: string, linesPerChunk = 20): Chunk[] {
 }
 
 /**
+ * Chunk JSON content by key paths.
+ * Each top-level key becomes a chunk, nested objects get path titles.
+ */
+export function chunkJSON(text: string, maxDepth = 3): Chunk[] {
+  const chunks: Chunk[] = [];
+  
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // Not valid JSON, fall back to plaintext
+    return chunkPlainText(text);
+  }
+
+  function traverse(obj: unknown, path: string[], depth: number) {
+    if (depth > maxDepth) {
+      // Max depth reached, stringify remainder
+      const title = path.length > 0 ? path.join('.') : 'root';
+      chunks.push({
+        title,
+        content: JSON.stringify(obj, null, 2),
+      });
+      return;
+    }
+
+    if (Array.isArray(obj)) {
+      // For arrays, chunk by reasonable sizes
+      if (obj.length <= 10) {
+        const title = path.length > 0 ? path.join('.') : 'root';
+        chunks.push({
+          title: `${title}[${obj.length} items]`,
+          content: JSON.stringify(obj, null, 2),
+        });
+      } else {
+        // Large array: chunk in groups of 10
+        for (let i = 0; i < obj.length; i += 10) {
+          const slice = obj.slice(i, Math.min(i + 10, obj.length));
+          const title = path.length > 0 
+            ? `${path.join('.')}[${i}-${Math.min(i + 9, obj.length - 1)}]`
+            : `[${i}-${Math.min(i + 9, obj.length - 1)}]`;
+          chunks.push({
+            title,
+            content: JSON.stringify(slice, null, 2),
+          });
+        }
+      }
+    } else if (obj && typeof obj === 'object') {
+      const keys = Object.keys(obj as Record<string, unknown>);
+      
+      // Small objects: single chunk
+      const serialized = JSON.stringify(obj, null, 2);
+      if (keys.length <= 5 || serialized.length < 1000) {
+        const title = path.length > 0 ? path.join('.') : 'root';
+        chunks.push({
+          title,
+          content: serialized,
+        });
+        return;
+      }
+
+      // Large objects: recurse into each key
+      for (const key of keys) {
+        traverse((obj as Record<string, unknown>)[key], [...path, key], depth + 1);
+      }
+    } else {
+      // Primitive value
+      const title = path.length > 0 ? path.join('.') : 'value';
+      chunks.push({
+        title,
+        content: String(obj),
+      });
+    }
+  }
+
+  traverse(data, [], 0);
+  return chunks.length > 0 ? chunks : chunkPlainText(text);
+}
+
+/**
  * Auto-detect content type and chunk accordingly.
  */
 export function chunkContent(
   text: string,
-  contentType?: 'markdown' | 'plaintext',
+  contentType?: 'markdown' | 'plaintext' | 'json',
   linesPerChunk = 20
 ): Chunk[] {
   // Use explicit content type if provided
@@ -140,6 +219,9 @@ export function chunkContent(
   }
   if (contentType === 'plaintext') {
     return chunkPlainText(text, linesPerChunk);
+  }
+  if (contentType === 'json') {
+    return chunkJSON(text);
   }
 
   // Auto-detect: markdown if it has headings (multiline regex avoids full split)
