@@ -848,7 +848,7 @@ interface FormatGrepOptions {
   proxScores?: Map<string, number> | null;
 }
 
-function formatGrepOutput(
+function formatGrepMCX(
   items: GrepMatch[],
   totalMatched: number,
   totalFilesSearched: number,
@@ -957,7 +957,7 @@ function detectAndFormatGrepOutput(output: string): string | null {
   
   // Format using existing function
   const totalMatched = parsed.length;
-  const { output: formatted, hiddenMatches } = formatGrepOutput(
+  const { output: formatted, hiddenMatches } = formatGrepMCX(
     parsed,
     totalMatched,
     new Set(parsed.map(p => p.relativePath)).size,
@@ -5616,7 +5616,7 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
         const proxScores = lastAccessedDir ? new Map(fileKeys.map(f => [f, getProximityScore(f)])) : null;
 
         // Format with RTK-derived optimizations (compactPath, cleanLine, +N hidden)
-        const { output: formattedOutput, hiddenMatches } = formatGrepOutput(
+        const { output: formattedOutput, hiddenMatches } = formatGrepMCX(
           items,
           totalMatched,
           totalFilesSearched,
