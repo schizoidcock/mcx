@@ -1292,8 +1292,6 @@ function checkBraceBalance(content: string): number {
   
   for (let i = 0; i < content.length; i++) {
     const char = content[i];
-    const prev = i > 0 ? content[i - 1] : '';
-    
     if (escaped) {
       escaped = false;
       continue;
@@ -1305,7 +1303,7 @@ function checkBraceBalance(content: string): number {
     }
     
     if (inString) {
-      if (char === stringChar && prev !== '\\') {
+      if (char === stringChar) {
         inString = false;
       }
       continue;
