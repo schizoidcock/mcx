@@ -4724,18 +4724,21 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
 
         if (patternHTip) {
           return {
-            content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n${patternHTip}` }],
+            content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.\n${patternHTip}` }],
           };
         }
 
-        // Pattern C: Tip after edit - suggest batching more changes
+        // Always show "no need to re-read" tip
+        const noRereadTip = '\n💡 No need to re-read to verify.';
+        
+        // Pattern C: Additionally suggest batching after multiple edits
         const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
-        const editTip = recentEdits >= 2 
+        const batchTip = recentEdits >= 2 
           ? '\n💡 Multiple edits done. Batch remaining changes before build/test.'
           : '';
 
         return {
-          content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}${editTip}` }],
+          content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}${noRereadTip}${batchTip}` }],
         };
       } catch (error) {
         logger.error("mcx_edit error", error);
