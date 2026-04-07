@@ -729,6 +729,245 @@ function truncateLogs(logs: string[]): string[] {
 }
 
 // ============================================================================
+// Grep Output Formatting (RTK-derived optimizations)
+// ============================================================================
+
+/** Max line width for grep output */
+const GREP_MAX_LINE_WIDTH = 100;
+/** Max matches to show per file */
+const GREP_MAX_PER_FILE = 5;
+/** Max path length before compacting */
+const GREP_MAX_PATH_LEN = 50;
+
+/**
+ * Compact a path by replacing middle segments with "..."
+ * e.g., "packages/cli/src/commands/serve.ts" → "packages/.../serve.ts"
+ */
+function compactPath(filePath: string, maxLen = GREP_MAX_PATH_LEN): string {
+  if (filePath.length <= maxLen) return filePath;
+  
+  const parts = filePath.replace(/\\/g, '/').split('/');
+  if (parts.length <= 2) {
+    // Can't compact further, just truncate
+    return '...' + filePath.slice(-(maxLen - 3));
+  }
+  
+  // Keep first and last parts, replace middle with ...
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  
+  // If just first + ... + last is short enough, use it
+  const minimal = `${first}/.../${last}`;
+  if (minimal.length <= maxLen) {
+    // Try to add more parts from the end
+    let result = last;
+    for (let i = parts.length - 2; i > 0; i--) {
+      const candidate = `${first}/.../` + parts.slice(i).join('/');
+      if (candidate.length <= maxLen) {
+        result = parts.slice(i).join('/');
+      } else break;
+    }
+    return `${first}/.../` + result;
+  }
+  
+  // Even minimal is too long, truncate the filename
+  return '.../' + last.slice(-(maxLen - 4));
+}
+
+/**
+ * Truncate a line with window centered around match.
+ * RTK pattern: 1/3 context before, 2/3 after the match.
+ */
+function cleanLine(line: string, maxLen = GREP_MAX_LINE_WIDTH, pattern?: string): string {
+  const trimmed = line.trim();
+  if (trimmed.length <= maxLen) return trimmed;
+  
+  // If no pattern or pattern not found, simple center truncation
+  if (!pattern) {
+    // Account for "..." on both sides (6 chars total)
+    const contentLen = maxLen - 6;
+    const halfLen = Math.floor(contentLen / 2);
+    return trimmed.slice(0, halfLen) + '...' + trimmed.slice(-halfLen);
+  }
+  
+  // Find pattern position (case-insensitive)
+  const lowerLine = trimmed.toLowerCase();
+  const lowerPattern = pattern.toLowerCase();
+  const matchIdx = lowerLine.indexOf(lowerPattern);
+  
+  if (matchIdx === -1) {
+    // Pattern not found, simple center truncation
+    const contentLen = maxLen - 6;
+    const halfLen = Math.floor(contentLen / 2);
+    return trimmed.slice(0, halfLen) + '...' + trimmed.slice(-halfLen);
+  }
+  
+  // Center window around match: 1/3 before, 2/3 after
+  // Account for potential "..." on both sides (6 chars reserved)
+  const availableLen = maxLen - 6;
+  const patternLen = Math.min(pattern.length, availableLen);
+  const remaining = availableLen - patternLen;
+  const beforeWindow = Math.floor(remaining / 3);
+  const afterWindow = remaining - beforeWindow;
+  
+  let start = Math.max(0, matchIdx - beforeWindow);
+  let end = Math.min(trimmed.length, matchIdx + pattern.length + afterWindow);
+  
+  // Determine if we need prefix/suffix
+  const needsPrefix = start > 0;
+  const needsSuffix = end < trimmed.length;
+  
+  // If we don't need one side's ellipsis, give that space to content
+  if (!needsPrefix && needsSuffix) {
+    // No prefix needed, extend end
+    end = Math.min(trimmed.length, maxLen - 3);
+  } else if (needsPrefix && !needsSuffix) {
+    // No suffix needed, extend start
+    start = Math.max(0, trimmed.length - (maxLen - 3));
+  }
+  
+  const prefix = needsPrefix ? '...' : '';
+  const suffix = needsSuffix ? '...' : '';
+  
+  return prefix + trimmed.slice(start, end) + suffix;
+}
+
+/**
+ * Format grep results with file grouping, smart truncation, and +N hidden counts.
+ */
+interface GrepMatch {
+  relativePath: string;
+  lineNumber: number;
+  lineContent: string;
+}
+
+interface FormatGrepOptions {
+  maxPerFile?: number;
+  maxLineWidth?: number;
+  pattern?: string;
+  proxScores?: Map<string, number> | null;
+}
+
+function formatGrepOutput(
+  items: GrepMatch[],
+  totalMatched: number,
+  totalFilesSearched: number,
+  options: FormatGrepOptions = {}
+): { output: string; hiddenMatches: number; hiddenFiles: number } {
+  const {
+    maxPerFile = GREP_MAX_PER_FILE,
+    maxLineWidth = GREP_MAX_LINE_WIDTH,
+    pattern,
+    proxScores,
+  } = options;
+
+  // Group by file
+  const byFile = new Map<string, GrepMatch[]>();
+  for (const item of items) {
+    const existing = byFile.get(item.relativePath) || [];
+    existing.push(item);
+    byFile.set(item.relativePath, existing);
+  }
+
+  // Sort files by proximity if available
+  const sortedFiles = proxScores
+    ? [...byFile.entries()].sort((a, b) => (proxScores.get(b[0]) || 0) - (proxScores.get(a[0]) || 0))
+    : [...byFile.entries()];
+
+  const lines: string[] = [];
+  let hiddenMatches = 0;
+
+  // Format each file
+  for (const [file, matches] of sortedFiles) {
+    const prox = proxScores && (proxScores.get(file) || 0) > 0.5 ? ' ★' : '';
+    const displayPath = compactPath(file);
+    
+    // Show count if more matches than we'll display
+    const fileHidden = matches.length > maxPerFile ? matches.length - maxPerFile : 0;
+    hiddenMatches += fileHidden;
+    
+    const countSuffix = fileHidden > 0 ? ` (+${fileHidden})` : '';
+    lines.push(`${displayPath}${prox}${countSuffix}:`);
+    
+    // Show limited matches with smart line truncation
+    for (const m of matches.slice(0, maxPerFile)) {
+      const cleanedLine = cleanLine(m.lineContent, maxLineWidth, pattern);
+      lines.push(`  ${m.lineNumber}: ${cleanedLine}`);
+    }
+  }
+
+  // Calculate total hidden (matches not shown at all due to items limit)
+  const shownMatches = items.length;
+  const totalHidden = totalMatched - shownMatches + hiddenMatches;
+
+  // Header with counts
+  const header = totalHidden > 0
+    ? `${totalMatched} matches in ${totalFilesSearched} files (showing ${shownMatches - hiddenMatches}, +${totalHidden} hidden):`
+    : `${totalMatched} matches in ${totalFilesSearched} files:`;
+
+  return {
+    output: [header, '', ...lines].join('\n'),
+    hiddenMatches: totalHidden,
+    hiddenFiles: 0,
+  };
+}
+
+/**
+ * Detect if output looks like grep/ripgrep output and format it.
+ * Returns formatted output if detected, null otherwise.
+ * 
+ * Grep output patterns:
+ * - file:line:content (grep -n, rg)
+ * - file:line-content (grep -n with context)
+ * - file-line-content (some grep variants)
+ */
+function detectAndFormatGrepOutput(output: string): string | null {
+  // Normalize CRLF to LF and split
+  const lines = output.replace(/\r\n/g, '\n').trim().split('\n');
+  if (lines.length < 2) return null;
+  
+  // Pattern: file:linenum:content or file:linenum-content
+  // Handle Windows paths (D:/path) by finding :NUMBER: or :NUMBER- pattern
+  const grepPattern = /^(.+):(\d+)([:=-])(.*)$/;
+  
+  // Check if at least 60% of lines match grep pattern
+  let matches = 0;
+  const parsed: GrepMatch[] = [];
+  
+  for (const line of lines) {
+    const match = line.match(grepPattern);
+    if (match) {
+      matches++;
+      parsed.push({
+        relativePath: match[1],
+        lineNumber: parseInt(match[2], 10),
+        lineContent: match[4],
+      });
+    }
+  }
+  
+  const matchRatio = matches / lines.length;
+  if (matchRatio < 0.6 || parsed.length < 3) {
+    return null; // Not grep-like output
+  }
+  
+  // Extract search pattern from command if visible in output (heuristic)
+  // Look for commonly matched terms
+  const allContent = parsed.map(p => p.lineContent).join(' ');
+  
+  // Format using existing function
+  const totalMatched = parsed.length;
+  const { output: formatted, hiddenMatches } = formatGrepOutput(
+    parsed,
+    totalMatched,
+    new Set(parsed.map(p => p.relativePath)).size,
+    { maxPerFile: GREP_MAX_PER_FILE, maxLineWidth: GREP_MAX_LINE_WIDTH }
+  );
+  
+  return formatted;
+}
+
+// ============================================================================
 // Native Image Support
 // ============================================================================
 
@@ -865,10 +1104,18 @@ function formatFileResult(result: unknown, code: string): string {
       .join('\n');
   }
   
-  // String → return directly with line truncation (like formatToolResult)
+  // String → check for grep-like output first, then truncate lines
   if (typeof result === 'string') {
-    return result
-      .replace(/\r\n/g, '\n')  // Normalize Windows line endings
+    const normalized = result.replace(/\r\n/g, '\n');
+    
+    // Detect and format grep-like output (file:line:content pattern)
+    const grepFormatted = detectAndFormatGrepOutput(normalized);
+    if (grepFormatted) {
+      return grepFormatted;
+    }
+    
+    // Not grep-like, apply standard line truncation
+    return normalized
       .split('\n')
       .map(line => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line)
       .join('\n');
@@ -1080,32 +1327,51 @@ function checkBraceBalance(content: string): number {
 }
 
 /**
- * Find duplicate lines near the edit location
- * Returns array of duplicate line contents
+ * Find NEW duplicate lines introduced by an edit.
+ * Compares old and new content - only flags duplicates that didn't exist before.
  */
-function findDuplicatesNear(content: string, editStart: number, windowSize: number = 10): string[] {
-  const lines = content.split('\n');
-  const start = Math.max(0, editStart - windowSize);
-  const end = Math.min(lines.length, editStart + windowSize);
-  
-  const window = lines.slice(start, end);
-  const seen = new Map<string, number>();
-  const duplicates: string[] = [];
-  
-  for (const line of window) {
-    const trimmed = line.trim();
-    // Skip empty lines, comments, and simple braces
-    if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//')) continue;
+function findNewDuplicates(
+  oldContent: string,
+  newContent: string,
+  editStart: number,
+  windowSize: number = 10
+): string[] {
+  const getWindowDuplicates = (content: string): Set<string> => {
+    const lines = content.split('\n');
+    const start = Math.max(0, editStart - windowSize);
+    const end = Math.min(lines.length, editStart + windowSize);
+    const window = lines.slice(start, end);
     
-    const count = (seen.get(trimmed) || 0) + 1;
-    seen.set(trimmed, count);
+    const seen = new Map<string, number>();
+    const duplicates = new Set<string>();
     
-    if (count === 2) {
-      duplicates.push(trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed);
+    for (const line of window) {
+      const trimmed = line.trim();
+      // Skip empty lines, comments, and simple braces
+      if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//')) continue;
+      
+      const count = (seen.get(trimmed) || 0) + 1;
+      seen.set(trimmed, count);
+      
+      if (count >= 2) {
+        duplicates.add(trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed);
+      }
+    }
+    return duplicates;
+  };
+  
+  const oldDuplicates = getWindowDuplicates(oldContent);
+  const newDuplicates = getWindowDuplicates(newContent);
+  
+  // Only return duplicates that are NEW (not in old content)
+  const newOnly: string[] = [];
+  for (const dup of newDuplicates) {
+    if (!oldDuplicates.has(dup)) {
+      newOnly.push(dup);
     }
   }
   
-  return duplicates;
+  return newOnly;
 }
 
 interface TruncateOptions {
@@ -2363,24 +2629,33 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               outputParts.push(`✗ Exit code ${exitCode} (${duration}ms)`);
             }
 
-            // Apply truncation if enabled
+            // Process stdout: try grep detection FIRST (before truncation)
             let finalStdout = stdout.trim();
             let finalStderr = stderr.trim();
             
-            if (params.truncate) {
+            // Try grep detection on FULL output (truncation would break it)
+            const grepFormatted = finalStdout ? detectAndFormatGrepOutput(finalStdout) : null;
+            
+            // Apply truncation only if grep detection failed
+            if (!grepFormatted && params.truncate) {
               const maxLen = params.maxStringLength ?? 500;
               if (finalStdout.length > maxLen) {
                 finalStdout = finalStdout.slice(0, maxLen) + `\n... (${finalStdout.length - maxLen} chars truncated)`;
               }
+            }
+            
+            // Always truncate stderr if needed
+            if (params.truncate) {
+              const maxLen = params.maxStringLength ?? 500;
               if (finalStderr.length > maxLen) {
                 finalStderr = finalStderr.slice(0, maxLen) + `\n... (${finalStderr.length - maxLen} chars truncated)`;
               }
             }
 
             // Add output sections
-            if (finalStdout) {
+            if (finalStdout || grepFormatted) {
               outputParts.push('');
-              outputParts.push(finalStdout);
+              outputParts.push(grepFormatted || finalStdout);
             }
             if (finalStderr) {
               outputParts.push('');
@@ -4223,7 +4498,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           
           // Check for duplicate lines near edit (skip for append)
           if (!isAppend) {
-            const duplicates = findDuplicatesNear(newContent, editStartLine);
+            const duplicates = findNewDuplicates(content, newContent, editStartLine);
             if (duplicates.length > 0) {
               return {
                 content: [{
@@ -5221,13 +5496,15 @@ Results ranked by: match score + frecency (recent files boosted) + git status.`,
         const fullOutput = items.map(f => f.relativePath + (f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : ""));
         const rawBytes = JSON.stringify(fullOutput).length;
         
+        const hiddenFiles = totalMatched - rankedItems.length;
+        const headerSuffix = hiddenFiles > 0 ? `, +${hiddenFiles} hidden` : '';
         const output = [
-          `Found ${totalMatched} files (showing ${rankedItems.length}):`,
+          `Found ${totalMatched} files (showing ${rankedItems.length}${headerSuffix}):`,
           "",
           ...rankedItems.map((f) => {
             const status = f.gitStatus !== "clean" ? ` [${f.gitStatus}]` : "";
             const prox = proxScores && (proxScores.get(f.path) || 0) > 0.5 ? " ★" : "";
-            return `${f.relativePath}${status}${prox}`;
+            return `${compactPath(f.relativePath)}${status}${prox}`;
           }),
         ];
 
@@ -5327,33 +5604,32 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
         // Calculate raw size for token tracking (full items before truncation)
         const rawBytes = JSON.stringify(items).length;
 
-        const output = [`${totalMatched} matches in ${totalFilesSearched} files (showing ${items.length}):`, ""];
+        // Extract search pattern from query (strip file prefixes like "*.ts " or "path/ ")
+        const searchPattern = params.query.replace(/^[\*\w\.\/\\]+\s+/, '').trim() || params.query;
 
-        // Group by file
+        // Build proximity scores for file sorting
+        const fileKeys = [...new Set(items.map(i => i.relativePath))];
+        const proxScores = lastAccessedDir ? new Map(fileKeys.map(f => [f, getProximityScore(f)])) : null;
+
+        // Format with RTK-derived optimizations (compactPath, cleanLine, +N hidden)
+        const { output: formattedOutput, hiddenMatches } = formatGrepOutput(
+          items,
+          totalMatched,
+          totalFilesSearched,
+          { pattern: searchPattern, proxScores }
+        );
+
+        // Progressive tips based on grep call count (Optimization #9)
+        // Get first file for tip suggestions
         const byFile = new Map<string, typeof items>();
         for (const item of items) {
           const existing = byFile.get(item.relativePath) || [];
           existing.push(item);
           byFile.set(item.relativePath, existing);
         }
-
-        // Sort files by proximity
-        const fileKeys = [...byFile.keys()];
-        const proxScores = lastAccessedDir ? new Map(fileKeys.map(f => [f, getProximityScore(f)])) : null;
         const sortedFiles = proxScores
           ? [...byFile.entries()].sort((a, b) => (proxScores.get(b[0]) || 0) - (proxScores.get(a[0]) || 0))
           : [...byFile.entries()];
-
-        for (const [file, matches] of sortedFiles) {
-          const prox = proxScores && (proxScores.get(file) || 0) > 0.5 ? " ★" : "";
-          output.push(`${file}${prox}:`);
-          for (const m of matches.slice(0, 5)) {
-            output.push(`  ${m.lineNumber}: ${m.lineContent.trim().slice(0, 100)}`);
-          }
-          if (matches.length > 5) output.push(`  ... +${matches.length - 5} more matches`);
-        }
-
-        // Progressive tips based on grep call count (Optimization #9)
         const firstFile = sortedFiles[0];
         const firstLineNum = firstFile?.[1][0]?.lineNumber || 1;
         const firstPath = firstFile?.[0] || '';
@@ -5361,16 +5637,21 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
         let dynamicTip: string;
         if (grepCallLog.count === 1) {
           // 1st grep: suggest exploring the match
-          dynamicTip = `\n→ Next: mcx_file({ path: "${firstPath}", code: "around(${firstLineNum}, 20)" })`;
+          dynamicTip = `\n→ Next: mcx_file({ path: "${compactPath(firstPath, 40)}", code: "around(${firstLineNum}, 20)" })`;
         } else if (grepCallLog.count === 2) {
           // 2nd grep: hint about batch/search options
           dynamicTip = `\n→ For multiple patterns: mcx_batch, or mode: "regex" with "p1|p2"`;
         } else {
           // 3rd+: warning about inefficiency
-          dynamicTip = `\n💡 Multiple greps detected. Consider mcx_batch for parallel searches or mcx_search if content is indexed.`;
+          dynamicTip = `\n💡 Multiple greps detected. Consider mcx_batch for parallel searches.`;
         }
 
-        const outputText = output.join("\n") + dynamicTip;
+        // Add hidden match tip if significant truncation occurred
+        if (hiddenMatches > 10) {
+          dynamicTip += `\n💡 ${hiddenMatches} matches hidden. Use limit param for more, or refine query.`;
+        }
+
+        const outputText = formattedOutput + dynamicTip;
         return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: rawBytes };
 
       });
@@ -5503,7 +5784,12 @@ Useful for understanding code dependencies before making changes.`,
         byRelation.set(info.relation, list);
       }
 
-      const output: string[] = [`Related files for ${path.basename(targetFile)}:`, ""];
+      const totalFiles = related.size;
+      const maxPerRelation = 10;
+      let shownFiles = 0;
+      let hiddenFiles = 0;
+
+      const output: string[] = [];
 
       const relationLabels: Record<RelationType, string> = {
         "imports": "This file imports:",
@@ -5512,15 +5798,21 @@ Useful for understanding code dependencies before making changes.`,
       };
 
       for (const [relation, files] of byRelation) {
-        output.push(relationLabels[relation] || relation);
-        for (const file of files.slice(0, 10)) {
-          output.push(`  ${file}`);
-        }
-        if (files.length > 10) {
-          output.push(`  ... +${files.length - 10} more`);
+        const showing = files.slice(0, maxPerRelation);
+        const hidden = files.length - showing.length;
+        shownFiles += showing.length;
+        hiddenFiles += hidden;
+        
+        const countSuffix = hidden > 0 ? ` (+${hidden})` : '';
+        output.push(`${relationLabels[relation] || relation}${countSuffix}`);
+        for (const file of showing) {
+          output.push(`  ${compactPath(file)}`);
         }
         output.push("");
       }
+
+      const headerSuffix = hiddenFiles > 0 ? ` (showing ${shownFiles}, +${hiddenFiles} hidden)` : '';
+      output.unshift(`Related files for ${compactPath(path.basename(targetFile))}${headerSuffix}:`, "");
 
       const outputText = output.join("\n") + suggestNextTool("mcx_related");
       return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
