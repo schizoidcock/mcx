@@ -138,6 +138,44 @@ export const BUILTIN_FILTERS: FilterRule[] = [
       onEmpty: '✓ bun: installed',
     },
   },
+  {
+    name: 'ls-long',
+    description: 'Compact long directory listings',
+    matchCommand: '\\bls\\s+.*-[la]',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^total\\s+\\d+'],
+      maxLines: 40,
+    },
+  },
+  {
+    name: 'npm-list',
+    description: 'Compact npm/pnpm dependency tree',
+    matchCommand: '\\b(npm|pnpm)\\s+(ls|list)\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', 'UNMET DEPENDENCY', 'extraneous', 'invalid:'],
+      truncateLinesAt: 100,
+      maxLines: 30,
+    },
+  },
+  {
+    name: 'env-list',
+    description: 'Compact environment variables',
+    matchCommand: '^(env|printenv|set)$',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^_=', '^SHLVL=', '^PWD=', '^OLDPWD='],
+      truncateLinesAt: 80,
+      maxLines: 40,
+    },
+  },
+  {
+    name: 'ps-list',
+    description: 'Compact process listing',
+    matchCommand: '\\bps\\s',
+    pipeline: { stripAnsi: true, truncateLinesAt: 120, maxLines: 30 },
+  },
 ];
 
 // ============================================================================
@@ -347,12 +385,15 @@ export function formatTestOutput(output: string): string | null {
 export function formatLintOutput(cmd: string, output: string): string | null {
   const clean = output.replace(/\x1b\[[0-9;]*m/g, '');
   
-  // Parse file:line:col: message format
-  const errorPattern = /^(.+?):(\d+):(\d+):\s*(.+)$/;
+  // Parse multiple error formats:
+  // - eslint/biome: file:line:col: message
+  // - tsc: file(line,col): message
+  const eslintPattern = /^(.+?):(\d+):(\d+):\s*(.+)$/;
+  const tscPattern = /^(.+?)\((\d+),(\d+)\):\s*(.+)$/;
   const byFile = new Map<string, { line: number; msg: string }[]>();
   
   for (const line of clean.split('\n')) {
-    const match = line.match(errorPattern);
+    const match = line.match(eslintPattern) || line.match(tscPattern);
     if (match) {
       const [, file, lineNum, , msg] = match;
       const shortFile = compactPath(file, 40);
