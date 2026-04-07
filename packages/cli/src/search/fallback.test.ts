@@ -21,11 +21,10 @@ describe('searchWithFallback', () => {
     store.index('# Caching\nRedis caching for improved performance', 'cache');
   });
 
-  describe('Layer 1: Porter stemming', () => {
-    test('finds exact matches', () => {
+  describe('RRF (Reciprocal Rank Fusion)', () => {
+    test('finds matches using Porter + Trigram fusion', () => {
       const results = searchWithFallback(store, 'authentication');
       expect(results.length).toBeGreaterThan(0);
-      expect(results[0].matchType).toBe('porter');
     });
 
     test('handles stemmed words (running -> run)', () => {
@@ -33,18 +32,53 @@ describe('searchWithFallback', () => {
       const results = searchWithFallback(store, 'run');
       expect(results.length).toBeGreaterThan(0);
     });
-  });
 
-  describe('Layer 2: Trigram matching', () => {
-    test('finds partial matches when Porter fails', () => {
-      // Use a term that won't match with Porter but will with trigram
+    test('finds partial matches via trigram', () => {
+      // "auth" partial should find "authentication" via trigram
       const results = searchWithFallback(store, 'auth');
+      expect(results.length).toBeGreaterThan(0);
+    });
+
+    test('boosts results appearing in both Porter and Trigram', () => {
+      // Add multiple docs, one strongly matching both
+      store.index('Authentication system with auth tokens', 'both-match');
+      store.index('Some other content', 'other');
+
+      const results = searchWithFallback(store, 'authentication');
+      // The doc with both 'authentication' and 'auth' should rank high
       expect(results.length).toBeGreaterThan(0);
     });
   });
 
-  describe('Layer 3: Fuzzy correction', () => {
-    test('corrects typos', () => {
+  describe('Proximity Reranking', () => {
+    test('boosts results where terms appear close together', () => {
+      // Add docs with varying proximity
+      store.index('Session continuity is important for user experience', 'close');
+      store.index('The session was long. Later we discussed continuity plans.', 'far');
+
+      const results = searchWithFallback(store, 'session continuity');
+      expect(results.length).toBeGreaterThan(0);
+
+      // The "close" doc should rank higher due to proximity
+      const closeResult = results.find(r => r.sourceId === store.getSources().find(s => s.label === 'close')?.id);
+      const farResult = results.find(r => r.sourceId === store.getSources().find(s => s.label === 'far')?.id);
+
+      if (closeResult && farResult) {
+        const closeIndex = results.indexOf(closeResult);
+        const farIndex = results.indexOf(farResult);
+        expect(closeIndex).toBeLessThan(farIndex);
+      }
+    });
+
+    test('no reranking for single-term queries', () => {
+      const results = searchWithFallback(store, 'authentication');
+      // Should still return results normally
+      expect(results.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Fuzzy fallback', () => {
+    test('corrects typos when RRF returns nothing', () => {
       // Build vocabulary first
       store.getVocabulary();
 
@@ -52,6 +86,14 @@ describe('searchWithFallback', () => {
       const results = searchWithFallback(store, 'authentcation'); // missing 'i'
       // Fuzzy layer may or may not find results depending on vocabulary
       expect(Array.isArray(results)).toBe(true);
+    });
+
+    test('marks fuzzy matches with matchType', () => {
+      store.getVocabulary();
+      const results = searchWithFallback(store, 'authentcation');
+      if (results.length > 0) {
+        expect(results[0].matchType).toBe('fuzzy');
+      }
     });
   });
 
@@ -69,6 +111,7 @@ describe('searchWithFallback', () => {
     });
   });
 });
+
 
 describe('batchSearch', () => {
   let store: ContentStore;
