@@ -637,8 +637,7 @@ function formatSearchResults(
     } else {
       output.push(`  "${query}" (${results.length} matches):`);
       for (const r of results.slice(0, 3)) {
-        const snippet = r.snippet.length > 300 ? r.snippet.slice(0, 300) + '...' : r.snippet;
-        output.push(`    ${snippet}`);
+        output.push(`    ${extractSnippet(r.snippet, query, 300)}`);
         output.push('');
       }
     }
@@ -863,6 +862,52 @@ function formatToolResult(value: unknown, maxWidth: number = 120): string {
   // Object/Array → compact JSON (indent=2 for readability but not excessive)
   return safeStringify(value, 2);
 }
+
+/**
+ * Extract a smart snippet with window around the match (Smart Snippets feature)
+ * Instead of truncating from start, finds the match and extracts context around it.
+ */
+function extractSnippet(text: string, query: string, windowSize: number = 300): string {
+  const lower = text.toLowerCase();
+  // Split query into words and find first match
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  
+  let matchIdx = -1;
+  let matchedWord = query;
+  
+  // Find first matching word
+  for (const word of queryWords) {
+    const idx = lower.indexOf(word);
+    if (idx !== -1 && (matchIdx === -1 || idx < matchIdx)) {
+      matchIdx = idx;
+      matchedWord = word;
+    }
+  }
+  
+  // Fallback to simple query match
+  if (matchIdx === -1) {
+    matchIdx = lower.indexOf(query.toLowerCase());
+  }
+  
+  // No match found - return from start
+  if (matchIdx === -1) {
+    return text.length <= windowSize 
+      ? text 
+      : text.slice(0, windowSize) + '...';
+  }
+  
+  // Calculate window around match
+  const halfWindow = Math.floor(windowSize / 2);
+  const start = Math.max(0, matchIdx - halfWindow);
+  const end = Math.min(text.length, matchIdx + matchedWord.length + halfWindow);
+  
+  // Extract and add ellipsis if truncated
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < text.length ? '...' : '';
+  
+  return prefix + text.slice(start, end).trim() + suffix;
+}
+
 
 
 /**
@@ -2143,7 +2188,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               
               outputParts.push('');
               outputParts.push(`Indexed as "${sourceLabel}". Search results for "${params.intent}":`);
-              searchResults.forEach(r => outputParts.push(`- ${r.title}: ${r.snippet.slice(0, 150)}...`));
+              searchResults.forEach(r => outputParts.push(`- ${r.title}: ${extractSnippet(r.snippet, params.intent, 200)}`));
             }
 
             trackToolUsage('mcx_execute');
@@ -2353,7 +2398,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
                 formatStoredAs(params.storeAs),
                 '',
                 `Search results for "${params.intent}":`,
-                ...searchResults.map(r => `- ${r.title}: ${r.snippet.slice(0, 200)}...`),
+                ...searchResults.map(r => `- ${r.title}: ${extractSnippet(r.snippet, params.intent, 200)}`),
                 '',
                 `Distinctive terms: ${terms.slice(0, 15).join(', ')}`,
                 '',
@@ -2699,11 +2744,12 @@ Use storeAs to save results and return summary only:
             state.set(params.storeAs, searchResult);
           }
 
+          const queryStr = params.queries.join(' ');
           const rawOutput = [
             `Found ${allResults.length} results for: ${params.queries.join(', ')}`,
             params.source ? `Source: ${params.source}` : `Searching ${sources.length} sources`,
             '',
-            ...allResults.slice(0, 5).map(r => `## ${r.title} (${r.sourceLabel})\n${r.snippet.slice(0, 200)}...`),
+            ...allResults.slice(0, 5).map(r => `## ${r.title} (${r.sourceLabel})\n${extractSnippet(r.snippet, queryStr, 250)}`),
             allResults.length > 5 ? `\n... +${allResults.length - 5} more in $search.results` : '',
           ].join('\n');
 
@@ -3255,7 +3301,7 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
             for (const [query, searchResults] of Object.entries(batchResults)) {
               output.push(`### "${query}" (${searchResults.length} results)`);
               for (const r of searchResults) {
-                output.push(`- ${r.title}: ${r.snippet.slice(0, 150)}...`);
+                output.push(`- ${r.title}: ${extractSnippet(r.snippet, query, 150)}`);
               }
               output.push("");
               results.searches.push({ query, count: searchResults.length });
@@ -3653,7 +3699,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
               formatStoredAs(params.storeAs),
               '',
               `Search results for "${params.intent}":`,
-              ...searchResults.map(r => `- ${r.title}: ${r.snippet.slice(0, 200)}...`),
+              ...searchResults.map(r => `- ${r.title}: ${extractSnippet(r.snippet, params.intent, 200)}`),
               '',
               `Distinctive terms: ${terms.slice(0, 15).join(', ')}`,
               '',
