@@ -3946,8 +3946,23 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           newContent = [...before, new_string, ...after].join('\n');
         }
         // String mode: find and replace
-        // String mode: find and replace
         else if (old_string) {
+          // Detect truncated strings (from mcx_file output with "..." markers)
+          // Pattern: word followed by ... at end, or ... followed by word (e.g., "params.int..." or "...content")
+          const truncationPattern = /\w\.{3}$|\.{3}\w/;
+          if (truncationPattern.test(old_string)) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `⚠️ old_string appears truncated (contains '...').\n\n` +
+                      `This usually happens when copying from truncated mcx_file output.\n` +
+                      `Use line mode instead: mcx_edit({ start: N, end: M, new_string: "..." })\n\n` +
+                      `To get line numbers: mcx_file({ path: "...", code: "grep($var, 'pattern')" })`
+              }],
+              isError: true,
+            };
+          }
+          
           // Simple approach: normalize everything to LF, do replacement, then restore CRLF if needed
           const hasCRLF = content.includes('\r\n');
           const contentLF = content.replace(/\r\n/g, '\n');
