@@ -548,22 +548,7 @@ function detectInefficiency(tool: string, file?: string): string | null {
   }
 
   // Pattern: Multiple greps - now handled by progressive tips in mcx_grep handler (Optimization #9)
-
-  // Pattern: Same file read 3+ times WITHOUT edits (suggest storeAs or reuse)
-  // Skip if user needs to reload after edit (that's legitimate)
-  if (tool === 'mcx_file' && file && !needsReloadForLineMode) {
-    const sameFileReads = recent.filter(t => t.tool === 'mcx_file' && t.file === file);
-    const hasEditBetween = recent.some(t => t.tool === 'mcx_edit' && t.file === file);
-    // Only warn if reading 3+ times without edits (pure read inefficiency)
-    if (sameFileReads.length >= 2 && !hasEditBetween) {
-      // Check if file was already stored (has storeTime)
-      const alreadyStored = storeTime !== undefined;
-      if (alreadyStored) {
-        return `💡 File already loaded. Use existing variable and helpers instead of re-reading.`;
-      }
-      return `💡 Reading "${basename(file)}" again. Use storeAs to keep it in memory.`;
-    }
-  }
+  // Pattern: Same file read - now ENFORCED in mcx_file handler (Optimization #13)
 
   // Pattern H: Detect edit→build/test→edit cycle (suggest batching edits before running build)
   // Only triggers when mcx_execute (build/lint/test) is run between edits, NOT for mcx_file reads
@@ -4112,26 +4097,23 @@ File path available as FILE_PATH variable.
         const editTime = fileEditTime.get(resolvedPath);
         const isStale = storeTime && editTime && editTime > storeTime;
 
-        // Rule 1: If file already stored and no storeAs provided, block re-read
-        if (existingVar && !params.storeAs && !params.code) {
-          return {
-            content: [{ type: "text" as const, text: `❌ Already stored as $${existingVar}. Use helpers:\n` +
-              `  grep($${existingVar}, 'pattern')\n` +
-              `  around($${existingVar}, lineNum, ctx)\n` +
-              `  lines($${existingVar}, start, end)\n` +
-              (isStale ? `\n⚠️ Note: $${existingVar} is stale (file edited). Use storeAs to refresh.` : '')
-            }],
-            isError: true,
-          };
+        // Rule 1: If file already stored, MUST use existing variable (block ALL re-reads)
+        if (existingVar && !params.storeAs) {
+          const msg = isStale
+            ? `❌ $${existingVar} is stale (file edited). Re-store to refresh:\n` +
+              `  mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })`
+            : `❌ Already stored as $${existingVar}. Use helpers:\n` +
+              `  grep($${existingVar}, 'pattern'), lines($${existingVar}, start, end)`;
+          return { content: [{ type: "text" as const, text: msg }], isError: true };
         }
 
-        // Rule 2: If no storeAs and no code, require storeAs (except for shell/python with code)
-        if (!params.storeAs && !params.code && params.language === 'js') {
+        // Rule 2: JS mode requires storeAs (block raw reads and code without store)
+        if (!params.storeAs && params.language === 'js') {
           const suggestedVar = basename(resolvedPath).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
           return {
             content: [{ type: "text" as const, text: `❌ Use storeAs to read files:\n` +
               `  mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })\n\n` +
-              `Then query with helpers: grep($${suggestedVar}, 'pattern'), around($${suggestedVar}, line, ctx)`
+              `Then query: grep($${suggestedVar}, 'pattern'), lines($${suggestedVar}, start, end)`
             }],
             isError: true,
           };
