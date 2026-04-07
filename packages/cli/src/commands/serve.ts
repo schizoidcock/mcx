@@ -2584,7 +2584,11 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         // Shell execution mode
         if (params.shell) {
           const cmd = params.shell.trim();
-          const timeout = params.timeout ?? 30000;
+          
+          // Auto-detect long-running commands and increase timeout
+          const isLongRunning = /\b(build|install|test|compile|bundle|deploy|migrate)\b/i.test(cmd);
+          const defaultTimeout = isLongRunning ? 120000 : 30000; // 2min for builds, 30s otherwise
+          const timeout = params.timeout ?? defaultTimeout;
           
           // === Enforcement: Redirect file ops to MCX tools ===
           const shellEnforcement = enforceShellRedirects(cmd);
