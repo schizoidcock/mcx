@@ -729,7 +729,7 @@ function truncateLogs(logs: string[]): string[] {
 }
 
 // ============================================================================
-// Grep Output Formatting (RTK-derived optimizations)
+// Grep Output Formatting
 // ============================================================================
 
 /** Max line width for grep output */
@@ -776,7 +776,7 @@ function compactPath(filePath: string, maxLen = GREP_MAX_PATH_LEN): string {
 
 /**
  * Truncate a line with window centered around match.
- * RTK pattern: 1/3 context before, 2/3 after the match.
+ * Pattern: 1/3 context before, 2/3 after the match.
  */
 function cleanLine(line: string, maxLen = GREP_MAX_LINE_WIDTH, pattern?: string): string {
   const trimmed = line.trim();
@@ -5615,7 +5615,7 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
         const fileKeys = [...new Set(items.map(i => i.relativePath))];
         const proxScores = lastAccessedDir ? new Map(fileKeys.map(f => [f, getProximityScore(f)])) : null;
 
-        // Format with RTK-derived optimizations (compactPath, cleanLine, +N hidden)
+        // Format with compactPath, cleanLine, +N hidden
         const { output: formattedOutput, hiddenMatches } = formatGrepMCX(
           items,
           totalMatched,
