@@ -2534,6 +2534,12 @@ Use mcx_search({ adapter: "name" }) for method details.
 - count(arr, 'field') - Count by field
 - sum(arr, 'field') - Sum numeric field
 
+### File Helpers (require mcx_file storeAs first!)
+WRONG: mcx_execute({ code: "grep($file, 'pattern')" }) ← $file undefined
+RIGHT: mcx_file({ path, storeAs: "f" }) THEN mcx_execute({ code: "grep($f, 'pattern')" })
+
+Available after storeAs: grep($var, pattern), lines($var, start, end), around($var, line, ctx), block($var, line), outline($var)
+
 ### Variables
 - Results auto-stored as $result
 - storeAs: "name" → $name
@@ -2890,15 +2896,28 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         trackSandboxIO(result.tracking);
 
         if (!result.success) {
-          const errorMsg = result.error
+          let errorMsg = result.error
             ? `${result.error.name}: ${result.error.message}`
             : "Unknown error";
-          const truncatedLogs = truncateLogs(result.logs);
+          
+          // Enhance ReferenceError for undefined variables - suggest mcx_file storeAs
+          let isUndefinedVarError = false;
+          if (result.error?.name === 'ReferenceError' && result.error.message?.includes('is not defined')) {
+            const varMatch = result.error.message.match(/\$?(\w+) is not defined/);
+            if (varMatch?.[1]) {
+              const v = varMatch[1];
+              errorMsg += `\n💡 Store first: mcx_file({ path: "...", storeAs: "${v}" }), then grep($${v}, ...)`;
+              isUndefinedVarError = true;
+            }
+          }
+          
+          // Skip logs/context for undefined var errors (not helpful)
+          const truncatedLogs = isUndefinedVarError ? [] : truncateLogs(result.logs);
           const logsSection = truncatedLogs.length > 0 ? `\n\nLogs:\n${truncatedLogs.join("\n")}` : "";
 
-          // Auto-fetch error context using FFF if available
+          // Auto-fetch error context using FFF if available (skip for undefined var errors)
           let contextSection = "";
-          if (fileFinder && result.error?.stack) {
+          if (!isUndefinedVarError && fileFinder && result.error?.stack) {
             // Parse stack for file:line patterns (e.g., "at file.ts:42:10")
             const fileLinePattern = /at\s+(?:[^\s]+\s+)?\(?([^:]+):(\d+)(?::\d+)?\)?/g;
             const matches = [...result.error.stack.matchAll(fileLinePattern)];
@@ -4032,6 +4051,10 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
     {
       title: "Process File",
       description: `Process file with code. Supports JavaScript (default), shell, and Python.
+
+**IMPORTANT: Use storeAs to read files, then query with helpers.**
+- mcx_file({ path, storeAs: "x" }) → then grep($x, 'pattern'), lines($x, 10, 20)
+- WRONG: mcx_file({ path, code: "grep($file, ...)" }) ← use storeAs first
 
 Supports fuzzy paths - partial names are resolved via FFF:
 - mcx_file({ path: "serve", code: "..." }) → serve.ts
