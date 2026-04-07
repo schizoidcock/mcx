@@ -3281,12 +3281,14 @@ Use storeAs to save results and return summary only:
           }
 
           const queryStr = params.queries.join(' ');
+          const SEARCH_MAX_RESULTS = 5;
+          const hiddenCount = Math.max(0, allResults.length - SEARCH_MAX_RESULTS);
           const rawOutput = [
-            `Found ${allResults.length} results for: ${params.queries.join(', ')}`,
+            `${allResults.length} results for: ${params.queries.join(', ')}${hiddenCount > 0 ? ` (showing ${SEARCH_MAX_RESULTS}, +${hiddenCount} hidden)` : ''}`,
             params.source ? `Source: ${params.source}` : `Searching ${sources.length} sources`,
             '',
-            ...allResults.slice(0, 5).map(r => `## ${r.title} (${r.sourceLabel})\n${extractSnippet(r.snippet, queryStr, 250)}`),
-            allResults.length > 5 ? `\n... +${allResults.length - 5} more in $search.results` : '',
+            ...allResults.slice(0, SEARCH_MAX_RESULTS).map(r => `## ${r.title} (${r.sourceLabel})\n${extractSnippet(r.snippet, queryStr, 150)}`),
+            hiddenCount > 0 ? `\n→ +${hiddenCount} more in $search.results` : '',
           ].join('\n');
 
           const { text: output, truncated } = enforceCharacterLimit(rawOutput);
@@ -3737,7 +3739,9 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
             }
 
             if (stdout.trim()) {
-              output.push(stdout.trim());
+              // Try grep formatting for shell output
+              const grepFormatted = detectAndFormatGrepOutput(stdout);
+              output.push(grepFormatted || stdout.trim());
             }
             if (stderr.trim()) {
               output.push(`stderr: ${stderr.trim()}`);
