@@ -26,6 +26,7 @@ const IMPORT_REGEX = /(?:import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]|require\s*\
 const RESOLVE_EXTENSIONS = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"];
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
+import { applyHybridFilter } from "./filters.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -2659,39 +2660,28 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               outputParts.push(`✗ Exit code ${exitCode} (${duration}ms)`);
             }
 
-            // Process stdout: try grep detection FIRST (before truncation)
+            // Process output with hybrid filter (RTK-style: declarative + hardcoded + grep + 60/40)
             let finalStdout = stdout.trim();
             let finalStderr = stderr.trim();
             
-            // Try grep detection on FULL output (truncation would break it)
-            const grepFormatted = finalStdout ? detectAndFormatGrepOutput(finalStdout) : null;
+            // Apply hybrid filter to stdout (includes grep detection and smart truncation)
+            const filteredStdout = finalStdout ? applyHybridFilter(cmd, finalStdout, detectAndFormatGrepOutput) : '';
             
-            // Apply truncation only if grep detection failed
-            if (!grepFormatted && params.truncate) {
-              const maxLen = params.maxStringLength ?? 500;
-              if (finalStdout.length > maxLen) {
-                finalStdout = finalStdout.slice(0, maxLen) + `\n... (${finalStdout.length - maxLen} chars truncated)`;
-              }
-            }
-            
-            // Always truncate stderr if needed
-            if (params.truncate) {
-              const maxLen = params.maxStringLength ?? 500;
-              if (finalStderr.length > maxLen) {
-                finalStderr = finalStderr.slice(0, maxLen) + `\n... (${finalStderr.length - maxLen} chars truncated)`;
-              }
-            }
+            // Truncate stderr separately
+            const filteredStderr = (params.truncate && finalStderr.length > 500)
+              ? finalStderr.slice(0, 500) + `\n... (${finalStderr.length - 500} chars truncated)`
+              : finalStderr;
 
             // Add output sections
-            if (finalStdout || grepFormatted) {
+            if (filteredStdout) {
               outputParts.push('');
-              outputParts.push(grepFormatted || finalStdout);
+              outputParts.push(filteredStdout);
             }
-            if (finalStderr) {
+            if (filteredStderr) {
               outputParts.push('');
-              outputParts.push(`stderr:\n${finalStderr}`);
+              outputParts.push(`stderr:\n${filteredStderr}`);
             }
-            if (!finalStdout && !finalStderr) {
+            if (!filteredStdout && !filteredStderr) {
               outputParts.push('(no output)');
             }
 
