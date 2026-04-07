@@ -162,7 +162,21 @@ export class ContentStore {
     options: SearchOptions
   ): SearchResult[] {
     const limit = options.limit ?? 10;
-    const sourceFilter = options.sourceId ? 'AND source_id = ?' : '';
+    
+    // Build source filter for single sourceId or multiple sourceIds
+    let sourceFilter = '';
+    const params: (string | number)[] = [query];
+    
+    if (options.sourceIds && options.sourceIds.length > 0) {
+      const placeholders = options.sourceIds.map(() => '?').join(', ');
+      sourceFilter = `AND source_id IN (${placeholders})`;
+      params.push(...options.sourceIds);
+    } else if (options.sourceId) {
+      sourceFilter = 'AND source_id = ?';
+      params.push(options.sourceId);
+    }
+    
+    params.push(limit);
     const bm25Args = table === 'chunks' ? '1.0, 0.75' : '';
 
     const sql = `
@@ -178,8 +192,6 @@ export class ContentStore {
       ORDER BY score
       LIMIT ?
     `;
-
-    const params = options.sourceId ? [query, options.sourceId, limit] : [query, limit];
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
       title: string;

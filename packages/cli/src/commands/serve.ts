@@ -364,12 +364,42 @@ const FULL_FILE_WARNING_BYTES = 5000;
 const FULL_FILE_CODE = new Set(['$file', '$file.text', '$file.lines']);
 /** Threshold for auto-indexing file content in mcx_file (10KB) */
 const FILE_INDEX_THRESHOLD = 10_000;
+/** Threshold for auto-indexing large outputs without intent (50KB) */
+const AUTO_INDEX_THRESHOLD = 50_000;
 /** Hard cap on shell/process output to prevent OOM (100MB) */
 const HARD_CAP_BYTES = 100 * 1024 * 1024;
 /** Cross-platform shell path */
 const SHELL_PATH = process.platform === 'win32' 
   ? 'C:\\Program Files\\Git\\bin\\sh.exe' 
   : '/bin/sh';
+
+/**
+ * Kill process and all its children (tree kill).
+ * On Windows, proc.kill() doesn't kill child processes, leaving zombies.
+ */
+function killTree(proc: { pid: number; kill: () => void }): void {
+  try {
+    if (process.platform === 'win32') {
+      // taskkill /T kills entire process tree, /F forces termination
+      Bun.spawnSync(['taskkill', '/T', '/F', '/PID', String(proc.pid)], { 
+        stdout: 'ignore', 
+        stderr: 'ignore' 
+      });
+    } else {
+      // On Unix, kill process group (negative PID)
+      try {
+        process.kill(-proc.pid, 'SIGKILL');
+      } catch {
+        // Fallback to regular kill if process group kill fails
+        killTree(proc);
+      }
+    }
+  } catch {
+    // Last resort fallback
+    killTree(proc);
+  }
+}
+
 /** Dangerous env vars to filter from shell execution */
 const DENIED_ENV = new Set([
   // Shell — auto-execute scripts
@@ -2122,7 +2152,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             const raceResult = await Promise.race([exitPromise, timeoutPromise]);
             
             if (raceResult === 'timeout') {
-              proc.kill();
+              killTree(proc);
               return {
                 content: [{ type: "text" as const, text: `Shell command timed out after ${timeout}ms` }],
                 isError: true,
@@ -2195,7 +2225,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             }
 
             // Intent auto-index for large outputs
-            if (params.intent && (stdout.length + stderr.length) > INTENT_THRESHOLD) {
+            if (params.intent && totalBytes > INTENT_THRESHOLD) {
               const store = getContentStore();
               const sourceLabel = params.storeAs || `shell:${cmd.slice(0, 30)}`;
               const content = stdout + (stderr ? `\n\n--- stderr ---\n${stderr}` : '');
@@ -2205,6 +2235,18 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               outputParts.push('');
               outputParts.push(`Indexed as "${sourceLabel}". Search results for "${params.intent}":`);
               searchResults.forEach(r => outputParts.push(`- ${r.title}: ${extractSnippet(r.snippet, params.intent, 200)}`));
+            } else if (!params.intent && totalBytes > AUTO_INDEX_THRESHOLD) {
+              // Auto-index híbrido: large outputs (>50KB) auto-indexed even without intent
+              try {
+                const store = getContentStore();
+                const sourceLabel = params.storeAs || `shell:${cmd.slice(0, 30)}`;
+                const content = stdout + (stderr ? `\n\n--- stderr ---\n${stderr}` : '');
+                store.index(content, sourceLabel, { contentType: 'plaintext' });
+                outputParts.push('');
+                outputParts.push(`📦 Auto-indexed as "${sourceLabel}" (${Math.round(totalBytes/1024)}KB). Use mcx_search to query.`);
+              } catch {
+                // Indexing failed silently
+              }
             }
 
             trackToolUsage('mcx_execute');
@@ -2443,6 +2485,20 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           }
         }
 
+        // Auto-index híbrido: large outputs (>50KB) auto-indexed even without intent
+        // This gives both $result (code access) + FTS5 (search access)
+        const serialized = safeStringify(valueWithoutImages);
+        let autoIndexedLabel: string | null = null;
+        if (!params.intent && serialized.length > AUTO_INDEX_THRESHOLD) {
+          try {
+            const store = getContentStore();
+            autoIndexedLabel = generateExecutionLabel(params.storeAs);
+            store.index(serialized, autoIndexedLabel, { contentType: 'plaintext' });
+          } catch {
+            autoIndexedLabel = null;
+          }
+        }
+
         const summarized = summarizeResult(valueWithoutImages, {
           enabled: params.truncate,
           maxItems: params.maxItems,
@@ -2458,6 +2514,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
 
         const rawTextOutput = [
           storeMsg,
+          autoIndexedLabel ? `📦 Auto-indexed as "${autoIndexedLabel}" (${Math.round(serialized.length/1024)}KB). Use mcx_search to query.` : "",
           truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}` : "",
           summarized.truncated
             ? `Result (${summarized.originalSize}):\n${formatToolResult(summarized.value)}`
@@ -2483,9 +2540,12 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         // Claude Code only shows structuredContent to user (ignores content)
         // This is a client limitation, not MCP spec behavior
         // Format result as readable string - best we can do
+        const autoIndexMsg = autoIndexedLabel 
+          ? `📦 Auto-indexed as "${autoIndexedLabel}" (${Math.round(serialized.length/1024)}KB). Use mcx_search to query.\n\n`
+          : '';
         return { 
           content,
-          toolResult: formatToolResult(summarized.value),
+          toolResult: autoIndexMsg + formatToolResult(summarized.value),
           _rawBytes: summarized.rawBytes 
         };
       } catch (error) {
@@ -3172,6 +3232,9 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
         executions: Array<{ storeAs?: string; success: boolean; error?: string }>;
         searches: Array<{ query: string; count: number }>;
       } = { commands: [], executions: [], searches: [] };
+      
+      // Track sourceIds for scoped queries
+      const batchSourceIds: number[] = [];
 
       // Run shell commands first
       if (params.commands && params.commands.length > 0) {
@@ -3197,7 +3260,7 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
             const raceResult = await Promise.race([exitPromise, timeoutPromise]);
 
             if (raceResult === 'timeout') {
-              proc.kill();
+              killTree(proc);
               output.push(`[TIMEOUT after ${timeout}ms]`);
               output.push('');
               results.commands.push({ label: cmd.label, success: false, error: 'timeout' });
@@ -3272,7 +3335,8 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
               if (serialized.length > INTENT_THRESHOLD) {
                 try {
                   const sourceLabel = generateExecutionLabel(exec.storeAs);
-                  store.index(serialized, sourceLabel, { contentType: 'plaintext' });
+                  const sourceId = store.index(serialized, sourceLabel, { contentType: 'plaintext' });
+                  batchSourceIds.push(sourceId);
                   output.push(`- ${exec.storeAs || 'exec'}: Indexed (${serialized.length} chars)`);
                 } catch {
                   // Indexing failed, still report success
@@ -3309,15 +3373,23 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
         if (sources.length === 0) {
           output.push("No indexed content available.");
         } else {
+          // Determine search scope:
+          // 1. User-specified source takes priority
+          // 2. Otherwise, scope to batch-created sources if any
+          // 3. Otherwise, search all indexed content
           let sourceId: number | undefined;
+          let sourceIds: number[] | undefined;
+          
           if (params.source) {
             const sourceLabel = params.source;
             const source = sources.find(s => s.label === sourceLabel || s.label.includes(sourceLabel));
             sourceId = source?.id;
+          } else if (batchSourceIds.length > 0) {
+            sourceIds = batchSourceIds;
           }
 
           try {
-            const batchResults = batchSearch(store, params.queries, { limit: 5, sourceId });
+            const batchResults = batchSearch(store, params.queries, { limit: 5, sourceId, sourceIds });
             for (const [query, searchResults] of Object.entries(batchResults)) {
               output.push(`### "${query}" (${searchResults.length} results)`);
               for (const r of searchResults) {
@@ -3611,7 +3683,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             const raceResult = await Promise.race([exitPromise, timeoutPromise]);
 
             if (raceResult === 'timeout') {
-              proc.kill();
+              killTree(proc);
               result = { success: false, error: { message: 'Shell command timed out after 30s' } };
             } else {
               const stdout = await new Response(proc.stdout).text();
@@ -3649,7 +3721,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             const raceResult = await Promise.race([exitPromise, timeoutPromise]);
 
             if (raceResult === 'timeout') {
-              proc.kill();
+              killTree(proc);
               result = { success: false, error: { message: 'Python command timed out after 30s' } };
             } else {
               const stdout = await new Response(proc.stdout).text();

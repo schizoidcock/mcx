@@ -28,6 +28,7 @@ export interface Source {
 export interface SearchOptions {
   limit?: number;
   sourceId?: number;
+  sourceIds?: number[];  // For scoped queries across multiple sources
   sourceLabel?: string;
 }
 
