@@ -434,6 +434,22 @@ export function smartTruncate(output: string, maxChars: number = 4000): string {
 // ============================================================================
 
 /**
+ * Extract the main command from compound commands (cd x && cmd, cmd1 && cmd2)
+ * For filter matching, we want the last meaningful command.
+ */
+function extractMainCommand(cmd: string): string {
+  // Split by && and get the last non-cd command
+  const parts = cmd.split(/\s*&&\s*/);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i].trim();
+    if (!part.startsWith('cd ')) {
+      return part;
+    }
+  }
+  return parts[parts.length - 1]?.trim() || cmd;
+}
+
+/**
  * Apply hybrid filter - tries declarative, hardcoded, grep detection, then truncation
  */
 export function applyHybridFilter(
@@ -441,30 +457,33 @@ export function applyHybridFilter(
   output: string,
   detectGrepOutput?: (output: string) => string | null
 ): string {
-  // Skip if output is small
-  if (output.length < 500) return output;
+  // Extract main command for matching (handles "cd x && git status")
+  const mainCmd = extractMainCommand(cmd);
   
-  // 1. Try declarative filters
-  const declarative = applyDeclarativeFilter(cmd, output);
+  // 1. Try declarative filters FIRST (always, regardless of size)
+  const declarative = applyDeclarativeFilter(mainCmd, output);
   if (declarative) return declarative;
   
+  // Skip fallbacks if output is small (no point in truncating/formatting)
+  if (output.length < 500) return output;
+  
   // 2. Try hardcoded formatters
-  if (/\bgit\s+(diff|show)\b/.test(cmd)) {
+  if (/\bgit\s+(diff|show)\b/.test(mainCmd)) {
     const formatted = formatGitDiff(output);
     if (formatted) return formatted;
   }
   
-  if (/\b(vitest|jest|playwright|test)\b/i.test(cmd)) {
+  if (/\b(vitest|jest|playwright|test)\b/i.test(mainCmd)) {
     const formatted = formatTestOutput(output);
     if (formatted) return formatted;
   }
   
-  if (/\b(tsc|eslint|biome|lint)\b/i.test(cmd)) {
+  if (/\b(tsc|eslint|biome|lint)\b/i.test(mainCmd)) {
     const formatted = formatLintOutput(cmd, output);
     if (formatted) return formatted;
   }
   
-  if (/\bdocker\s+logs\b/.test(cmd)) {
+  if (/\bdocker\s+logs\b/.test(mainCmd)) {
     const formatted = formatDockerLogs(output);
     if (formatted) return formatted;
   }
