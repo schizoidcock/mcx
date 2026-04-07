@@ -1710,8 +1710,11 @@ const paths = (obj, prefix = '', _depth = 0) => {
   // Execution counter (instance-scoped like searchCallCount)
   let executionCounter = 0;
 
-  // Network byte tracking
+  // I/O tracking (FS reads + network)
+  let fsBytesRead = 0;
+  let fsFilesRead = 0;
   let networkBytesIn = 0;
+  let networkRequests = 0;
   let networkBytesOut = 0;
 
   // Token tracking for context efficiency stats
@@ -1746,6 +1749,19 @@ const paths = (obj, prefix = '', _depth = 0) => {
   function trackNetworkBytes(bytesIn: number, bytesOut: number = 0): void {
     networkBytesIn += bytesIn;
     networkBytesOut += bytesOut;
+  }
+
+  function trackFsBytes(bytes: number): void {
+    fsBytesRead += bytes;
+  }
+
+  function trackSandboxIO(tracking?: { fsBytes: number; fsCount: number; netBytes: number; netCount: number }): void {
+    if (tracking) {
+      fsBytesRead += tracking.fsBytes;
+      fsFilesRead += tracking.fsCount;
+      networkBytesIn += tracking.netBytes;
+      networkRequests += tracking.netCount;
+    }
   }
 
   function formatBytes(bytes: number): string {
@@ -2292,6 +2308,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           variables: state.getAllPrefixed(),
           env: config?.env || {},
         });
+
+        // Track I/O bytes from sandbox (FS reads + network)
+        trackSandboxIO(result.tracking);
 
         if (!result.success) {
           const errorMsg = result.error
@@ -3240,6 +3259,7 @@ Output is auto-indexed with markdown headings (# label) for chunking.`,
               variables: state.getAllPrefixed(),
               env: config?.env || {},
             });
+            trackSandboxIO(result.tracking);
 
             if (result.success) {
               // Store if requested
@@ -3655,6 +3675,7 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             variables: { ...state.getAllPrefixed(), $file },
             env: config?.env || {},
           });
+          trackSandboxIO(sandboxResult.tracking);
           result = sandboxResult;
         }
 
@@ -4273,6 +4294,11 @@ Examples:
       }
       
       output.push('⏱️ Session: ' + sessionTime + ' | ' + executionCounter + ' executions | ' + searchCallCount + ' searches');
+      if (fsBytesRead > 0 || networkBytesIn > 0) {
+        output.push('🔒 Sandbox I/O');
+        if (fsBytesRead > 0) output.push('   FS reads: ' + formatBytes(fsBytesRead) + ' across ' + fsFilesRead + ' file' + (fsFilesRead !== 1 ? 's' : ''));
+        if (networkBytesIn > 0) output.push('   Network: ' + formatBytes(networkBytesIn) + ' across ' + networkRequests + ' request' + (networkRequests !== 1 ? 's' : ''));
+      }
       if (variables.length > 0) output.push('📦 Variables: ' + variables.map(v => '$' + v).join(', '));
       if (sources.length > 0) output.push('📚 Indexed: ' + sources.length + ' sources, ' + totalChunks + ' chunks');
 

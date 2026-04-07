@@ -71,7 +71,20 @@ export function isUrlAllowed(url: string, policy: NetworkPolicy): boolean {
  */
 export function generateNetworkIsolationCode(policy: NetworkPolicy): string {
   if (policy.mode === "unrestricted") {
-    return "// Network: unrestricted";
+    // Wrap fetch to track network bytes (uses __mcx_net_bytes from bun-worker)
+    return `
+// Network: unrestricted (with tracking)
+(function() {
+  const _real_fetch = globalThis.fetch;
+  globalThis.fetch = async function(...args) {
+    const response = await _real_fetch(...args);
+    // Clone to read body for tracking without consuming
+    const clone = response.clone();
+    clone.arrayBuffer().then(buf => { __mcx_net_bytes += buf.byteLength; __mcx_net_count++; }).catch(() => {});
+    return response;
+  };
+})();
+`;
   }
 
   if (policy.mode === "blocked") {
@@ -167,7 +180,11 @@ Object.defineProperty(globalThis, 'EventSource', {
     if (!_isUrlAllowed(urlStr)) {
       throw new Error('Network access blocked: domain not in allowed list.');
     }
-    return _real_fetch(url, options);
+    const response = await _real_fetch(url, options);
+    // Track network bytes (uses __mcx_net_bytes from bun-worker)
+    const clone = response.clone();
+    clone.arrayBuffer().then(buf => { __mcx_net_bytes += buf.byteLength; __mcx_net_count++; }).catch(() => {});
+    return response;
   };
 
   Object.defineProperty(globalThis, 'fetch', {

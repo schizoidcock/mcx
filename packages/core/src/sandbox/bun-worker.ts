@@ -197,6 +197,7 @@ export class BunWorkerSandbox implements ISandbox {
             error: data.error,
             logs: resultLogs,
             executionTime: performance.now() - startTime,
+            tracking: data.tracking,
           });
         }
       };
@@ -242,6 +243,29 @@ export class BunWorkerSandbox implements ISandbox {
     return `
       // Network isolation (injected based on policy)
       ${networkIsolation}
+
+      // FS/Net tracking - counts bytes and operations
+      let __mcx_fs_bytes = 0;
+      let __mcx_fs_count = 0;
+      let __mcx_net_bytes = 0;
+      let __mcx_net_count = 0;
+
+      // Wrap Bun.file to track filesystem reads
+      const _real_bun_file = Bun.file.bind(Bun);
+      Bun.file = function(path) {
+        const file = _real_bun_file(path);
+        // Return a proxy that tracks reads while delegating everything else to original
+        return new Proxy(file, {
+          get(target, prop) {
+            if (prop === 'text') return async () => { const r = await target.text(); __mcx_fs_bytes += r.length; __mcx_fs_count++; return r; };
+            if (prop === 'arrayBuffer') return async () => { const r = await target.arrayBuffer(); __mcx_fs_bytes += r.byteLength; __mcx_fs_count++; return r; };
+            if (prop === 'json') return async () => { const r = await target.json(); __mcx_fs_bytes += JSON.stringify(r).length; __mcx_fs_count++; return r; };
+            if (prop === 'bytes') return async () => { const r = await target.bytes(); __mcx_fs_bytes += r.length; __mcx_fs_count++; return r; };
+            const val = target[prop];
+            return typeof val === 'function' ? val.bind(target) : val;
+          }
+        });
+      };
 
       const logs = [];
       const pendingCalls = new Map();
@@ -672,7 +696,8 @@ export class BunWorkerSandbox implements ISandbox {
                   name: 'OutputSizeError',
                   message: 'Output exceeds 100MB limit. Use pagination or filtering.'
                 },
-                logs
+                logs,
+                tracking: { fsBytes: __mcx_fs_bytes, fsCount: __mcx_fs_count, netBytes: __mcx_net_bytes, netCount: __mcx_net_count }
               });
             } else {
               // Check memory and add warning if high
@@ -681,7 +706,7 @@ export class BunWorkerSandbox implements ISandbox {
               if (heapMB > 256) {
                 logs.push('[WARN] High memory: heap=' + heapMB + 'MB - consider smaller data chunks');
               }
-              self.postMessage({ type: 'result', success: true, value: result, logs });
+              self.postMessage({ type: 'result', success: true, value: result, logs, tracking: { fsBytes: __mcx_fs_bytes, fsCount: __mcx_fs_count, netBytes: __mcx_net_bytes, netCount: __mcx_net_count } });
             }
           } catch (err) {
             // Truncate stack to 5 lines to prevent context bloat
@@ -690,7 +715,8 @@ export class BunWorkerSandbox implements ISandbox {
               type: 'result',
               success: false,
               error: { name: err.name, message: err.message, stack },
-              logs
+              logs,
+              tracking: { fsBytes: __mcx_fs_bytes, fsCount: __mcx_fs_count, netBytes: __mcx_net_bytes, netCount: __mcx_net_count }
             });
           }
         }

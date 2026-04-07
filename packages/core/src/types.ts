@@ -148,6 +148,13 @@ export interface SandboxResult<T = unknown> {
   };
   logs: string[];
   executionTime: number;
+  /** I/O tracking: bytes and operation counts from filesystem and network */
+  tracking?: {
+    fsBytes: number;
+    fsCount: number;
+    netBytes: number;
+    netCount: number;
+  };
 }
 
 /**
