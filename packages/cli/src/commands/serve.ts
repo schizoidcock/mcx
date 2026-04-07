@@ -4871,6 +4871,10 @@ Examples:
 
             const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
             trackToolUsage('mcx_fetch');
+            return {
+              content: [{ type: "text" as const, text: outputText }],
+              _rawBytes: cachedSize,
+            };
           }
         }
 
@@ -4978,6 +4982,10 @@ Examples:
 
         const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
         trackToolUsage('mcx_fetch');
+        return {
+          content: [{ type: "text" as const, text: outputText }],
+          _rawBytes: content.length,
+        };
       } catch (error) {
         logger.error("mcx_fetch error", error);
         return {
