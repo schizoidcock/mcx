@@ -191,6 +191,9 @@ const ExecuteInputSchema = z.object({
   shell: z.string()
     .optional()
     .describe("Shell command to execute (bash/sh). Returns stdout, stderr, exitCode."),
+  python: z.string()
+    .optional()
+    .describe("Python code to execute. Returns stdout, stderr, exitCode."),
   truncate: z.boolean()
     .optional()
     .default(true)
@@ -223,11 +226,11 @@ const ExecuteInputSchema = z.object({
     .default(30000)
     .describe("Shell command timeout in ms (default: 30000, max: 300000)"),
 }).strict().refine(
-  data => data.code || data.shell,
-  "Either code or shell must be provided"
+  data => data.code || data.shell || data.python,
+  "Either code, shell, or python must be provided"
 ).refine(
-  data => !(data.code && data.shell),
-  "Cannot use both code and shell - choose one"
+  data => [data.code, data.shell, data.python].filter(Boolean).length <= 1,
+  "Cannot use multiple: choose one of code, shell, or python"
 );
 
 const RunSkillInputSchema = z.object({
@@ -1331,6 +1334,43 @@ function checkBraceBalance(content: string): number {
   return balance;
 }
 
+/** Enforce shell command redirects to MCX tools. Returns error response or null. */
+function enforceShellRedirects(cmd: string): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+  const blocked = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true as const });
+  
+  // File operations → mcx_file
+  // Match path: has extension (.ts), or path separator (/), or starts with ./
+  const fileMatch = cmd.match(/\b(cat|head|tail|sed|awk|wc)\b.*?(["']?)([^\s|>"']*[\.\/\\][^\s|>"']+)\2/);
+  if (fileMatch) {
+    const filePath = fileMatch[3];
+    const varName = filePath.split(/[\/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'f';
+    return blocked(`❌ Use mcx_file for file operations:\n  mcx_file({ path: "${filePath}", storeAs: "${varName}" })\n  Then: grep($${varName}, 'pattern'), lines($${varName}, start, end)`);
+  }
+  
+  // grep/rg → mcx_grep
+  if (/\b(grep|rg)\s+/.test(cmd)) {
+    return blocked(`❌ Use mcx_grep instead:\n  mcx_grep({ pattern: "...", path: "..." })`);
+  }
+  
+  // find → mcx_find
+  const findMatch = cmd.match(/\bfind\s+["']?([^\s|>"']*)/);
+  if (findMatch) {
+    return blocked(`❌ Use mcx_find instead:\n  mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
+  }
+  
+  return null;
+}
+
+/** Enforce Python code redirects to MCX tools. Returns error response or null. */
+function enforcePythonRedirects(code: string): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+  const blocked = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true as const });
+  // File reading operations → mcx_file
+  if (/\b(open\s*\(|with\s+open|Path\s*\(|pd\.read_\w+|pandas\.read_\w+)/.test(code)) {
+    return blocked(`❌ Use mcx_file for file reading:\n  mcx_file({ path: "...", language: "python", code: "..." })`);
+  }
+  return null;
+}
+
 /**
  * Find duplicate lines within new content being added.
  * Only checks for internal duplicates (e.g., two return statements)
@@ -1343,8 +1383,10 @@ function findDuplicatesInNewString(newString: string): string[] {
   
   for (const line of lines) {
     const trimmed = line.trim();
-    // Skip empty lines, comments, and simple braces
-    if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//')) continue;
+    // Skip empty lines, comments, braces, and common chained methods
+    if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//') ||
+        trimmed === '.optional()' || trimmed.startsWith('.describe(') || 
+        trimmed === '.default(true)' || trimmed === '.default(false)') continue;
     
     const count = (seen.get(trimmed) || 0) + 1;
     seen.set(trimmed, count);
@@ -2510,14 +2552,14 @@ Use mcx_search({ adapter: "name" }) for method details.
 
 ## Mode 2: Shell Execution (shell parameter)
 Run system commands with proper timeout and output capture.
-
-Examples:
 - { shell: "npm test" }
-- { shell: "git status", truncate: false }
+- { shell: "git status" }
 - { shell: "docker ps -a", storeAs: "containers" }
-- { shell: "make build", timeout: 120000 }
 
-Returns: { exitCode, stdout, stderr, duration, command }
+## Mode 3: Python Execution (python parameter)
+Run Python code with proper timeout.
+- { python: "print(2 + 2)" }
+- { python: "import json; print(json.dumps({'a': 1}))" }
 
 ## Large Output Handling
 - intent: Auto-index output >5KB and search. Returns snippets instead of full data.
@@ -2546,6 +2588,10 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         if (params.shell) {
           const cmd = params.shell.trim();
           const timeout = params.timeout ?? 30000;
+          
+          // === Enforcement: Redirect file ops to MCX tools ===
+          const shellEnforcement = enforceShellRedirects(cmd);
+          if (shellEnforcement) return shellEnforcement;
           
           try {
             const startTime = performance.now();
@@ -2686,6 +2732,66 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               content: [{ type: "text" as const, text: `Shell error: ${message}` }],
               isError: true,
             };
+          }
+        }
+
+        // Python execution mode
+        if (params.python) {
+          const code = params.python.trim();
+          const timeout = params.timeout ?? 30000;
+          
+          // === Enforcement: Redirect file ops to mcx_file ===
+          const pythonEnforcement = enforcePythonRedirects(code);
+          if (pythonEnforcement) return pythonEnforcement;
+          
+          try {
+            const startTime = performance.now();
+            const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
+            
+            const proc = Bun.spawn([pythonPath, '-c', code], {
+              cwd: process.cwd(),
+              env: { ...process.env, ...(config?.env || {}) },
+              stdout: 'pipe',
+              stderr: 'pipe',
+            });
+
+            const timeoutPromise = new Promise<'timeout'>((resolve) => 
+              setTimeout(() => resolve('timeout'), timeout)
+            );
+            const exitPromise = proc.exited.then(code => ({ code }));
+            
+            const raceResult = await Promise.race([exitPromise, timeoutPromise]);
+            
+            if (raceResult === 'timeout') {
+              killTree(proc);
+              return {
+                content: [{ type: "text" as const, text: `Python timed out after ${timeout}ms` }],
+                isError: true,
+              };
+            }
+
+            const exitCode = raceResult.code;
+            const stdout = await new Response(proc.stdout).text();
+            const stderr = await new Response(proc.stderr).text();
+            const duration = Math.round(performance.now() - startTime);
+
+            const pythonResult = { exitCode, stdout: stdout.trim(), stderr: stderr.trim(), duration };
+            state.set('result', pythonResult);
+            if (params.storeAs && params.storeAs !== 'result') {
+              state.set(params.storeAs, pythonResult);
+            }
+
+            const outputParts: string[] = [];
+            outputParts.push(exitCode === 0 ? `✓ Python completed in ${duration}ms` : `✗ Exit code ${exitCode} (${duration}ms)`);
+            
+            if (stdout.trim()) outputParts.push('', stdout.trim());
+            if (stderr.trim()) outputParts.push('', `stderr:\n${stderr.trim()}`);
+            if (!stdout.trim() && !stderr.trim()) outputParts.push('(no output)');
+
+            return { content: [{ type: "text" as const, text: outputParts.join('\n') }] };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { content: [{ type: "text" as const, text: `Python error: ${message}` }], isError: true };
           }
         }
 
@@ -4446,8 +4552,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
               content: [{
                 type: "text" as const,
                 text: `⚠️ File was edited since last storeAs. Line numbers may be stale.\n\n` +
-                      `Re-read with: mcx_file({ path: "${basename(resolvedPath)}", storeAs: "..." })\n` +
-                      `Or use string mode: mcx_edit({ old_string: "...", new_string: "..." })`
+                      `Re-read with: mcx_file({ path: "${basename(resolvedPath)}", storeAs: "..." })`
               }],
               isError: true,
             };
@@ -5662,6 +5767,17 @@ Tip: Use results to find line numbers, then mcx_edit with line mode.`,
     async (params: GrepInput) => {
       if (!params.query) {
         return { content: [{ type: "text" as const, text: "Missing query or pattern parameter." }], isError: true };
+      }
+
+      // Enforcement: redirect file-only patterns to mcx_find
+      const isFilePatternOnly = /^[\*\w\.\-\/\\]+$/.test(params.query) && !params.query.includes(' ');
+      if (isFilePatternOnly) {
+        return {
+          content: [{ type: "text" as const, text: 
+            `❌ Use mcx_find for file search:\n  mcx_find({ query: "${params.query}" })\n\nmcx_grep is for content search (e.g., "*.ts useState").`
+          }],
+          isError: true,
+        };
       }
 
       // Resolve symlinks so FFF searches the actual directory
