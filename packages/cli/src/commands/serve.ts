@@ -985,6 +985,11 @@ function isMcxImage(value: unknown): value is McxImageContent {
 /** MCP image content type */
 type ImageContent = { type: "image"; mimeType: string; data: string };
 
+/** Check if value is image metadata (placeholder after extraction) */
+function isImageMetadata(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && (value as Record<string, unknown>).__image__ === true;
+}
+
 /** Extract images from result, returning remaining value and extracted images */
 function extractImages(value: unknown): { value: unknown; images: ImageContent[] } {
   // Early return for primitives (most common case)
@@ -3048,10 +3053,10 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}` : "",
           summarized.truncated
             ? `Result (${summarized.originalSize}):\n${formatToolResult(summarized.value)}`
-            : valueWithoutImages !== undefined && valueWithoutImages !== null
-              ? `Result:\n${formatToolResult(summarized.value)}`
-              : images.length > 0
-                ? "Image(s) attached"
+            : (images.length > 0 && isImageMetadata(valueWithoutImages)) || (images.length > 0 && valueWithoutImages === undefined)
+              ? `${images.length} image${images.length > 1 ? 's' : ''} attached`
+              : valueWithoutImages !== undefined && valueWithoutImages !== null
+                ? `Result:\n${formatToolResult(summarized.value)}`
                 : "Code executed successfully",
         ].filter(Boolean).join("\n\n");
 
@@ -3077,9 +3082,18 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           ? `📦 Auto-indexed as "${autoIndexedLabel}" (${Math.round(serialized.length/1024)}KB). Use mcx_search to query.\n\n`
           : '';
         const warningMsg = rawDataWarning ? rawDataWarning + '\n\n' : '';
-        return { 
+        // When result is only image(s), don't show metadata in toolResult
+        const toolResultText = images.length > 0 && isImageMetadata(valueWithoutImages)
+          ? `${images.length} image${images.length > 1 ? 's' : ''} attached`
+          : formatToolResult(summarized.value);
+
+        // When images present, return minimal response like native MCP tools
+        if (images.length > 0 && isImageMetadata(valueWithoutImages)) {
+          return { content };
+        }
+        return {
           content,
-          toolResult: warningMsg + autoIndexMsg + formatToolResult(summarized.value),
+          toolResult: warningMsg + autoIndexMsg + toolResultText,
           _rawBytes: summarized.rawBytes 
         };
       } catch (error) {

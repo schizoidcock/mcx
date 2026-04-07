@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "@ff-labs/fff-bun": "link:@ff-labs/fff-bun",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@opentui-ui/dialog": "^0.1.2",
     "@opentui-ui/toast": "^0.0.5",
     "@opentui/core": "^0.1.81",
