@@ -2696,10 +2696,18 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             // Apply hybrid filter to stdout (includes grep detection and smart truncation)
             const filteredStdout = finalStdout ? applyHybridFilter(cmd, finalStdout, detectAndFormatGrepOutput) : '';
             
+            // Filter out common git warnings from stderr
+            const cleanedStderr = finalStderr
+              .split('\n')
+              .filter(line => !line.startsWith('warning: in the working copy'))
+              .join('\n')
+              .trim();
+            
             // Truncate stderr separately
-            const filteredStderr = (params.truncate && finalStderr.length > 500)
-              ? finalStderr.slice(0, 500) + `\n... (${finalStderr.length - 500} chars truncated)`
-              : finalStderr;
+            const filteredStderr = (params.truncate && cleanedStderr.length > 500)
+              ? cleanedStderr.slice(0, 500) + `\n... (${cleanedStderr.length - 500} chars truncated)`
+              : cleanedStderr;
+
 
             // Add output sections
             if (filteredStdout) {
