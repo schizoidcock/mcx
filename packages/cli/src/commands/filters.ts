@@ -587,6 +587,45 @@ export function formatDockerLogs(output: string): string | null {
 }
 
 /**
+ * Format ls -la output - tree-like with sizes (like RTK ls command)
+ */
+export function formatLsOutput(output: string): string | null {
+  const lines = output.split('\n').filter(l => l.trim());
+  
+  // Filter out . and .. and total line
+  const entries = lines.filter(l => 
+    !l.startsWith('total ') && 
+    !/ \.\.*$/.test(l)
+  );
+  
+  if (entries.length === 0) return '(empty directory)';
+  
+  const formatted = entries.map((line, i) => {
+    // Parse: drwxr-xr-x 1 user group size date name
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 9) return line;
+    
+    const perms = parts[0];
+    const size = parseInt(parts[4]) || 0;
+    const name = parts.slice(8).join(' ');
+    const isDir = perms.startsWith('d');
+    const isLast = i === entries.length - 1;
+    const prefix = isLast ? '└── ' : '├── ';
+    
+    const sizeStr = size >= 1024 
+      ? `${(size / 1024).toFixed(1)}KB`
+      : `${size}B`;
+    
+    return isDir 
+      ? `${prefix}${name}/`
+      : `${prefix}${name} (${sizeStr})`;
+  });
+  
+  return formatted.join('\n');
+}
+
+/**
+
  * Format JSON output - show structure without values (like RTK json command)
  */
 export function formatJsonStructure(output: string): string | null {
@@ -764,6 +803,11 @@ export function applyHybridFilter(
     if (formatted) return formatted;
   }
 
+  // ls -la output (tree format with sizes)
+  if (/\bls\s+.*-[la]/.test(mainCmd)) {
+    const lsFormatted = formatLsOutput(output);
+    if (lsFormatted) return lsFormatted;
+  }
 
   // Log deduplication (for tail, logs commands)
   if (/\b(tail|logs?)\b/i.test(mainCmd)) {
