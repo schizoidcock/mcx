@@ -3180,28 +3180,43 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
     "mcx_adapter",
     {
       title: "Adapter & Skill Execution",
-      description: `Unified tool for discovering and calling adapters and skills.
+      description: `Discover and call adapters (API clients) and skills (workflows).
 
-## Mode 1: List Adapters & Skills
-mcx_adapter()
-→ Adapters grouped by domain + available skills
+## Mode 1: List All Adapters & Skills
+Start here to see what's available.
+- mcx_adapter()
+- Shows adapters grouped by domain (general, database, etc.) with method counts
+- Shows available skills with descriptions
 
-## Mode 2: Show Methods
-mcx_adapter({ name: "supabase" })
-→ Methods grouped by prefix: get: getProject(1), list: listProjects()
+## Mode 2: Show Adapter Methods
+Explore an adapter's API before calling.
+- mcx_adapter({ name: "supabase" })
+- Methods grouped by prefix: get: getProject(1), list: listProjects()
+- Shows required vs optional params
+- Use this before Mode 3 to discover method signatures
 
-## Mode 3: Call Method
-mcx_adapter({ name: "supabase", call: "listProjects" })
-mcx_adapter({ name: "alegra", call: "getContacts", params: { limit: 5 } })
+## Mode 3: Call Adapter Method
+Execute an adapter method with parameters.
+- mcx_adapter({ name: "supabase", call: "listProjects" })
+- mcx_adapter({ name: "alegra", call: "getContacts", params: { limit: 5 } })
+- Missing required params → shows error with expected signature
+- Result stored in $_adapterResult
 
 ## Mode 4: Run Skill
-mcx_adapter({ skill: "hello" })
-mcx_adapter({ skill: "deploy", params: { env: "prod" } })
+Execute a predefined workflow.
+- mcx_adapter({ skill: "hello" })
+- mcx_adapter({ skill: "deploy", params: { env: "prod" } })
+- Skills are user-defined in ~/.mcx/skills/
 
-## Output
-- Arrays: Table with priority columns (id, name, status)
-- Objects: Compact summary { key1: val, +N keys }
-- Full results in $_adapterResult`,
+## Output Formatting
+- Arrays: Table with priority columns (id, name, status, email)
+- Objects: Compact { key1: val, key2: val, +N more }
+- Large results: Truncated with full data in $_adapterResult
+
+## Typical Flow
+1. mcx_adapter() → find adapter
+2. mcx_adapter({ name: "x" }) → see methods
+3. mcx_adapter({ name: "x", call: "method", params: {...} }) → call`,
       inputSchema: AdapterInputSchema,
       annotations: {
         readOnlyHint: false,
