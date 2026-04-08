@@ -308,6 +308,52 @@ export const BUILTIN_FILTERS: FilterRule[] = [
       maxLines: 60,
     },
   },
+  // turbo (monorepo)
+  {
+    name: 'turbo',
+    description: 'Strip Turborepo cache noise',
+    matchCommand: '^turbo\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^\\s*cache (hit|miss|bypass)', '^\\s*\\d+ packages in scope', '^\\s*Tasks:\\s+\\d+', '^\\s*Duration:\\s+', '^\\s*Remote caching'],
+      truncateLinesAt: 150,
+      maxLines: 50,
+      onEmpty: 'turbo: ok',
+    },
+  },
+  // make
+  {
+    name: 'make',
+    description: 'Strip make directory messages',
+    matchCommand: '^make\\b',
+    pipeline: {
+      stripLines: ['^make\\[\\d+\\]:', '^\\s*$', '^Nothing to be done'],
+      maxLines: 50,
+      onEmpty: 'make: ok',
+    },
+  },
+  // docker build
+  {
+    name: 'docker-build',
+    description: 'Strip docker build progress',
+    matchCommand: '\\bdocker\\s+(build|compose)',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^\\s*---> ', '^\\s*Removing intermediate', '^Step \\d+/\\d+ :'],
+      maxLines: 40,
+    },
+  },
+  // ping
+  {
+    name: 'ping',
+    description: 'Keep ping summary only',
+    matchCommand: '^ping\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^PING ', '^Pinging ', '^\\d+ bytes from ', '^Reply from .+: bytes=', '^\\s*$'],
+      tailLines: 4,
+    },
+  },
 ];
 
 // ============================================================================
