@@ -354,6 +354,75 @@ export const BUILTIN_FILTERS: FilterRule[] = [
       tailLines: 4,
     },
   },
+  // Ruby: rspec
+  {
+    name: 'rspec',
+    description: 'Strip RSpec noise, keep failures',
+    matchCommand: '\\b(rspec|bundle exec rspec)\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^Coverage report', '^SimpleCov', '^Spring is', '^Running via Spring', '^\\.$', '^\\.+$'],
+      maxLines: 60,
+      onEmpty: 'rspec: all passed',
+    },
+  },
+  // Ruby: rubocop
+  {
+    name: 'rubocop',
+    description: 'Strip RuboCop noise',
+    matchCommand: '\\b(rubocop|bundle exec rubocop)\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^Inspecting \\d+ file', '^\\.+$', '^\\d+ file.* inspected'],
+      maxLines: 50,
+      onEmpty: 'rubocop: no offenses',
+    },
+  },
+  // Ruby: rake
+  {
+    name: 'rake',
+    description: 'Strip Rake task noise',
+    matchCommand: '\\b(rake|bundle exec rake)\\b',
+    pipeline: {
+      stripLines: ['^\\s*$', '^\\*\\* Invoke', '^\\*\\* Execute'],
+      maxLines: 40,
+    },
+  },
+  // .NET: dotnet build
+  {
+    name: 'dotnet-build',
+    description: 'Strip .NET build banners',
+    matchCommand: '\\bdotnet\\s+build\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^Microsoft \\(R\\)', '^Copyright \\(C\\)', '^\\s*Determining projects'],
+      matchOutput: '0 Warning\\(s\\).*0 Error\\(s\\)',
+      maxLines: 40,
+      onEmpty: 'dotnet build: ok',
+    },
+  },
+  // .NET: dotnet test
+  {
+    name: 'dotnet-test',
+    description: 'Strip .NET test noise',
+    matchCommand: '\\bdotnet\\s+test\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^Microsoft \\(R\\)', '^Copyright \\(C\\)', '^Starting test execution'],
+      maxLines: 50,
+      onEmpty: 'dotnet test: all passed',
+    },
+  },
+  // .NET: dotnet run
+  {
+    name: 'dotnet-run',
+    description: 'Strip .NET run noise',
+    matchCommand: '\\bdotnet\\s+run\\b',
+    pipeline: {
+      stripLines: ['^\\s*$', '^Building\\.\\.\\.'],
+      maxLines: 60,
+    },
+  },
 ];
 
 // ============================================================================
