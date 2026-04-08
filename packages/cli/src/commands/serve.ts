@@ -33,7 +33,7 @@ import { z } from "zod";
 import pc from "picocolors";
 import { BunWorkerSandbox, generateTypesSummary } from "@papicandela/mcx-core";
 
-import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot } from "../utils/paths";
+import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot, compactPath } from "../utils/paths";
 import { startDaemon, stopDaemon } from "../daemon";
 import { type FileFinder, isExcludedPath } from "../utils/fff";
 import { coerceJsonArray } from "../utils/zod";
@@ -432,14 +432,20 @@ const DENIED_ENV = new Set([
   // Generic secrets
   "DATABASE_URL", "REDIS_URL", "API_KEY", "SECRET_KEY", "PRIVATE_KEY",
 ]);
-/** Get safe environment for shell execution (filters dangerous vars) */
+/** Cached safe environment (computed once at startup) */
+let cachedSafeEnv: Record<string, string> | null = null;
+
+/** Get safe environment for shell execution (filters dangerous vars, cached) */
 function getSafeEnv(): Record<string, string> {
+  if (cachedSafeEnv) return cachedSafeEnv;
+  
   const safeEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value && !DENIED_ENV.has(key) && !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('TOKEN') && !key.includes('CREDENTIAL')) {
       safeEnv[key] = value;
     }
   }
+  cachedSafeEnv = safeEnv;
   return safeEnv;
 }
 /** Search throttling: normal results up to this many calls */
@@ -493,6 +499,11 @@ function cleanupStaleMaps(): void {
     if (now - val.lastTime > MAP_TTL_MS) executeFailures.delete(key);
   }
   
+  // Clean linesCallTracker
+  for (const [key, val] of linesCallTracker) {
+    if (now - val.timestamp > LINES_HUNT_WINDOW_MS) linesCallTracker.delete(key);
+  }
+  
   // Cap sizes if still too large (LRU-ish: delete oldest)
   if (fileAccessLog.size > MAP_MAX_ENTRIES) {
     const entries = [...fileAccessLog.entries()].sort((a, b) => a[1].firstAccess - b[1].firstAccess);
@@ -509,6 +520,12 @@ setInterval(cleanupStaleMaps, 5 * 60 * 1000);
 function getCodeSignature(code: string): string {
   return code.replace(/\s+/g, ' ').trim().slice(0, 100);
 }
+
+/** Create a blocked/error MCP response */
+const blockedResponse = (msg: string) => ({ 
+  content: [{ type: "text" as const, text: msg }], 
+  isError: true as const 
+});
 
 /** Workflow tracking for inefficiency detection (Optimization #5) */
 const sessionWorkflow = {
@@ -723,43 +740,7 @@ function truncateLogs(logs: string[]): string[] {
 const GREP_MAX_LINE_WIDTH = 100;
 /** Max matches to show per file */
 const GREP_MAX_PER_FILE = 5;
-/** Max path length before compacting */
-const GREP_MAX_PATH_LEN = 50;
 
-/**
- * Compact a path by replacing middle segments with "..."
- * e.g., "packages/cli/src/commands/serve.ts" → "packages/.../serve.ts"
- */
-function compactPath(filePath: string, maxLen = GREP_MAX_PATH_LEN): string {
-  if (filePath.length <= maxLen) return filePath;
-  
-  const parts = filePath.replace(/\\/g, '/').split('/');
-  if (parts.length <= 2) {
-    // Can't compact further, just truncate
-    return '...' + filePath.slice(-(maxLen - 3));
-  }
-  
-  // Keep first and last parts, replace middle with ...
-  const first = parts[0];
-  const last = parts[parts.length - 1];
-  
-  // If just first + ... + last is short enough, use it
-  const minimal = `${first}/.../${last}`;
-  if (minimal.length <= maxLen) {
-    // Try to add more parts from the end
-    let result = last;
-    for (let i = parts.length - 2; i > 0; i--) {
-      const candidate = `${first}/.../` + parts.slice(i).join('/');
-      if (candidate.length <= maxLen) {
-        result = parts.slice(i).join('/');
-      } else break;
-    }
-    return `${first}/.../` + result;
-  }
-  
-  // Even minimal is too long, truncate the filename
-  return '.../' + last.slice(-(maxLen - 4));
-}
 
 /**
  * Truncate a line with window centered around match.
@@ -1318,33 +1299,31 @@ function checkBraceBalance(content: string): number {
 
 /** Enforce shell command redirects to MCX tools. Returns error response or null. */
 function enforceShellRedirects(cmd: string): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
-  const blocked = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true as const });
-  
   // File operations → mcx_file
   // Match path: has extension (.ts), or path separator (/), or starts with ./
   const fileMatch = cmd.match(/\b(cat|head|tail|sed|awk|wc)\b.*?(["']?)([^\s|>"']*[\.\/\\][^\s|>"']+)\2/);
   if (fileMatch) {
     const filePath = fileMatch[3];
     const varName = filePath.split(/[\/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'f';
-    return blocked(`Must use mcx_file for file operations\n💡 mcx_file({ path: "${filePath}", storeAs: "${varName}" }), then grep($${varName}, 'pattern')`);
+    return blockedResponse(`Must use mcx_file for file operations\n💡 mcx_file({ path: "${filePath}", storeAs: "${varName}" }), then grep($${varName}, 'pattern')`);
   }
   
   // grep/rg → mcx_grep
   if (/\b(grep|rg)\s+/.test(cmd)) {
-    return blocked(`Must use mcx_grep instead\n💡 mcx_grep({ pattern: "...", path: "..." })`);
+    return blockedResponse(`Must use mcx_grep instead\n💡 mcx_grep({ pattern: "...", path: "..." })`);
   }
   
   // find → mcx_find
   const findMatch = cmd.match(/\bfind\s+["']?([^\s|>"']*)/);
   if (findMatch) {
-    return blocked(`Must use mcx_find instead\n💡 mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
+    return blockedResponse(`Must use mcx_find instead\n💡 mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
   }
   
   // curl/wget → mcx_fetch
   const curlMatch = cmd.match(/\b(curl|wget)\s+.*?(https?:\/\/[^\s"']+)/);
   if (curlMatch) {
     const url = curlMatch[2];
-    return blocked(`Must use mcx_fetch instead\n💡 mcx_fetch({ url: "${url}" })`);
+    return blockedResponse(`Must use mcx_fetch instead\n💡 mcx_fetch({ url: "${url}" })`);
   }
   
   return null;
@@ -1352,10 +1331,9 @@ function enforceShellRedirects(cmd: string): { content: Array<{ type: "text"; te
 
 /** Enforce Python code redirects to MCX tools. Returns error response or null. */
 function enforcePythonRedirects(code: string): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
-  const blocked = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true as const });
   // File reading operations → mcx_file
   if (/\b(open\s*\(|with\s+open|Path\s*\(|pd\.read_\w+|pandas\.read_\w+)/.test(code)) {
-    return blocked(`Must use mcx_file for file reading\n💡 mcx_file({ path: "...", language: "python", code: "..." })`);
+    return blockedResponse(`Must use mcx_file for file reading\n💡 mcx_file({ path: "...", language: "python", code: "..." })`);
   }
   return null;
 }
@@ -4758,6 +4736,16 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           }
         }
 
+        // Pattern C: Block on 3rd+ consecutive edit (BEFORE writing)
+        // Check is BEFORE trackToolUsage, so 2 in history = this is the 3rd attempt
+        const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
+        if (recentEdits >= 2) {
+          return {
+            content: [{ type: "text" as const, text: `3+ consecutive edits detected. Must use batch:\n💡 mcx_tasks({ batch: [{ tool: "mcx_edit", params: {...} }, ...] })` }],
+            isError: true,
+          };
+        }
+
         await Bun.write(resolvedPath, newContent);
 
         // Track edit timestamp for stale line number detection
@@ -4798,18 +4786,9 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
         // Always show "no need to re-read" tip
         const noRereadTip = '\n💡 No need to re-read to verify.';
         
-        // Pattern C: Enforce batching after multiple edits
-        const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
-        
-        // Block on 3rd+ edit without build/test
-        if (recentEdits >= 3) {
-          return {
-            content: [{ type: "text" as const, text: `3+ consecutive edits detected. Must use batch:\n💡 mcx_tasks({ batch: [{ tool: "mcx_edit", params: {...} }, ...] })` }],
-            isError: true,
-          };
-        }
-        
-        const batchTip = recentEdits >= 2 
+        // Show tip on 2nd edit (block already happened before edit if 3+)
+        const editCountAfter = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
+        const batchTip = editCountAfter >= 2 
           ? '\n💡 Multiple edits done. Batch remaining changes before build/test.'
           : '';
 

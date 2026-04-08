@@ -4,6 +4,8 @@
  * Provides declarative JSON-based filters + hardcoded formatters for complex cases
  */
 
+import { compactPath } from "../utils/paths";
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -11,6 +13,15 @@
 /**
  * Declarative filter rule (can be loaded from ~/.mcx/filters/*.json)
  */
+/** Pre-compiled regexes for a filter rule */
+interface CompiledPatterns {
+  matchCommand: RegExp;
+  matchOutput?: RegExp;
+  replace?: [RegExp, string][];
+  stripLines?: RegExp[];
+  keepLines?: RegExp[];
+}
+
 export interface FilterRule {
   name: string;
   description?: string;
@@ -27,7 +38,15 @@ export interface FilterRule {
     maxLines?: number;             // total line limit
     onEmpty?: string;              // message when output is empty
   };
+  _compiled?: CompiledPatterns;  // Pre-compiled regexes (populated at load time)
 }
+
+// ============================================================================
+// CONSTANTS & HELPERS
+// ============================================================================
+
+const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
+const stripAnsiCodes = (s: string) => s.replace(ANSI_REGEX, '');
 
 // ============================================================================
 // BUILT-IN DECLARATIVE FILTERS
@@ -416,6 +435,17 @@ export const BUILTIN_FILTERS: FilterRule[] = [
   },
 ];
 
+// Pre-compile all regexes at module load time (avoids recompilation per request)
+for (const rule of BUILTIN_FILTERS) {
+  rule._compiled = {
+    matchCommand: new RegExp(rule.matchCommand, 'i'),
+    matchOutput: rule.matchOutput ? new RegExp(rule.matchOutput, 'i') : undefined,
+    replace: rule.pipeline.replace?.map(([pat, rep]) => [new RegExp(pat, 'gm'), rep] as [RegExp, string]),
+    stripLines: rule.pipeline.stripLines?.map(pat => new RegExp(pat)),
+    keepLines: rule.pipeline.keepLines?.map(pat => new RegExp(pat)),
+  };
+}
+
 // ============================================================================
 // DECLARATIVE FILTER PIPELINE
 // ============================================================================
@@ -428,37 +458,50 @@ export function applyDeclarativeFilter(
   output: string, 
   rules: FilterRule[] = BUILTIN_FILTERS
 ): string | null {
-  // Find matching rule
-  const rule = rules.find(r => new RegExp(r.matchCommand, 'i').test(cmd));
+  // Find matching rule (use pre-compiled regex if available)
+  const rule = rules.find(r => 
+    r._compiled ? r._compiled.matchCommand.test(cmd) : new RegExp(r.matchCommand, 'i').test(cmd)
+  );
   if (!rule) return null;
   
   let result = output;
   const p = rule.pipeline;
+  const compiled = rule._compiled;
   
   // Stage 1: strip ANSI
   if (p.stripAnsi) {
-    result = result.replace(/\x1b\[[0-9;]*m/g, '');
+    result = stripAnsiCodes(result);
   }
   
-  // Stage 2: replace
-  if (p.replace) {
+  // Stage 2: replace (use pre-compiled patterns if available)
+  if (compiled?.replace) {
+    for (const [regex, replacement] of compiled.replace) {
+      result = result.replace(regex, replacement);
+    }
+  } else if (p.replace) {
     for (const [pattern, replacement] of p.replace) {
       result = result.replace(new RegExp(pattern, 'gm'), replacement);
     }
   }
   
   // Stage 3: match_output short-circuit
-  if (rule.matchOutput && new RegExp(rule.matchOutput, 'i').test(result)) {
+  if (compiled?.matchOutput) {
+    if (compiled.matchOutput.test(result)) return p.onEmpty || '✓ ok';
+  } else if (rule.matchOutput && new RegExp(rule.matchOutput, 'i').test(result)) {
     return p.onEmpty || '✓ ok';
   }
   
-  // Stage 4: strip/keep lines
+  // Stage 4: strip/keep lines (use pre-compiled patterns if available)
   let lines = result.split('\n');
-  if (p.stripLines) {
+  if (compiled?.stripLines) {
+    lines = lines.filter(l => !compiled.stripLines!.some(pat => pat.test(l)));
+  } else if (p.stripLines) {
     const patterns = p.stripLines.map(pat => new RegExp(pat));
     lines = lines.filter(l => !patterns.some(pat => pat.test(l)));
   }
-  if (p.keepLines) {
+  if (compiled?.keepLines) {
+    lines = lines.filter(l => compiled.keepLines!.some(pat => pat.test(l)));
+  } else if (p.keepLines) {
     const patterns = p.keepLines.map(pat => new RegExp(pat));
     lines = lines.filter(l => patterns.some(pat => pat.test(l)));
   }
@@ -506,28 +549,12 @@ export function applyDeclarativeFilter(
 // HARDCODED FORMATTERS (for complex parsing)
 // ============================================================================
 
-/**
- * Compact path helper (reused from serve.ts pattern)
- */
-function compactPath(filePath: string, maxLen: number = 50): string {
-  if (filePath.length <= maxLen) return filePath;
-  
-  const parts = filePath.replace(/\\/g, '/').split('/');
-  if (parts.length <= 2) return filePath.slice(-maxLen);
-  
-  const file = parts.pop()!;
-  const dir = parts.pop()!;
-  const prefix = parts.slice(0, 1).join('/');
-  
-  const result = `${prefix}/.../${dir}/${file}`;
-  return result.length <= maxLen ? result : `.../${dir}/${file}`.slice(-maxLen);
-}
 
 /**
  * Format git diff output - group changes by file with +/- summary
  */
 export function formatGitDiff(output: string): string | null {
-  const diffLines = output.replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+  const diffLines = output.replace(ANSI_REGEX, '').split('\n');
   
   if (!diffLines.some(l => l.startsWith('diff --git') || l.startsWith('@@'))) {
     return null;
@@ -579,7 +606,7 @@ export function formatGitDiff(output: string): string | null {
  * Format test output - extract failures only (vitest, jest, playwright)
  */
 export function formatTestOutput(output: string): string | null {
-  const clean = output.replace(/\x1b\[[0-9;]*m/g, '');
+  const clean = output.replace(ANSI_REGEX, '');
   
   // Detect test framework
   const isTest = /vitest|jest|playwright|PASS|FAIL|✓|✗|passed|failed/.test(clean);
@@ -628,7 +655,7 @@ export function formatTestOutput(output: string): string | null {
  * Format TypeScript/lint output - group errors by file
  */
 export function formatLintOutput(cmd: string, output: string): string | null {
-  const clean = output.replace(/\x1b\[[0-9;]*m/g, '');
+  const clean = output.replace(ANSI_REGEX, '');
   
   // Parse multiple error formats:
   // - eslint/biome: file:line:col: message
@@ -670,7 +697,7 @@ export function formatLintOutput(cmd: string, output: string): string | null {
  * Format docker logs - deduplicate repeated lines
  */
 export function formatDockerLogs(output: string): string | null {
-  const clean = output.replace(/\x1b\[[0-9;]*m/g, '');
+  const clean = output.replace(ANSI_REGEX, '');
   const lines = clean.split('\n').filter(l => l.trim());
   
   if (lines.length < 5) return null;

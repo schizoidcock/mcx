@@ -118,3 +118,33 @@ export async function exists(path: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Compact a path by replacing middle segments with "..."
+ * e.g., "packages/cli/src/commands/serve.ts" → "packages/.../serve.ts"
+ */
+export function compactPath(filePath: string, maxLen = 50): string {
+  if (filePath.length <= maxLen) return filePath;
+  
+  const parts = filePath.replace(/\\/g, '/').split('/');
+  if (parts.length <= 2) {
+    return '...' + filePath.slice(-(maxLen - 3));
+  }
+  
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const minimal = `${first}/.../${last}`;
+  
+  if (minimal.length <= maxLen) {
+    let result = last;
+    for (let i = parts.length - 2; i > 0; i--) {
+      const candidate = `${first}/.../` + parts.slice(i).join('/');
+      if (candidate.length <= maxLen) {
+        result = parts.slice(i).join('/');
+      } else break;
+    }
+    return `${first}/.../` + result;
+  }
+  
+  return '.../' + last.slice(-(maxLen - 4));
+}
