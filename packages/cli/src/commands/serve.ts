@@ -656,18 +656,20 @@ function escapeFts5Query(query: string): string {
 
 /** Format batch search results for output, returns total match count */
 function formatSearchResults(
-  batchResults: Record<string, { snippet: string }[]>,
+  batchResults: Record<string, { title: string; snippet: string }[]>,
   output: string[]
 ): number {
   let totalMatches = 0;
   for (const [query, results] of Object.entries(batchResults)) {
     totalMatches += results.length;
+    output.push(`\n## ${query}`);
+    output.push('');
     if (results.length === 0) {
-      output.push(`  "${query}": no matches`);
+      output.push('(no matches)');
     } else {
-      output.push(`  "${query}" (${results.length} matches):`);
       for (const r of results.slice(0, 3)) {
-        output.push(`    ${extractSnippet(r.snippet, query, 300)}`);
+        output.push(`### ${r.title}`);
+        output.push(extractSnippet(r.snippet, query, 1500));
         output.push('');
       }
     }
@@ -2738,9 +2740,16 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               const sourceId = store.index(content, sourceLabel, { contentType: 'plaintext' });
               const searchResults = searchWithFallback(store, params.intent, { limit: 5, sourceId });
               
-              outputParts.push('');
-              outputParts.push(`Indexed as "${sourceLabel}". Search results for "${params.intent}":`);
-              searchResults.forEach(r => outputParts.push(`- ${r.title}: ${extractSnippet(r.snippet, params.intent, 200)}`));
+              const totalLines = content.split('\n').length;
+              const totalKB = (content.length / 1024).toFixed(1);
+              const chunks = store.getChunks(sourceId);
+              const terms = getDistinctiveTerms(chunks);
+              
+              outputParts.push(`\nIndexed ${chunks.length} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)\n`);
+              outputParts.push(`## ${params.intent}\n`);
+              searchResults.forEach(r => outputParts.push(`### ${r.title}\n${extractSnippet(r.snippet, params.intent, 1500)}\n`));
+              if (terms.length > 0) outputParts.push(`Searchable terms: ${terms.slice(0, 15).join(', ')}\n`);
+              outputParts.push('→ mcx_search({ queries: [...] }) for more');
             } else if (!params.intent && totalBytes > AUTO_INDEX_THRESHOLD) {
               // Auto-index híbrido: large outputs (>50KB) auto-indexed even without intent
               try {
@@ -3048,16 +3057,20 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               const searchResults = searchWithFallback(store, params.intent, { limit: 5, sourceId });
               const terms = getDistinctiveTerms(chunks);
 
+              const totalLines = serialized.split('\n').length;
+              const totalKB = (serialized.length / 1024).toFixed(1);
+
               const indexedOutput = [
-                `Indexed ${chunks.length} sections as "${sourceLabel}"`,
+                `Indexed ${chunks.length} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)`,
                 formatStoredAs(params.storeAs),
                 '',
-                `Search results for "${params.intent}":`,
-                ...searchResults.map(r => `- ${r.title}: ${extractSnippet(r.snippet, params.intent, 200)}`),
+                `## ${params.intent}`,
                 '',
-                `Distinctive terms: ${terms.slice(0, 15).join(', ')}`,
+                ...searchResults.map(r => `### ${r.title}\n${extractSnippet(r.snippet, params.intent, 1500)}`),
                 '',
-                'Use mcx_search to query this indexed content.',
+                terms.length > 0 ? `Searchable terms: ${terms.slice(0, 15).join(', ')}` : '',
+                '',
+                '→ mcx_search({ queries: [...] }) for more',
               ].filter(Boolean).join('\n');
 
               return {
@@ -4404,16 +4417,20 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             const searchResults = searchWithFallback(store, params.intent, { limit: 5, sourceId });
             const terms = getDistinctiveTerms(chunks);
 
+            const totalLines = serialized.split('\n').length;
+            const totalKB = (serialized.length / 1024).toFixed(1);
+
             const output = [
-              `Indexed ${chunks.length} sections as "${sourceLabel}"`,
+              `Indexed ${chunks.length} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)`,
               formatStoredAs(params.storeAs),
               '',
-              `Search results for "${params.intent}":`,
-              ...searchResults.map(r => `- ${r.title}: ${extractSnippet(r.snippet, params.intent, 200)}`),
+              `## ${params.intent}`,
               '',
-              `Distinctive terms: ${terms.slice(0, 15).join(', ')}`,
+              ...searchResults.map(r => `### ${r.title}\n${extractSnippet(r.snippet, params.intent, 1500)}`),
               '',
-              'Use mcx_search to query this indexed content.',
+              terms.length > 0 ? `Searchable terms: ${terms.slice(0, 15).join(', ')}` : '',
+              '',
+              '→ mcx_search({ queries: [...] }) for more',
             ].filter(Boolean).join('\n');
 
             return { content: [{ type: "text" as const, text: output }], toolResult: output };
@@ -4945,34 +4962,36 @@ Examples:
         }
         urlCache.set(params.url, { sourceId, indexedAt: Date.now(), label });
 
+        const totalKB = (content.length / 1024).toFixed(1);
+
         const output: string[] = [
-          `Indexed "${label}": ${chunks} sections, ${content.length} chars`,
-          `Terms: ${terms.slice(0, 20).join(', ')}`,
-          `Use mcx_search({ queries: [...] }) to search this content.`,
+          `Indexed "${label}": ${chunks} sections (${totalKB}KB)`,
+          ...(terms.length > 0 ? [`Terms: ${terms.slice(0, 20).join(', ')}`] : []),
         ];
 
-        // Optional immediate search
+        // Optional immediate search (show results instead of preview)
         if (params.queries?.length) {
-          output.push('');
-          output.push('Search Results:');
           const safeQueries = params.queries.map(escapeFts5Query);
           const batchResults = batchSearch(store, safeQueries, { limit: 3, sourceId });
           const totalMatches = formatSearchResults(batchResults, output);
           if (totalMatches === 0) {
-            output.push('');
             output.push('→ Try mcx_search({ queries: [...] }) with different terms');
           }
+        } else {
+          // No queries: show hint
+          output.push('Use mcx_search({ queries: [...] }) to search this content.');
         }
 
-        // Add preview if requested
+        // Add preview only if explicitly requested
         if (params.preview) {
           const PREVIEW_SIZE = 3000;
-          const preview = content.length > PREVIEW_SIZE 
-            ? content.slice(0, PREVIEW_SIZE) + `\n\n... (${content.length - PREVIEW_SIZE} more chars indexed)`
+          const previewContent = content.length > PREVIEW_SIZE 
+            ? content.slice(0, PREVIEW_SIZE) + `\n\n…[truncated — ${content.length - PREVIEW_SIZE} more chars indexed]`
             : content;
           output.push('');
-          output.push('Preview:');
-          output.push(preview);
+          output.push('---');
+          output.push('');
+          output.push(previewContent);
         }
 
         const outputText = output.join('\n') + suggestNextTool("mcx_fetch");
@@ -5216,6 +5235,7 @@ Examples:
       code: z.string().describe("Code to execute"),
       storeAs: z.string().optional().describe("Store result as variable"),
     }))).optional().describe("Code operations to run (sync batch)"),
+    queries: coerceJsonArray(z.array(z.string())).optional().describe("FTS5 search queries on batch output"),
   });
   type TasksInput = z.infer<typeof TasksInputSchema>;
 
@@ -5376,9 +5396,41 @@ Batch results stored in $batch. Format:
         }
 
         state.set('batch', results);
-        // Return formatted output
-        const header = `Batch: ${results.commands.length} cmd, ${results.operations.length} ops → $batch\n`;
-        return { content: [{ type: "text" as const, text: header + output.join('\n').trim() }] };
+
+        // Index combined output for FTS5 search
+        const combinedContent = output.join('\n');
+        const store = getContentStore();
+        const sourceLabel = `batch:${params.commands?.map(c => c.label).join(',').slice(0, 50) || 'ops'}`;
+        const sourceId = store.index(combinedContent, sourceLabel, { contentType: 'markdown' });
+        const chunks = store.getChunks(sourceId);
+        const terms = getDistinctiveTerms(chunks);
+
+        // Build output header with stats
+        const totalLines = combinedContent.split('\n').length;
+        const totalKB = (combinedContent.length / 1024).toFixed(1);
+        const header = `Batch: ${results.commands.length} cmd, ${results.operations.length} ops\nIndexed ${chunks.length} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)`;
+
+        // Combined search if queries provided
+        let searchOutput = '';
+        if (params.queries?.length) {
+          const parts: string[] = ['\n---\n## Search Results\n'];
+          for (const query of params.queries) {
+            const sr = searchWithFallback(store, query, { limit: 3, sourceId });
+            parts.push(`### ${query}\n`);
+            if (sr.length > 0) {
+              sr.forEach(r => parts.push(`#### ${r.title}\n${extractSnippet(r.snippet, query, 1500)}\n`));
+            } else {
+              parts.push('(no matches)\n');
+            }
+          }
+          if (terms.length > 0) {
+            parts.push(`\nSearchable terms: ${terms.slice(0, 15).join(', ')}`);
+          }
+          searchOutput = parts.join('');
+        }
+
+        const footer = params.queries?.length ? '' : `\n\n→ mcx_tasks({ queries: [...] }) to search indexed content`;
+        return { content: [{ type: "text" as const, text: header + '\n\n' + combinedContent.trim() + searchOutput + footer }] };
       }
 
       // === Spawn mode (when code provided) ===
