@@ -48,3 +48,16 @@ else if (/<<\s*['"]?EOF/.test(cmd) || /^echo\s+.*>/.test(cmd)) {
     }
   }));
 }
+
+// Block curl/wget -> mcx_fetch
+else if (/^(curl|wget)\s+/.test(cmd)) {
+  const urlMatch = cmd.match(/https?:\/\/[^\s"']+/);
+  const url = urlMatch ? urlMatch[0] : '...';
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      additionalContext: `Use mcx_fetch instead:\n  mcx_fetch({ url: "${url}" })`
+    }
+  }));
+}
