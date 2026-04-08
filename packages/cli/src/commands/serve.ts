@@ -190,6 +190,7 @@ const ExecuteInputSchema = z.object({
     .describe("JavaScript/TypeScript code to execute in the sandbox"),
   shell: z.string()
     .optional()
+    .refine(s => !s || !s.includes('<<'), { message: "Heredocs not supported in shell. Use simple commands." })
     .describe("Shell command to execute (bash/sh). Returns stdout, stderr, exitCode."),
   python: z.string()
     .optional()
