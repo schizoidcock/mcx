@@ -37,7 +37,7 @@ import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot } from
 import { startDaemon, stopDaemon } from "../daemon";
 import { type FileFinder, isExcludedPath } from "../utils/fff";
 import { coerceJsonArray } from "../utils/zod";
-import { isDangerousEnvKey, isBlockedUrl } from "../utils/security";
+import { isDangerousEnvKey, isBlockedUrl, detectShellEscape } from "../utils/security";
 import { logger } from "../utils/logger";
 import { getContentStore, searchWithFallback, getDistinctiveTerms, batchSearch, htmlToMarkdown, isHtml } from "../search";
 import { getSandboxState } from "../sandbox";
@@ -1321,25 +1321,25 @@ function enforceShellRedirects(cmd: string): { content: Array<{ type: "text"; te
   if (fileMatch) {
     const filePath = fileMatch[3];
     const varName = filePath.split(/[\/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'f';
-    return blocked(`❌ Use mcx_file for file operations:\n  mcx_file({ path: "${filePath}", storeAs: "${varName}" })\n  Then: grep($${varName}, 'pattern'), lines($${varName}, start, end)`);
+    return blocked(`Use mcx_file for file operations\n💡 mcx_file({ path: "${filePath}", storeAs: "${varName}" }), then grep($${varName}, 'pattern')`);
   }
   
   // grep/rg → mcx_grep
   if (/\b(grep|rg)\s+/.test(cmd)) {
-    return blocked(`❌ Use mcx_grep instead:\n  mcx_grep({ pattern: "...", path: "..." })`);
+    return blocked(`Use mcx_grep instead\n💡 mcx_grep({ pattern: "...", path: "..." })`);
   }
   
   // find → mcx_find
   const findMatch = cmd.match(/\bfind\s+["']?([^\s|>"']*)/);
   if (findMatch) {
-    return blocked(`❌ Use mcx_find instead:\n  mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
+    return blocked(`Use mcx_find instead\n💡 mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
   }
   
   // curl/wget → mcx_fetch
   const curlMatch = cmd.match(/\b(curl|wget)\s+.*?(https?:\/\/[^\s"']+)/);
   if (curlMatch) {
     const url = curlMatch[2];
-    return blocked(`❌ Use mcx_fetch instead:\n  mcx_fetch({ url: "${url}" })`);
+    return blocked(`Use mcx_fetch instead\n💡 mcx_fetch({ url: "${url}" })`);
   }
   
   return null;
@@ -1350,7 +1350,7 @@ function enforcePythonRedirects(code: string): { content: Array<{ type: "text"; 
   const blocked = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true as const });
   // File reading operations → mcx_file
   if (/\b(open\s*\(|with\s+open|Path\s*\(|pd\.read_\w+|pandas\.read_\w+)/.test(code)) {
-    return blocked(`❌ Use mcx_file for file reading:\n  mcx_file({ path: "...", language: "python", code: "..." })`);
+    return blocked(`Use mcx_file for file reading\n💡 mcx_file({ path: "...", language: "python", code: "..." })`);
   }
   return null;
 }
@@ -2790,6 +2790,15 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           const pythonEnforcement = enforcePythonRedirects(code);
           if (pythonEnforcement) return pythonEnforcement;
           
+          // === Enforcement: Block shell escape attempts ===
+          const shellEscape = detectShellEscape(code, 'python');
+          if (shellEscape.detected) {
+            return {
+              content: [{ type: "text" as const, text: shellEscape.suggestion }],
+              isError: true,
+            };
+          }
+          
           try {
             const startTime = performance.now();
             const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
@@ -2875,6 +2884,15 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           return {
             content: [{ type: "text" as const, text: deleted ? `Deleted $${varName}` : `Variable $${varName} not found` }],
             structuredContent: { deleted: deleted ? varName : null },
+          };
+        }
+
+        // === Enforcement: Block shell escape attempts in JS/TS ===
+        const jsShellEscape = detectShellEscape(code, 'javascript');
+        if (jsShellEscape.detected) {
+          return {
+            content: [{ type: "text" as const, text: jsShellEscape.suggestion }],
+            isError: true,
           };
         }
 
@@ -4123,10 +4141,8 @@ File path available as FILE_PATH variable.
         // Rule 1: If file already stored, MUST use existing variable (block ALL re-reads)
         if (existingVar && !params.storeAs) {
           const msg = isStale
-            ? `❌ $${existingVar} is stale (file edited). Re-store to refresh:\n` +
-              `  mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })`
-            : `❌ Already stored as $${existingVar}. Use helpers:\n` +
-              `  grep($${existingVar}, 'pattern'), lines($${existingVar}, start, end)`;
+            ? `⚠️ $${existingVar} is stale (file edited)\n💡 Re-store: mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })`
+            : `Already stored as $${existingVar}\n💡 Use helpers: grep($${existingVar}, 'pattern'), lines($${existingVar}, start, end)`;
           return { content: [{ type: "text" as const, text: msg }], isError: true };
         }
 
@@ -4134,10 +4150,7 @@ File path available as FILE_PATH variable.
         if (!params.storeAs && params.language === 'js') {
           const suggestedVar = basename(resolvedPath).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
           return {
-            content: [{ type: "text" as const, text: `❌ Use storeAs to read files:\n` +
-              `  mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })\n\n` +
-              `Then query: grep($${suggestedVar}, 'pattern'), lines($${suggestedVar}, start, end)`
-            }],
+            content: [{ type: "text" as const, text: `Use storeAs to read files\n💡 mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" }), then grep($${suggestedVar}, 'pattern')` }],
             isError: true,
           };
         }
@@ -4146,8 +4159,7 @@ File path available as FILE_PATH variable.
         if (params.code && existingVar && isStale) {
           const varPattern = new RegExp(`\\$${existingVar}\\b`);
           if (varPattern.test(params.code)) {
-            const staleMsg = `⚠️ $${existingVar} is stale (file edited since storeAs). Re-store to refresh:\n` +
-              `  mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })`;
+            const staleMsg = `⚠️ $${existingVar} is stale (file edited since storeAs)\n💡 Re-store: mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })`;
             return { content: [{ type: "text" as const, text: staleMsg }], isError: true };
           }
         }
@@ -4156,15 +4168,11 @@ File path available as FILE_PATH variable.
         if (params.language !== 'js' && params.code) {
           const suggestedVar = existingVar || basename(resolvedPath).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
           if (!existingVar) {
-            const msg1 = `❌ First store the file, then use ${params.language}:\n` +
-              `  mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })\n` +
-              `  mcx_file({ path: "${params.path}", language: "${params.language}", code: "..." })`;
+            const msg1 = `First store the file, then use ${params.language}\n💡 mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })`;
             return { content: [{ type: "text" as const, text: msg1 }], isError: true };
           }
           if (isStale) {
-            const msg2 = `⚠️ $${existingVar} is stale. Re-store before using ${params.language}:\n` +
-              `  mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })\n` +
-              `  mcx_file({ path: "${params.path}", language: "${params.language}", code: "..." })`;
+            const msg2 = `⚠️ $${existingVar} is stale\n💡 Re-store: mcx_file({ path: "${params.path}", storeAs: "${existingVar}" })`;
             return { content: [{ type: "text" as const, text: msg2 }], isError: true };
           }
         }
@@ -4575,8 +4583,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
             return {
               content: [{
                 type: "text" as const,
-                text: `⚠️ File was edited since last storeAs. Line numbers may be stale.\n\n` +
-                      `Re-read with: mcx_file({ path: "${basename(resolvedPath)}", storeAs: "..." })`
+                text: `⚠️ File was edited since last storeAs. Line numbers may be stale.\n💡 Re-read: mcx_file({ path: "${basename(resolvedPath)}", storeAs: "..." })`
               }],
               isError: true,
             };
@@ -4625,7 +4632,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           if (firstIdx === -1) {
             const searchPreview = oldLF.split('\n')[0].slice(0, 60);
             return {
-              content: [{ type: "text" as const, text: `Error: old_string not found.\n\nSearching for: "${searchPreview}${oldLF.length > 60 ? '...' : ''}"\n\nTip: Use line mode (start/end) for complex edits.` }],
+              content: [{ type: "text" as const, text: `old_string not found.\n\nSearching for: "${searchPreview}..."\n💡 Use line mode (start/end) for complex edits.` }],
               isError: true,
             };
           }
@@ -6015,7 +6022,7 @@ Modes: plain (default), regex, fuzzy.`,
       if (isFilePatternOnly) {
         return {
           content: [{ type: "text" as const, text: 
-            `❌ Use mcx_find for file search:\n  mcx_find({ query: "${params.query}" })\n\nmcx_grep is for content search (e.g., "*.ts useState").`
+            `Use mcx_find for file search\n💡 mcx_find({ query: "${params.query}" })\n\nmcx_grep is for content search (e.g., "*.ts useState")`
           }],
           isError: true,
         };

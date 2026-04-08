@@ -1,6 +1,6 @@
 /**
  * Security utilities for MCX
- * SSRF protection, environment variable validation, etc.
+ * SSRF protection, environment variable validation, shell escape detection
  */
 
 // SECURITY: Environment variables that must never be overwritten from .env files
@@ -152,4 +152,94 @@ export function isBlockedUrl(url: string): { blocked: boolean; reason?: string }
   }
 
   return { blocked: false };
+}
+
+// ============================================================================
+// Shell Escape Detection
+// ============================================================================
+
+/**
+ * Patterns that detect shell escape attempts in code.
+ * These functions execute shell commands, bypassing MCX controls.
+ */
+const SHELL_ESCAPE_PATTERNS: Record<string, RegExp[]> = {
+  python: [
+    /\bos\.system\s*\(/,
+    /\bos\.popen\s*\(/,
+    /\bsubprocess\.(run|call|Popen|check_output|check_call)\s*\(/,
+  ],
+  javascript: [
+    /\bexec(Sync)?\s*\(/,
+    /\bexecFile(Sync)?\s*\(/,
+    /\bspawn(Sync)?\s*\(/,
+    /\bchild_process\b/,
+    /\bBun\.spawn(Sync)?\s*\(/,
+  ],
+  typescript: [
+    /\bexec(Sync)?\s*\(/,
+    /\bexecFile(Sync)?\s*\(/,
+    /\bspawn(Sync)?\s*\(/,
+    /\bchild_process\b/,
+    /\bBun\.spawn(Sync)?\s*\(/,
+  ],
+  ruby: [
+    /\bsystem\s*\(/,
+    /\bexec\s*\(/,
+    /\bIO\.popen\s*\(/,
+  ],
+  go: [
+    /\bexec\.Command(Context)?\s*\(/,
+  ],
+  rust: [
+    /\bCommand::new\s*\(/,
+  ],
+  php: [
+    /\bshell_exec\s*\(/,
+    /\bexec\s*\(/,
+    /\bsystem\s*\(/,
+    /\bpassthru\s*\(/,
+    /\bproc_open\s*\(/,
+  ],
+  perl: [
+    /\bsystem\s*\(/,
+    /\bexec\s*\(/,
+  ],
+};
+
+export interface ShellEscapeResult {
+  detected: boolean;
+  patterns: string[];
+  suggestion: string;
+}
+
+/**
+ * Detect shell escape patterns in code.
+ * Returns detected patterns and suggestion for safe alternative.
+ */
+export function detectShellEscape(code: string, language: string): ShellEscapeResult {
+  const lang = language.toLowerCase();
+  const patterns = SHELL_ESCAPE_PATTERNS[lang];
+  
+  if (!patterns) {
+    return { detected: false, patterns: [], suggestion: '' };
+  }
+
+  const detected: string[] = [];
+  
+  for (const pattern of patterns) {
+    const match = code.match(pattern);
+    if (match) {
+      detected.push(match[0].trim());
+    }
+  }
+
+  if (detected.length === 0) {
+    return { detected: false, patterns: [], suggestion: '' };
+  }
+
+  return {
+    detected: true,
+    patterns: detected,
+    suggestion: `Shell escape detected: ${detected.join(', ')}\n💡 Use mcx_execute({ shell: "your command" }) instead`,
+  };
 }
