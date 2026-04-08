@@ -5241,6 +5241,15 @@ Results: $taskId (spawn) or $batch (batch).`,
         if (params.commands) {
           for (const cmd of params.commands) {
             output.push(`# ${cmd.label}`);
+            
+            // Block heredocs
+            if (cmd.command.includes('<<')) {
+              output.push('✗ Heredocs not supported. Use simple commands.');
+              output.push('');
+              results.commands.push({ label: cmd.label, error: 'Heredocs not supported' });
+              continue;
+            }
+            
             const startTime = performance.now();
             try {
               const proc = Bun.spawn([SHELL_PATH, '-c', cmd.command], {
