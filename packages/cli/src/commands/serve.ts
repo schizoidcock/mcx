@@ -1321,25 +1321,25 @@ function enforceShellRedirects(cmd: string): { content: Array<{ type: "text"; te
   if (fileMatch) {
     const filePath = fileMatch[3];
     const varName = filePath.split(/[\/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'f';
-    return blocked(`Use mcx_file for file operations\n💡 mcx_file({ path: "${filePath}", storeAs: "${varName}" }), then grep($${varName}, 'pattern')`);
+    return blocked(`Must use mcx_file for file operations\n💡 mcx_file({ path: "${filePath}", storeAs: "${varName}" }), then grep($${varName}, 'pattern')`);
   }
   
   // grep/rg → mcx_grep
   if (/\b(grep|rg)\s+/.test(cmd)) {
-    return blocked(`Use mcx_grep instead\n💡 mcx_grep({ pattern: "...", path: "..." })`);
+    return blocked(`Must use mcx_grep instead\n💡 mcx_grep({ pattern: "...", path: "..." })`);
   }
   
   // find → mcx_find
   const findMatch = cmd.match(/\bfind\s+["']?([^\s|>"']*)/);
   if (findMatch) {
-    return blocked(`Use mcx_find instead\n💡 mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
+    return blocked(`Must use mcx_find instead\n💡 mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
   }
   
   // curl/wget → mcx_fetch
   const curlMatch = cmd.match(/\b(curl|wget)\s+.*?(https?:\/\/[^\s"']+)/);
   if (curlMatch) {
     const url = curlMatch[2];
-    return blocked(`Use mcx_fetch instead\n💡 mcx_fetch({ url: "${url}" })`);
+    return blocked(`Must use mcx_fetch instead\n💡 mcx_fetch({ url: "${url}" })`);
   }
   
   return null;
@@ -1350,7 +1350,7 @@ function enforcePythonRedirects(code: string): { content: Array<{ type: "text"; 
   const blocked = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true as const });
   // File reading operations → mcx_file
   if (/\b(open\s*\(|with\s+open|Path\s*\(|pd\.read_\w+|pandas\.read_\w+)/.test(code)) {
-    return blocked(`Use mcx_file for file reading\n💡 mcx_file({ path: "...", language: "python", code: "..." })`);
+    return blocked(`Must use mcx_file for file reading\n💡 mcx_file({ path: "...", language: "python", code: "..." })`);
   }
   return null;
 }
@@ -4150,7 +4150,7 @@ File path available as FILE_PATH variable.
         if (!params.storeAs && params.language === 'js') {
           const suggestedVar = basename(resolvedPath).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
           return {
-            content: [{ type: "text" as const, text: `Use storeAs to read files\n💡 mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" }), then grep($${suggestedVar}, 'pattern')` }],
+            content: [{ type: "text" as const, text: `Must use storeAs to read files\n💡 mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" }), then grep($${suggestedVar}, 'pattern')` }],
             isError: true,
           };
         }
@@ -4168,7 +4168,7 @@ File path available as FILE_PATH variable.
         if (params.language !== 'js' && params.code) {
           const suggestedVar = existingVar || basename(resolvedPath).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
           if (!existingVar) {
-            const msg1 = `First store the file, then use ${params.language}\n💡 mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })`;
+            const msg1 = `Must first store the file, then use ${params.language}\n💡 mcx_file({ path: "${params.path}", storeAs: "${suggestedVar}" })`;
             return { content: [{ type: "text" as const, text: msg1 }], isError: true };
           }
           if (isStale) {
@@ -6022,7 +6022,7 @@ Modes: plain (default), regex, fuzzy.`,
       if (isFilePatternOnly) {
         return {
           content: [{ type: "text" as const, text: 
-            `Use mcx_find for file search\n💡 mcx_find({ query: "${params.query}" })\n\nmcx_grep is for content search (e.g., "*.ts useState")`
+            `Must use mcx_find for file search\n💡 mcx_find({ query: "${params.query}" })\n\nmcx_grep is for content search (e.g., "*.ts useState")`
           }],
           isError: true,
         };

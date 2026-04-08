@@ -240,6 +240,6 @@ export function detectShellEscape(code: string, language: string): ShellEscapeRe
   return {
     detected: true,
     patterns: detected,
-    suggestion: `Shell escape detected: ${detected.join(', ')}\n💡 Use mcx_execute({ shell: "your command" }) instead`,
+    suggestion: `Shell escape detected: ${detected.join(', ')}\n💡 Must use mcx_execute({ shell: "your command" }) instead`,
   };
 }
