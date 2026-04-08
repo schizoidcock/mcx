@@ -3,8 +3,7 @@
  *
  * Exposes MCP tools:
  * - mcx_execute: Execute code in sandboxed environment with adapter access
- * - mcx_run_skill: Run a named skill with optional inputs
- * - mcx_adapter: Unified adapter discovery and execution
+ * - mcx_adapter: Unified adapter/skill discovery and execution
  * - mcx_search: Search adapters, methods, and indexed content (FTS5)
  * - mcx_batch: Batch executions and searches (bypasses throttling)
  * - mcx_file: Process local files with code ($file)
@@ -3143,119 +3142,42 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
     }
   );
 
-  // Tool: mcx_run_skill
-  server.registerTool(
-    "mcx_run_skill",
-    {
-      title: "Run MCX Skill",
-      description: `Run a registered MCX skill by name.
 
-Available skills: [${skillNames}]
-${skillList}`,
-      inputSchema: RunSkillInputSchema,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true,
-      },
-    },
-    async (params: RunSkillInput) => {
-      const skill = skills.get(params.skill);
-
-      if (!skill) {
-        return {
-          content: [{ type: "text" as const, text: `Error: Skill '${params.skill}' not found.\n\nAvailable: ${Array.from(skills.keys()).join(", ") || "none"}` }],
-          isError: true,
-        };
-      }
-
-      // Wrap skill execution with timeout to prevent hanging
-      const timeoutMs = config?.sandbox?.timeout ?? 30000;
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-      try {
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(() => reject(new Error(`Skill '${params.skill}' timed out after ${timeoutMs}ms`)), timeoutMs);
-        });
-
-        const result = await Promise.race([
-          skill.run({ inputs: params.inputs, ...adapterContext }),
-          timeoutPromise,
-        ]);
-
-        // Clear timeout to prevent memory leak
-        clearTimeout(timeoutId);
-
-        // Truncate skill result to prevent context bloat
-        const summarized = summarizeResult(result, {
-          enabled: params.truncate,
-          maxItems: params.maxItems,
-          maxStringLength: params.maxStringLength,
-        });
-
-        // Format skill result for readable output
-        const rawText = summarized.value !== undefined ? formatToolResult(summarized.value) : "Skill executed successfully";
-        const { text: finalText, truncated: charLimitTruncated } = enforceCharacterLimit(rawText);
-
-        // Minimal structuredContent - only metadata
-        const structured: Record<string, unknown> = {};
-        if (summarized.truncated || charLimitTruncated) structured.truncated = true;
-        const hasStructured = Object.keys(structured).length > 0;
-
-        return {
-          content: [{ type: "text" as const, text: finalText }],
-          ...(hasStructured ? { structuredContent: structured } : {}),
-          _rawBytes: summarized.rawBytes,
-        };
-      } catch (error) {
-        if (timeoutId) clearTimeout(timeoutId);
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text" as const, text: `Skill '${params.skill}' error: ${message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-
-  // Tool: mcx_adapter - Unified adapter discovery and execution
+  // Tool: mcx_adapter - Unified adapter/skill discovery and execution
   const AdapterInputSchema = z.object({
     name: z.string().optional().describe("Adapter name (omit to list all)"),
     call: z.string().optional().describe("Method to call (requires name)"),
-    params: z.record(z.any()).optional().describe("Parameters for method call"),
+    skill: z.string().optional().describe("Skill to run (alternative to name/call)"),
+    params: z.record(z.any()).optional().describe("Parameters for method call or skill inputs"),
   });
   type AdapterInput = z.infer<typeof AdapterInputSchema>;
 
   server.registerTool(
     "mcx_adapter",
     {
-      title: "Adapter Discovery & Execution",
-      description: `Unified tool for discovering and calling adapters.
+      title: "Adapter & Skill Execution",
+      description: `Unified tool for discovering and calling adapters and skills.
 
-## Mode 1: List Adapters
+## Mode 1: List Adapters & Skills
 mcx_adapter()
-→ Shows all adapters grouped by domain: [general] supabase(25), alegra(233)
+→ Adapters grouped by domain + available skills
 
 ## Mode 2: Show Methods
 mcx_adapter({ name: "supabase" })
 → Methods grouped by prefix: get: getProject(1), list: listProjects()
-  Number in parentheses = param count
 
 ## Mode 3: Call Method
 mcx_adapter({ name: "supabase", call: "listProjects" })
 mcx_adapter({ name: "alegra", call: "getContacts", params: { limit: 5 } })
 
-## Output Format
-- Arrays: Table with priority columns (id, name, status, type)
-- Objects: Compact summary { key1: val, key2: [N], +M keys }
-- Truncated results stored in $_adapterResult
+## Mode 4: Run Skill
+mcx_adapter({ skill: "hello" })
+mcx_adapter({ skill: "deploy", params: { env: "prod" } })
 
-## After Call
-$_adapterResult                    // Full JSON result
-$_adapterResult.data[0]            // First item
-$_adapterResult.data.map(x=>x.id)  // Extract field`,
+## Output
+- Arrays: Table with priority columns (id, name, status)
+- Objects: Compact summary { key1: val, +N keys }
+- Full results in $_adapterResult`,
       inputSchema: AdapterInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -3265,6 +3187,46 @@ $_adapterResult.data.map(x=>x.id)  // Extract field`,
       },
     },
     async (params: AdapterInput) => {
+      // === Mode 4: Run skill ===
+      if (params.skill) {
+        const skill = skills.get(params.skill);
+        if (!skill) {
+          const available = Array.from(skills.keys()).join(', ') || 'none';
+          return {
+            content: [{ type: "text" as const, text: `✗ Skill "${params.skill}" not found. Available: ${available}` }],
+            isError: true,
+          };
+        }
+
+        try {
+          const timeoutMs = config?.sandbox?.timeout ?? 30000;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`Skill timed out after ${timeoutMs}ms`)), timeoutMs);
+          });
+
+          const result = await Promise.race([
+            skill.run({ inputs: params.params || {}, ...adapterContext }),
+            timeoutPromise,
+          ]);
+
+          const state = getSandboxState();
+          state.set('_adapterResult', result);
+
+          const summarized = summarizeResult(result, { enabled: true, maxItems: 10, maxStringLength: 500 });
+          const text = formatToolResult(summarized.value);
+          const hint = summarized.truncated ? '\n💡 $_adapterResult for full result' : '';
+
+          trackToolUsage('mcx_adapter');
+          return { content: [{ type: "text" as const, text: `skill.${params.skill}() → ${text}${hint}` }] };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: `✗ Skill error: ${msg}` }],
+            isError: true,
+          };
+        }
+      }
+
       // === Mode 1: List all adapters (ultra-compact) ===
       if (!params.name) {
         const byDomain: Record<string, string[]> = {};
@@ -3278,7 +3240,14 @@ $_adapterResult.data.map(x=>x.id)  // Extract field`,
         for (const [dom, items] of Object.entries(byDomain)) {
           out.push(`[${dom}] ${items.join(', ')}`);
         }
-        out.push('', '→ mcx_adapter({ name: "..." })');
+        
+        // Add skills
+        const skillNames = Array.from(skills.keys());
+        if (skillNames.length > 0) {
+          out.push('', `Skills (${skillNames.length}): ${skillNames.join(', ')}`);
+        }
+        
+        out.push('', '→ mcx_adapter({ name: "..." }) or mcx_adapter({ skill: "..." })');
         
         trackToolUsage('mcx_adapter');
         return { content: [{ type: "text" as const, text: out.join('\n') }] };
@@ -5398,7 +5367,6 @@ Examples:
           mcx_edit: 200, mcx_write: 150, mcx_search: 300, mcx_fetch: 200,
           mcx_batch: 250, mcx_stats: 100, mcx_tasks: 150, mcx_adapter: 400,
           mcx_watch: 100, mcx_doctor: 100, mcx_upgrade: 100,
-          mcx_run_skill: 150,
         };
         
         // Calculate schema tokens for only loaded tools (tools that have been called)
@@ -6222,7 +6190,7 @@ async function runStdio(fffSearchPath?: string) {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_adapter, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_stats, mcx_tasks, mcx_watch, mcx_doctor, mcx_upgrade, mcx_find, mcx_grep, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_adapter, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_stats, mcx_tasks, mcx_watch, mcx_doctor, mcx_upgrade, mcx_find, mcx_grep"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
