@@ -1,5 +1,5 @@
 /**
- * Hybrid Output Filter System (RTK-inspired)
+ * Hybrid Output Filter System
  * 
  * Provides declarative JSON-based filters + hardcoded formatters for complex cases
  */
@@ -709,7 +709,7 @@ export function formatDockerLogs(output: string): string | null {
 }
 
 /**
- * Format ls -la output - compact with sizes (RTK style)
+ * Format ls -la output - compact with sizes
  * Dirs first with /, then files with size, summary at end
  */
 export function formatLsOutput(output: string): string | null {
@@ -779,7 +779,7 @@ export function formatLsOutput(output: string): string | null {
 
 /**
 
- * Format JSON output - show structure without values (like RTK json command)
+ * Format JSON output - show structure without values
  */
 export function formatJsonStructure(output: string): string | null {
   try {
@@ -828,7 +828,7 @@ function formatJsonObject(obj: any, path: string, depth: number): string {
 }
 
 /**
- * Deduplicate log lines with counts (like RTK log command)
+ * Deduplicate log lines with counts
  */
 export function formatLogOutput(output: string): string | null {
   const lines = output.split('\n').filter(l => l.trim());
@@ -871,7 +871,7 @@ export function formatLogOutput(output: string): string | null {
 }
 
 // ============================================================================
-// GITHUB CLI FORMATTERS (RTK-style JSON parsing)
+// GITHUB CLI FORMATTERS
 // ============================================================================
 
 /** Format gh pr list - parse JSON, show compact list */

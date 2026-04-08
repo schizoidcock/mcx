@@ -2667,7 +2667,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               outputParts.push(`✗ Exit code ${exitCode} (${duration}ms)`);
             }
 
-            // Process output with hybrid filter (RTK-style: declarative + hardcoded + grep + 60/40)
+            // Process output with hybrid filter (declarative + hardcoded + grep + 60/40)
             let finalStdout = stdout.trim();
             let finalStderr = stderr.trim();
             
