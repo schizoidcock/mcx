@@ -233,8 +233,7 @@ const ExecuteInputSchema = z.object({
     .min(1000)
     .max(300000)
     .optional()
-    .default(30000)
-    .describe("Shell command timeout in ms (default: 30000, max: 300000)"),
+    .describe("Shell command timeout in ms (default: 30s, 2min for builds)"),
 }).strict().refine(
   data => data.code || data.shell || data.python,
   "Either code, shell, or python must be provided"
