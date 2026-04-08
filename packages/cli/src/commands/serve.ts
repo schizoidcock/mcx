@@ -4739,9 +4739,9 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
         // Pattern C: Block on 3rd+ consecutive edit (BEFORE writing)
         // Check is BEFORE trackToolUsage, so 2 in history = this is the 3rd attempt
         const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
-        if (recentEdits >= 2) {
+        if (recentEdits >= 3) {
           return {
-            content: [{ type: "text" as const, text: `3+ consecutive edits detected. Must use batch:\n💡 mcx_tasks({ batch: [{ tool: "mcx_edit", params: {...} }, ...] })` }],
+            content: [{ type: "text" as const, text: `4+ consecutive edits detected. Must use batch:\n💡 mcx_tasks({ batch: [{ tool: "mcx_edit", params: {...} }, ...] })` }],
             isError: true,
           };
         }
