@@ -5241,6 +5241,7 @@ Results: $taskId (spawn) or $batch (batch).`,
         if (params.commands) {
           for (const cmd of params.commands) {
             output.push(`# ${cmd.label}`);
+            const startTime = performance.now();
             try {
               const proc = Bun.spawn([SHELL_PATH, '-c', cmd.command], {
                 cwd: process.cwd(),
@@ -5248,14 +5249,46 @@ Results: $taskId (spawn) or $batch (batch).`,
                 stderr: 'pipe',
               });
               await proc.exited;
+              const duration = Math.round(performance.now() - startTime);
               const stdout = await new Response(proc.stdout).text();
               const stderr = await new Response(proc.stderr).text();
-              output.push(stdout.trim() || '(no output)');
-              if (stderr.trim()) output.push(`stderr: ${stderr.trim()}`);
-              results.commands.push({ label: cmd.label, exitCode: proc.exitCode, stdout, stderr });
+              const exitCode = proc.exitCode ?? 0;
+              
+              // Status header
+              if (exitCode === 0) {
+                output.push(`✓ Completed in ${duration}ms`);
+              } else {
+                output.push(`✗ Exit code ${exitCode} (${duration}ms)`);
+              }
+              
+              // Apply same filters as mcx_execute
+              const filteredStdout = stdout.trim() 
+                ? applyHybridFilter(cmd.command, stdout.trim(), detectAndFormatGrepOutput) 
+                : '';
+              if (filteredStdout) {
+                output.push(filteredStdout);
+              }
+              
+              // Filter git CRLF warnings + truncate stderr (same as mcx_execute)
+              const cleanStderr = stderr.split('\n')
+                .filter(line => !line.startsWith('warning: in the working copy'))
+                .join('\n').trim();
+              const filteredStderr = cleanStderr.length > 500
+                ? cleanStderr.slice(0, 500) + `\n... (${cleanStderr.length - 500} chars truncated)`
+                : cleanStderr;
+              if (filteredStderr) {
+                output.push(filteredStderr);
+              }
+              if (!filteredStdout && !filteredStderr) {
+                output.push('(no output)');
+              }
+              
+              output.push(''); // blank line between commands
+              results.commands.push({ label: cmd.label, exitCode, stdout: stdout.trim(), stderr: cleanStderr });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              output.push(`Error: ${msg}`);
+              output.push(`✗ Error: ${msg}`);
+              output.push('');
               results.commands.push({ label: cmd.label, error: msg });
             }
           }
@@ -5264,27 +5297,46 @@ Results: $taskId (spawn) or $batch (batch).`,
         // Execute code operations
         if (params.operations) {
           for (const op of params.operations) {
+            const label = op.storeAs || op.code.slice(0, 30);
+            output.push(`# ${label}`);
+            const startTime = performance.now();
             try {
               const execResult = await sandbox.execute(FILE_HELPERS_CODE + op.code, {
                 adapters: adapterContext,
                 variables: state.getAllPrefixed(),
                 env: config?.env || {},
               });
+              const duration = Math.round(performance.now() - startTime);
+              
               if (execResult.error) {
+                output.push(`✗ Error (${duration}ms): ${execResult.error}`);
                 results.operations.push({ code: op.code, error: execResult.error });
               } else {
-                if (op.storeAs) state.set(op.storeAs, execResult.value);
+                output.push(`✓ Completed in ${duration}ms`);
+                if (op.storeAs) {
+                  state.set(op.storeAs, execResult.value);
+                  output.push(`→ Stored as $${op.storeAs}`);
+                }
+                const valueStr = typeof execResult.value === 'string' 
+                  ? execResult.value 
+                  : JSON.stringify(execResult.value, null, 2);
+                if (valueStr && valueStr.length < 500) {
+                  output.push(valueStr);
+                }
                 results.operations.push({ code: op.code, value: execResult.value, storeAs: op.storeAs });
               }
             } catch (err) {
+              output.push(`✗ Error: ${String(err)}`);
               results.operations.push({ code: op.code, error: String(err) });
             }
+            output.push('');
           }
         }
 
         state.set('batch', results);
-        const summary = `Batch: ${results.commands.length} commands, ${results.operations.length} operations. Stored as $batch.`;
-        return { content: [{ type: "text" as const, text: summary }] };
+        // Return formatted output
+        const header = `Batch: ${results.commands.length} cmd, ${results.operations.length} ops → $batch\n`;
+        return { content: [{ type: "text" as const, text: header + output.join('\n').trim() }] };
       }
 
       // === Spawn mode (when code provided) ===
