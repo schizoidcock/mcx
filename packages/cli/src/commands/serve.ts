@@ -5042,6 +5042,7 @@ Examples:
       description: "Session statistics: indexed content, searches, executions, variables. Use graph:true for visual bar charts.",
       inputSchema: z.object({
         graph: z.boolean().optional().describe("Show ASCII bar charts for tool usage"),
+        context: z.boolean().optional().describe("Show context contribution estimates (schema + results)"),
       }),
       annotations: {
         readOnlyHint: true,
@@ -5050,7 +5051,7 @@ Examples:
         openWorldHint: false,
       },
     },
-    async (params: { graph?: boolean }) => {
+    async (params: { graph?: boolean; context?: boolean }) => {
       const store = getContentStore();
       const sources = store.getSources();
       const totalChunks = sources.reduce((sum, s) => sum + s.chunkCount, 0);
@@ -5176,6 +5177,66 @@ Examples:
       const currentVersion = '0.3.24';
       output.push('');
       output.push('📦 Version: v' + currentVersion);
+
+      // Context contribution tracking
+      if (params.context) {
+        output.push('');
+        output.push('🧠 Context Contribution');
+        
+        // Known tool schema sizes (tokens) - based on actual Claude Code measurements
+        const TOOL_SCHEMA_TOKENS: Record<string, number> = {
+          mcx_execute: 650, mcx_file: 650, mcx_find: 200, mcx_grep: 200,
+          mcx_edit: 200, mcx_write: 150, mcx_search: 300, mcx_fetch: 200,
+          mcx_batch: 250, mcx_stats: 100, mcx_spawn: 100, mcx_tasks: 100,
+          mcx_watch: 100, mcx_doctor: 100, mcx_upgrade: 100, mcx_list: 100,
+          mcx_run_skill: 150,
+        };
+        
+        // Calculate schema tokens for only loaded tools (tools that have been called)
+        const loadedTools = [...tokenStats.byTool.keys()];
+        const schemaTokens = loadedTools.reduce((sum, tool) => 
+          sum + (TOOL_SCHEMA_TOKENS[tool] || 150), 0);
+        
+        // Tool results this session (chars / 4 ≈ tokens)
+        const resultTokens = Math.round(tokenStats.totalChars / 4);
+        const rawTokens = Math.round(tokenStats.totalRaw / 4);
+        
+        // Total MCX context footprint
+        const totalMcxTokens = schemaTokens + resultTokens;
+        const contextWindow = 200000;
+        const pctOfContext = ((totalMcxTokens / contextWindow) * 100).toFixed(1);
+        
+        const toolCount = loadedTools.length;
+        const schemaStr = schemaTokens >= 1000 ? (schemaTokens / 1000).toFixed(1) + 'K' : String(schemaTokens);
+        output.push('   Schema (' + toolCount + ' loaded): ~' + schemaStr + ' tokens');
+        output.push('   Results (' + tokenStats.totalCalls + ' calls): ~' + (resultTokens >= 1000 ? (resultTokens / 1000).toFixed(1) + 'K' : resultTokens) + ' tokens');
+        if (rawTokens > resultTokens) {
+          output.push('   Saved by truncation: ~' + ((rawTokens - resultTokens) >= 1000 ? ((rawTokens - resultTokens) / 1000).toFixed(1) + 'K' : (rawTokens - resultTokens)) + ' tokens');
+        }
+        output.push('   ─────────────────────');
+        output.push('   Total MCX footprint: ~' + (totalMcxTokens / 1000).toFixed(1) + 'K tokens (' + pctOfContext + '% of 200K)');
+        
+        // Per-tool breakdown (schema + results)
+        if (loadedTools.length > 0) {
+          output.push('');
+          output.push('   By tool (schema + results):');
+          const sorted = [...tokenStats.byTool.entries()]
+            .map(([tool, stats]) => ({
+              tool,
+              schema: TOOL_SCHEMA_TOKENS[tool] || 150,
+              results: Math.round(stats.chars / 4),
+              calls: stats.calls,
+            }))
+            .sort((a, b) => (b.schema + b.results) - (a.schema + a.results))
+            .slice(0, 5);
+          for (const t of sorted) {
+            const total = t.schema + t.results;
+            const name = t.tool.replace('mcx_', '');
+            const totalStr = total >= 1000 ? (total / 1000).toFixed(1) + 'K' : String(total);
+            output.push('   • ' + name + ': ~' + totalStr + ' tokens (schema:' + t.schema + ' + results:' + t.results + ')');
+          }
+        }
+      }
 
       return { content: [{ type: "text" as const, text: output.join('\n') }] };
     }
