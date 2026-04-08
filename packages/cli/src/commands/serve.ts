@@ -6004,7 +6004,16 @@ Use path param to search in a different directory (e.g., path: "D:/projects/myap
 
         const { items, totalMatched } = result.value;
         if (items.length === 0) {
-          return { content: [{ type: "text" as const, text: "No files found." }] };
+          // Suggest alternatives based on query pattern
+          const q = params.query;
+          let tip = '';
+          if (q.includes('/') && !q.endsWith('/')) {
+            tip = `\n💡 Try: "${q.split('/').pop()}" (filename only) or "${q}/" (directory)`;
+          } else if (q.includes('.') && q.length < 20) {
+            tip = `\n💡 Try: "*.${q.split('.').pop()}" (by extension) or partial name`;
+          }
+          const msg = `No files found for "${q}"${tip}`;
+          return { content: [{ type: "text" as const, text: msg }], toolResult: msg };
         }
 
         // Proximity reranking: compute scores once, use for sort and display
@@ -6094,7 +6103,10 @@ Modes: plain (default), regex, fuzzy.`,
       }
 
       // Enforcement: redirect file-only patterns to mcx_find
-      const isFilePatternOnly = /^[\*\w\.\-\/\\]+$/.test(params.query) && !params.query.includes(' ');
+      // File pattern: has extension (.ts), glob (*), or path separator (/)
+      const isFilePatternOnly = /^[\*\w\.\-\/\\]+$/.test(params.query) 
+        && !params.query.includes(' ')
+        && (/\.\w+$/.test(params.query) || params.query.includes('*') || params.query.includes('/'));
       if (isFilePatternOnly) {
         return {
           content: [{ type: "text" as const, text: 
@@ -6151,7 +6163,8 @@ Modes: plain (default), regex, fuzzy.`,
         }
 
         if (items.length === 0) {
-          return { content: [{ type: "text" as const, text: `No matches in ${totalFilesSearched} files.` }] };
+          const msg = `No matches for "${params.query}" in ${totalFilesSearched} files.`;
+          return { content: [{ type: "text" as const, text: msg }], toolResult: msg };
         }
 
         // Calculate raw size for token tracking (full items before truncation)
