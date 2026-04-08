@@ -190,7 +190,6 @@ const ExecuteInputSchema = z.object({
     .describe("JavaScript/TypeScript code to execute in the sandbox"),
   shell: z.string()
     .optional()
-    .refine(s => !s || !s.includes('<<'), { message: "Heredocs not supported in shell. Use simple commands." })
     .describe("Shell command to execute (bash/sh). Returns stdout, stderr, exitCode."),
   python: z.string()
     .optional()
@@ -2607,6 +2606,14 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         // Shell execution mode
         if (params.shell) {
           const cmd = params.shell.trim();
+          
+          // Block heredocs - not supported in shell param
+          if (cmd.includes('<<')) {
+            return {
+              content: [{ type: "text" as const, text: "✗ Heredocs not supported. Use simple commands." }],
+              isError: true,
+            };
+          }
           
           // Auto-detect long-running commands and increase timeout
           const isLongRunning = /\b(build|install|test|compile|bundle|deploy|migrate)\b/i.test(cmd);
