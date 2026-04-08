@@ -608,24 +608,23 @@ const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
   mcx_find: [
     { tool: "mcx_grep", hint: "search content in found files" },
     { tool: "mcx_file", hint: "process a found file" },
-    { tool: "mcx_related", hint: "find imports/exports" },
   ],
   mcx_grep: [
     { tool: "mcx_file", hint: "process matched file" },
-    { tool: "mcx_related", hint: "find related files" },
+    { tool: "mcx_find", hint: "find imports/exports via related param" },
   ],
   mcx_file: [
-    { tool: "mcx_related", hint: "find imports/exports" },
+    { tool: "mcx_find", hint: "find related: mcx_find({ related: file })" },
     { tool: "mcx_edit", hint: "edit the file" },
   ],
   mcx_edit: [
-    { tool: "mcx_related", hint: "check related files" },
+    { tool: "mcx_find", hint: "check related files via related param" },
   ],
   mcx_write: [
-    { tool: "mcx_related", hint: "find files that may import this" },
+    { tool: "mcx_find", hint: "find importers via related param" },
   ],
   mcx_batch: [
-    { tool: "mcx_related", hint: "find related files" },
+    { tool: "mcx_find", hint: "find dependencies via related param" },
   ],
   mcx_fetch: [
     { tool: "mcx_search", hint: "search indexed content" },
@@ -635,10 +634,6 @@ const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
   ],
   mcx_search: [
     { tool: "mcx_execute", hint: "call discovered method" },
-  ],
-  mcx_related: [
-    { tool: "mcx_file", hint: "process related file" },
-    { tool: "mcx_grep", hint: "search in related files" },
   ],
 };
 
@@ -5565,6 +5560,7 @@ The daemon automatically indexes file changes in watched projects for later sear
     path: z.string().optional().describe("Directory to search in (absolute path). Defaults to cwd."),
     glob: z.string().optional().describe("File pattern filter (e.g., *.tsx, **/*.ts)"),
     limit: z.coerce.number().optional().default(20).describe("Max results (default: 20)"),
+    related: z.string().optional().describe("Find files related to this file (imports, imported-by, siblings)"),
   }).transform(({ pattern, glob, ...rest }) => ({
     ...rest,
     query: glob ? `${glob} ${rest.query || pattern || ""}`.trim() : (rest.query || pattern || ""),
@@ -5587,6 +5583,9 @@ Query syntax:
 - "src/" - Files in src directory
 - "status:modified" - Git modified files
 
+Related files mode:
+- mcx_find({ related: "serve.ts" }) - Find imports, importers, and siblings
+
 Use path param to search in a different directory (e.g., path: "D:/projects/myapp").`,
       inputSchema: FindInputSchema,
       annotations: {
@@ -5597,6 +5596,111 @@ Use path param to search in a different directory (e.g., path: "D:/projects/myap
       },
     },
     async (params: FindInput) => {
+      // Related files mode
+      if (params.related) {
+        const targetFile = params.related;
+        type RelationType = "imports" | "imported-by" | "sibling";
+        const related = new Map<string, { relation: RelationType }>();
+
+        // Helper to extract import paths from file content
+        const extractImports = (content: string): string[] => {
+          const imports: string[] = [];
+          IMPORT_REGEX.lastIndex = 0;
+          let match;
+          while ((match = IMPORT_REGEX.exec(content)) !== null) {
+            const importPath = match[1] || match[2];
+            if (importPath && !importPath.startsWith("node_modules")) {
+              imports.push(importPath);
+            }
+          }
+          return imports;
+        };
+
+        // Resolve relative import to absolute path
+        const resolveImport = async (fromFile: string, importPath: string): Promise<string | null> => {
+          if (!importPath.startsWith(".")) return null;
+          const dir = path.dirname(fromFile);
+          const resolved = path.resolve(dir, importPath);
+          const candidates = RESOLVE_EXTENSIONS.map(ext => resolved + ext);
+          const results = await Promise.all(candidates.map(p => Bun.file(p).exists()));
+          const idx = results.findIndex(Boolean);
+          return idx >= 0 ? candidates[idx] : null;
+        };
+
+        // 1. Find what this file imports
+        try {
+          const targetContent = await Bun.file(targetFile).text();
+          const imports = extractImports(targetContent);
+          const resolved = await Promise.all(imports.map(imp => resolveImport(targetFile, imp)));
+          for (const r of resolved) {
+            if (r) related.set(path.relative(process.cwd(), r), { relation: "imports" });
+          }
+        } catch { /* File might not exist */ }
+
+        // 2. Find files that import this file
+        if (fileFinder) {
+          const basename = path.basename(targetFile).replace(/\.(ts|tsx|js|jsx)$/, "");
+          const searchResult = fileFinder.grep(basename, { glob: "*.{ts,tsx,js,jsx}", pageSize: 100 });
+          if (searchResult.ok) {
+            for (const match of searchResult.value.items) {
+              if (match.path === targetFile || isExcludedPath(match.path)) continue;
+              if (match.lineContent.includes("import") || match.lineContent.includes("require")) {
+                const relPath = path.relative(process.cwd(), match.path);
+                if (!related.has(relPath)) related.set(relPath, { relation: "imported-by" });
+              }
+            }
+          }
+        }
+
+        // 3. Find sibling files
+        const dir = path.dirname(targetFile);
+        const baseName = path.basename(targetFile).replace(/\.(ts|tsx|js|jsx)$/, "");
+        try {
+          const siblings = await Array.fromAsync(new Bun.Glob("*").scan(dir));
+          for (const sibling of siblings) {
+            const siblingBase = sibling.replace(/\.(ts|tsx|js|jsx|test|spec|stories).*$/, "");
+            if (sibling !== path.basename(targetFile) && siblingBase === baseName) {
+              const relPath = path.relative(process.cwd(), path.join(dir, sibling));
+              if (!related.has(relPath)) related.set(relPath, { relation: "sibling" });
+            }
+          }
+        } catch { /* Directory might not exist */ }
+
+        updateProximityContext(targetFile);
+
+        if (related.size === 0) {
+          const msg = `No related files found for: ${targetFile}`;
+          return { content: [{ type: "text" as const, text: msg }], toolResult: msg };
+        }
+
+        // Format output grouped by relation type
+        const byRelation = new Map<string, string[]>();
+        for (const [file, info] of related) {
+          const list = byRelation.get(info.relation) || [];
+          list.push(file);
+          byRelation.set(info.relation, list);
+        }
+
+        const relationLabels: Record<RelationType, string> = {
+          "imports": "This file imports:",
+          "imported-by": "Imported by:",
+          "sibling": "Related files in same directory:",
+        };
+
+        const output: string[] = [`Related files for ${compactPath(path.basename(targetFile))}:`, ""];
+        for (const [relation, files] of byRelation) {
+          const showing = files.slice(0, 10);
+          const hidden = files.length - showing.length;
+          const countSuffix = hidden > 0 ? ` (+${hidden})` : '';
+          output.push(`${relationLabels[relation as RelationType] || relation}${countSuffix}`);
+          for (const file of showing) output.push(`  ${compactPath(file)}`);
+          output.push("");
+        }
+
+        const outputText = output.join("\n") + suggestNextTool("mcx_find");
+        return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
+      }
+
       if (!params.query) {
         return { content: [{ type: "text" as const, text: "Missing query or pattern parameter." }], isError: true };
       }
@@ -5815,166 +5919,6 @@ Modes: plain (default), regex, fuzzy.`,
     }
   );
 
-  // Tool: mcx_related (find related files by imports/exports)
-  const RelatedInputSchema = z.object({
-    file: z.string().describe("File path to find related files for"),
-  });
-  type RelatedInput = z.infer<typeof RelatedInputSchema>;
-
-  server.registerTool(
-    "mcx_related",
-    {
-      title: "Find Related Files",
-      description: `Find files related to a given file by analyzing imports and exports.
-
-Returns:
-- Files that import the given file
-- Files that the given file imports
-- Files with similar names in the same directory
-
-Useful for understanding code dependencies before making changes.`,
-      inputSchema: RelatedInputSchema,
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async (params: RelatedInput) => {
-      const targetFile = params.file;
-      type RelationType = "imports" | "imported-by" | "sibling";
-      const related = new Map<string, { relation: RelationType }>();
-
-      // Helper to extract import paths from file content (uses hoisted IMPORT_REGEX)
-      const extractImports = (content: string): string[] => {
-        const imports: string[] = [];
-        IMPORT_REGEX.lastIndex = 0; // Reset stateful regex
-        let match;
-        while ((match = IMPORT_REGEX.exec(content)) !== null) {
-          const importPath = match[1] || match[2];
-          if (importPath && !importPath.startsWith("node_modules")) {
-            imports.push(importPath);
-          }
-        }
-        return imports;
-      };
-
-      // Resolve relative import to absolute path (parallel extension check)
-      const resolveImport = async (fromFile: string, importPath: string): Promise<string | null> => {
-        if (!importPath.startsWith(".")) return null;
-        const dir = path.dirname(fromFile);
-        const resolved = path.resolve(dir, importPath);
-        // Check all extensions in parallel
-        const candidates = RESOLVE_EXTENSIONS.map(ext => resolved + ext);
-        const results = await Promise.all(candidates.map(p => Bun.file(p).exists()));
-        const idx = results.findIndex(Boolean);
-        return idx >= 0 ? candidates[idx] : null;
-      };
-
-      // 1. Find what this file imports (outgoing) - parallel resolution
-      try {
-        const targetContent = await Bun.file(targetFile).text();
-        const imports = extractImports(targetContent);
-        const resolved = await Promise.all(imports.map(imp => resolveImport(targetFile, imp)));
-        for (const r of resolved) {
-          if (r) {
-            const relPath = path.relative(process.cwd(), r);
-            related.set(relPath, { relation: "imports" });
-          }
-        }
-      } catch {
-        // File might not exist or be readable
-      }
-
-      // 2. Find files that import this file (incoming) using grep
-      if (fileFinder) {
-        const basename = path.basename(targetFile).replace(/\.(ts|tsx|js|jsx)$/, "");
-        const searchResult = fileFinder.grep(basename, { glob: "*.{ts,tsx,js,jsx}", pageSize: 100 });
-        if (searchResult.ok) {
-          for (const match of searchResult.value.items) {
-            if (match.path === targetFile) continue;
-            if (isExcludedPath(match.path)) continue;
-            // Check if it's actually importing our file
-            const content = match.lineContent;
-            if (content.includes("import") || content.includes("require")) {
-              const relPath = path.relative(process.cwd(), match.path);
-              if (!related.has(relPath)) {
-                related.set(relPath, { relation: "imported-by" });
-              }
-            }
-          }
-        }
-      }
-
-      // 3. Find sibling files with similar names
-      const dir = path.dirname(targetFile);
-      const baseName = path.basename(targetFile).replace(/\.(ts|tsx|js|jsx)$/, "");
-      try {
-        const siblings = await Array.fromAsync(new Bun.Glob("*").scan(dir));
-        for (const sibling of siblings) {
-          const siblingBase = sibling.replace(/\.(ts|tsx|js|jsx|test|spec|stories).*$/, "");
-          if (sibling !== path.basename(targetFile) && siblingBase === baseName) {
-            const relPath = path.relative(process.cwd(), path.join(dir, sibling));
-            if (!related.has(relPath)) {
-              related.set(relPath, { relation: "sibling" });
-            }
-          }
-        }
-      } catch {
-        // Directory might not exist
-      }
-
-      // Update proximity context for the target file
-      updateProximityContext(targetFile);
-
-      if (related.size === 0) {
-        const msg = `No related files found for: ${targetFile}`;
-        return { content: [{ type: "text" as const, text: msg }], toolResult: msg };
-      }
-
-      // Format output grouped by relation type
-      const byRelation = new Map<string, string[]>();
-      for (const [file, info] of related) {
-        const list = byRelation.get(info.relation) || [];
-        list.push(file);
-        byRelation.set(info.relation, list);
-      }
-
-      const totalFiles = related.size;
-      const maxPerRelation = 10;
-      let shownFiles = 0;
-      let hiddenFiles = 0;
-
-      const output: string[] = [];
-
-      const relationLabels: Record<RelationType, string> = {
-        "imports": "This file imports:",
-        "imported-by": "Imported by:",
-        "sibling": "Related files in same directory:",
-      };
-
-      for (const [relation, files] of byRelation) {
-        const showing = files.slice(0, maxPerRelation);
-        const hidden = files.length - showing.length;
-        shownFiles += showing.length;
-        hiddenFiles += hidden;
-        
-        const countSuffix = hidden > 0 ? ` (+${hidden})` : '';
-        output.push(`${relationLabels[relation] || relation}${countSuffix}`);
-        for (const file of showing) {
-          output.push(`  ${compactPath(file)}`);
-        }
-        output.push("");
-      }
-
-      const headerSuffix = hiddenFiles > 0 ? ` (showing ${shownFiles}, +${hiddenFiles} hidden)` : '';
-      output.unshift(`Related files for ${compactPath(path.basename(targetFile))}${headerSuffix}:`, "");
-
-      const outputText = output.join("\n") + suggestNextTool("mcx_related");
-      return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText };
-    }
-  );
 
   return {
     server,
@@ -6027,7 +5971,7 @@ async function runStdio(fffSearchPath?: string) {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_find, mcx_grep, mcx_related, mcx_stats, mcx_watch, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_find, mcx_grep, mcx_stats, mcx_watch, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
