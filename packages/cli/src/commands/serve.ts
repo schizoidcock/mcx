@@ -5208,20 +5208,38 @@ Examples:
     "mcx_tasks",
     {
       title: "Tasks & Batch Operations",
-      description: `Spawn background tasks, run batch operations, or check status.
+      description: `Run background tasks or batch multiple operations in a single call.
 
-## Spawn (async)
-mcx_tasks({ code: "await slowApi.process()", label: "job1" })
+## Mode 1: Spawn Background Task (async)
+For long-running operations that shouldn't block.
+- mcx_tasks({ code: "await slowApi.process()", label: "job1" })
+- Result stored in $job1 when complete
 
-## Batch (sync)
-mcx_tasks({ commands: [{ label: "Build", command: "npm run build" }] })
-mcx_tasks({ operations: [{ code: "api.getData()", storeAs: "data" }] })
+## Mode 2: Batch Shell Commands (sync)
+Run multiple shell commands sequentially. Same filters as mcx_execute shell.
+- mcx_tasks({ commands: [{ label: "build", command: "npm run build" }, { label: "test", command: "npm test" }] })
+- Output: RTK-style with ✓/✗ status and timing per command
+- Heredocs (<<) not supported
 
-## List/Check
-mcx_tasks() → list all
-mcx_tasks({ id: "job1" }) → specific task
+## Mode 3: Batch Code Operations (sync)
+Run multiple code operations, optionally storing each result.
+- mcx_tasks({ operations: [{ code: "api.getUsers()", storeAs: "users" }, { code: "$users.length" }] })
+- Operations can reference previous results via $varName
 
-Results: $taskId (spawn) or $batch (batch).`,
+## Mode 4: List/Check Tasks
+- mcx_tasks() → list all background tasks
+- mcx_tasks({ status: "running" }) → filter by status
+- mcx_tasks({ id: "job1" }) → get specific task result
+
+## Output
+Batch results stored in $batch. Format:
+# build
+✓ Completed in 1234ms
+<output>
+
+# test  
+✗ Exit code 1 (567ms)
+<error>`,
       inputSchema: TasksInputSchema,
       annotations: {
         readOnlyHint: false,
