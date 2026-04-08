@@ -184,6 +184,16 @@ interface MCXConfig {
 // Zod Schemas
 // ============================================================================
 
+// Helper for boolean params that might come as strings ("true"/"false")
+const booleanLike = z.preprocess(
+  (val) => {
+    if (val === "true") return true;
+    if (val === "false") return false;
+    return val;
+  },
+  z.boolean()
+);
+
 const ExecuteInputSchema = z.object({
   code: z.string()
     .optional()
@@ -194,7 +204,7 @@ const ExecuteInputSchema = z.object({
   python: z.string()
     .optional()
     .describe("Python code to execute. Returns stdout, stderr, exitCode."),
-  truncate: z.boolean()
+  truncate: booleanLike
     .optional()
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
@@ -241,7 +251,7 @@ const RunSkillInputSchema = z.object({
     .optional()
     .default({})
     .describe("Input parameters for the skill"),
-  truncate: z.boolean()
+  truncate: booleanLike
     .optional()
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
@@ -262,7 +272,7 @@ const RunSkillInputSchema = z.object({
 }).strict();
 
 const ListInputSchema = z.object({
-  truncate: z.boolean()
+  truncate: booleanLike
     .optional()
     .default(true)
     .describe("Whether to truncate large results (default: true)"),
@@ -5943,6 +5953,14 @@ Use path param to search in a different directory (e.g., path: "D:/projects/myap
 
       if (!params.query) {
         return { content: [{ type: "text" as const, text: "Missing query or pattern parameter." }], isError: true };
+      }
+
+      // Detect unsupported glob patterns
+      if (params.query.includes('**')) {
+        return { 
+          content: [{ type: "text" as const, text: `Glob patterns with ** not supported\n💡 Use simple patterns: "*.ts", "pool/", "models.ts"` }], 
+          isError: true 
+        };
       }
 
       // Resolve symlinks so FFF searches the actual directory
