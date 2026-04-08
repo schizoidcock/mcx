@@ -616,7 +616,6 @@ const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
   ],
   mcx_file: [
     { tool: "mcx_related", hint: "find imports/exports" },
-    { tool: "mcx_tree", hint: "navigate large JSON" },
     { tool: "mcx_edit", hint: "edit the file" },
   ],
   mcx_edit: [
@@ -626,27 +625,20 @@ const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
     { tool: "mcx_related", hint: "find files that may import this" },
   ],
   mcx_batch: [
-    { tool: "mcx_tree", hint: "navigate large results" },
     { tool: "mcx_related", hint: "find related files" },
   ],
   mcx_fetch: [
     { tool: "mcx_search", hint: "search indexed content" },
-    { tool: "mcx_tree", hint: "navigate JSON response" },
   ],
   mcx_execute: [
     { tool: "mcx_search", hint: "search results or find methods" },
-    { tool: "mcx_tree", hint: "navigate large results" },
   ],
   mcx_search: [
     { tool: "mcx_execute", hint: "call discovered method" },
-    { tool: "mcx_tree", hint: "navigate results" },
   ],
   mcx_related: [
     { tool: "mcx_file", hint: "process related file" },
     { tool: "mcx_grep", hint: "search in related files" },
-  ],
-  mcx_tree: [
-    { tool: "mcx_file", hint: "process with code" },
   ],
 };
 
@@ -2147,6 +2139,32 @@ const paths = (obj, prefix = '', _depth = 0) => {
   }
   if (_depth > 0) return result;
   return result.slice(0, 50).join('\\n') + (result.length > 50 ? '\\n... +' + (result.length - 50) : '');
+;
+const tree = (obj, depth = 2, indent = '') => {
+  if (obj === null) return indent + 'null';
+  if (obj === undefined) return indent + 'undefined';
+  const type = typeof obj;
+  if (type === 'string') return indent + 'string (' + obj.length + ' chars)' + (obj.length <= 50 ? ': "' + obj + '"' : '');
+  if (type === 'number' || type === 'boolean') return indent + type + ': ' + obj;
+  if (Array.isArray(obj)) {
+    let out = indent + 'array (' + obj.length + ' items)';
+    if (depth > 0 && obj.length > 0) {
+      const sample = obj.slice(0, 3);
+      sample.forEach((item, i) => { out += '\\n' + tree(item, depth - 1, indent + '  [' + i + '] '); });
+      if (obj.length > 3) out += '\\n' + indent + '  ... +' + (obj.length - 3) + ' more';
+    }
+    return out;
+  }
+  if (type === 'object') {
+    const entries = Object.entries(obj).filter(([k]) => k !== '__raw');
+    let out = indent + 'object (' + entries.length + ' keys)';
+    if (depth > 0) {
+      entries.slice(0, 10).forEach(([k, v]) => { out += '\\n' + tree(v, depth - 1, indent + '  ' + k + ': ').replace(indent + '  ' + k + ': ' + indent, indent + '  ' + k + ': '); });
+      if (entries.length > 10) out += '\\n' + indent + '  ... +' + (entries.length - 10) + ' more keys';
+    }
+    return out;
+  }
+  return indent + type;
 };
 `;
 
@@ -2548,6 +2566,7 @@ WRONG: mcx_execute({ code: "grep($file, 'pattern')" }) ← $file undefined
 RIGHT: mcx_file({ path, storeAs: "f" }) THEN mcx_execute({ code: "grep($f, 'pattern')" })
 
 Available after storeAs: grep($var, pattern), lines($var, start, end), around($var, line, ctx), block($var, line), outline($var)
+JSON helpers: keys($var), values($var), paths($var), tree($var, depth) - for exploring JSON structure
 
 ### Variables
 - Results auto-stored as $result
@@ -4254,7 +4273,7 @@ File path available as FILE_PATH variable.
             state.set(params.storeAs, $file);
             storedValue = $file;
             storeAsOutput = `Stored as ${params.storeAs} (JSON object with ${__raw.lines.length} lines)
-JSON helpers: keys($${params.storeAs}), values($${params.storeAs}), pick($${params.storeAs}, ['key1']), paths($${params.storeAs})
+JSON helpers: keys($${params.storeAs}), values($${params.storeAs}), pick($${params.storeAs}, ['key1']), paths($${params.storeAs}), tree($${params.storeAs})
 Line helpers: $${params.storeAs}.__raw.lines, grep($${params.storeAs}.__raw, 'pattern')
 Tip: Access properties directly: $${params.storeAs}.name, $${params.storeAs}.version`;
           } else {
@@ -5310,134 +5329,6 @@ Examples:
     }
   );
 
-  // Tool: mcx_tree (JSON Tree Walker)
-  const TreeInputSchema = z.object({
-    path: z.string().describe("Path to explore, e.g. $result.data[0].items or $search.methods"),
-    depth: z.coerce.number().optional().default(1).describe("Depth to show (default: 1)"),
-  });
-  type TreeInput = z.infer<typeof TreeInputSchema>;
-
-  server.registerTool(
-    "mcx_tree",
-    {
-      title: "JSON Tree Walker",
-      description: `Navigate large JSON results without loading full content.
-
-Examples:
-- mcx_tree({ path: "$result" }) → show root structure
-- mcx_tree({ path: "$result.data" }) → show data structure
-- mcx_tree({ path: "$result.data[0]" }) → show first item
-- mcx_tree({ path: "$search.methods", depth: 2 }) → deeper view`,
-      inputSchema: TreeInputSchema,
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async (params: TreeInput) => {
-      const state = getSandboxState();
-
-      // Parse path: $varname.key1.key2[0].key3 (varname can include hyphens)
-      const pathMatch = params.path.match(/^\$([\w-]+)(.*)$/);
-      if (!pathMatch) {
-        return {
-          content: [{ type: "text" as const, text: `Invalid path: ${params.path}. Must start with $varname` }],
-          isError: true,
-        };
-      }
-
-      const [, varName, restPath] = pathMatch;
-      let value = state.get(varName);
-
-      if (value === undefined) {
-        const available = Array.from(state.keys()).map(k => '$' + k).join(', ');
-        return {
-          content: [{ type: "text" as const, text: `Variable $${varName} not found. Available: ${available || 'none'}` }],
-          isError: true,
-        };
-      }
-
-      // Navigate the path
-      if (restPath) {
-        const segments = restPath.match(/\.(\w+)|\[(\d+)\]/g) || [];
-        for (const seg of segments) {
-          if (value === null || value === undefined) break;
-          if (seg.startsWith('.')) {
-            const key = seg.slice(1);
-            value = (value as Record<string, unknown>)[key];
-          } else if (seg.startsWith('[')) {
-            const idx = parseInt(seg.slice(1, -1), 10);
-            value = (value as unknown[])[idx];
-          }
-        }
-      }
-
-      if (value === undefined) {
-        return {
-          content: [{ type: "text" as const, text: `Path not found: ${params.path}` }],
-          isError: true,
-        };
-      }
-
-      // Generate tree view
-      const describeValue = (v: unknown, depth: number, indent = ""): string[] => {
-        if (v === null) return [`${indent}null`];
-        if (v === undefined) return [`${indent}undefined`];
-
-        const type = typeof v;
-        if (type === "string") {
-          const str = v as string;
-          return [`${indent}string (${str.length} chars)${str.length <= 50 ? `: "${str}"` : ""}`];
-        }
-        if (type === "number" || type === "boolean") {
-          return [`${indent}${type}: ${v}`];
-        }
-        if (Array.isArray(v)) {
-          const lines = [`${indent}array (${v.length} items)`];
-          if (depth > 0 && v.length > 0) {
-            // Show sample of first few items
-            const sample = v.slice(0, 3);
-            for (let i = 0; i < sample.length; i++) {
-              lines.push(`${indent}  [${i}]:`);
-              lines.push(...describeValue(sample[i], depth - 1, indent + "    "));
-            }
-            if (v.length > 3) {
-              lines.push(`${indent}  ... +${v.length - 3} more`);
-            }
-          }
-          return lines;
-        }
-        if (type === "object") {
-          const obj = v as Record<string, unknown>;
-          const keys = Object.keys(obj);
-          const lines = [`${indent}object (${keys.length} keys)`];
-          if (depth > 0) {
-            for (const key of keys.slice(0, 10)) {
-              lines.push(`${indent}  ${key}:`);
-              lines.push(...describeValue(obj[key], depth - 1, indent + "    "));
-            }
-            if (keys.length > 10) {
-              lines.push(`${indent}  ... +${keys.length - 10} more keys`);
-            }
-          } else {
-            lines.push(`${indent}  keys: ${keys.slice(0, 10).join(", ")}${keys.length > 10 ? ", ..." : ""}`);
-          }
-          return lines;
-        }
-        return [`${indent}${type}`];
-      };
-
-      const output = [
-        `Tree: ${params.path}`,
-        "─".repeat(Math.min(40, params.path.length + 6)),
-        ...describeValue(value, params.depth),
-      ];
-
-      return { content: [{ type: "text" as const, text: output.join("\n") }] };
-    }
-  );
 
   // Tool: mcx_watch (Project Indexing)
   const WatchInputSchema = z.object({
