@@ -1883,6 +1883,7 @@ function validateParams(
   const finalParams = correctedParams ?? providedParams;
   const providedNames = Object.keys(finalParams);
   const errors: string[] = [];
+  const hints: string[] = [];
 
   // Check for missing required params (skip if has default value)
   for (const [name, def] of Object.entries(paramDefs)) {
@@ -3278,6 +3279,277 @@ ${skillList}`,
           truncated: output.truncated,
         },
       };
+    }
+  );
+
+
+  // Tool: mcx_adapter - Unified adapter discovery and execution
+  const AdapterInputSchema = z.object({
+    name: z.string().optional().describe("Adapter name (omit to list all)"),
+    call: z.string().optional().describe("Method to call (requires name)"),
+    params: z.record(z.any()).optional().describe("Parameters for method call"),
+  });
+  type AdapterInput = z.infer<typeof AdapterInputSchema>;
+
+  server.registerTool(
+    "mcx_adapter",
+    {
+      title: "Adapter Discovery & Execution",
+      description: `Unified tool for discovering and calling adapters.
+
+## Mode 1: List Adapters
+mcx_adapter()
+→ Shows all adapters grouped by domain: [general] supabase(25), alegra(233)
+
+## Mode 2: Show Methods
+mcx_adapter({ name: "supabase" })
+→ Methods grouped by prefix: get: getProject(1), list: listProjects()
+  Number in parentheses = param count
+
+## Mode 3: Call Method
+mcx_adapter({ name: "supabase", call: "listProjects" })
+mcx_adapter({ name: "alegra", call: "getContacts", params: { limit: 5 } })
+
+## Output Format
+- Arrays: Table with priority columns (id, name, status, type)
+- Objects: Compact summary { key1: val, key2: [N], +M keys }
+- Truncated results stored in $_adapterResult
+
+## After Call
+$_adapterResult                    // Full JSON result
+$_adapterResult.data[0]            // First item
+$_adapterResult.data.map(x=>x.id)  // Extract field`,
+      inputSchema: AdapterInputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (params: AdapterInput) => {
+      // === Mode 1: List all adapters (ultra-compact) ===
+      if (!params.name) {
+        const byDomain: Record<string, string[]> = {};
+        for (const a of adapters) {
+          const d = a.domain || 'general';
+          if (!byDomain[d]) byDomain[d] = [];
+          byDomain[d].push(`${a.name}(${Object.keys(a.tools).length})`);
+        }
+        
+        const out: string[] = [`Adapters (${adapters.length})`];
+        for (const [dom, items] of Object.entries(byDomain)) {
+          out.push(`[${dom}] ${items.join(', ')}`);
+        }
+        out.push('', '→ mcx_adapter({ name: "..." })');
+        
+        trackToolUsage('mcx_adapter');
+        return { content: [{ type: "text" as const, text: out.join('\n') }] };
+      }
+      
+      // Find adapter
+      const targetName = params.name.toLowerCase();
+      const foundAdapter = adapters.find(a => a.name.toLowerCase() === targetName);
+      if (!foundAdapter) {
+        return {
+          content: [{ type: "text" as const, text: `✗ "${params.name}" not found. Use mcx_adapter() to list.` }],
+          isError: true,
+        };
+      }
+      
+      // === Mode 2: Show methods (grouped by prefix) ===
+      if (!params.call) {
+        const methods = Object.keys(foundAdapter.tools);
+        const grouped: Record<string, string[]> = {};
+        
+        for (const m of methods) {
+          // Extract prefix: snake_case (list_projects) or camelCase (getProjects)
+          let prefix: string;
+          if (m.includes('_')) {
+            prefix = m.split('_')[0];
+          } else {
+            const camelMatch = m.match(/^(get|set|create|delete|update|list|find|add|remove|fetch|send|verify|sign|change|reset|check|validate|search|upload|download|export|import|sync|run|start|stop|cancel|pause|restore|merge|push|pull|save|load)/i);
+            prefix = camelMatch ? camelMatch[1].toLowerCase() : 'other';
+          }
+          if (!grouped[prefix]) grouped[prefix] = [];
+          grouped[prefix].push(m);
+        }
+        
+        const out: string[] = [`${foundAdapter.name} (${methods.length} methods)`];
+        
+        // Show max 15 methods, grouped
+        let shown = 0;
+        const MAX_METHODS = 15;
+        for (const [prefix, items] of Object.entries(grouped).sort((a, b) => b[1].length - a[1].length)) {
+          if (shown >= MAX_METHODS) break;
+          const toShow = items.slice(0, MAX_METHODS - shown);
+          const remaining = items.length - toShow.length;
+          const methodList = toShow.map(m => {
+            const def = foundAdapter.tools[m];
+            const pCount = def.parameters ? Object.keys(def.parameters).length : 0;
+            return pCount > 0 ? `${m}(${pCount})` : m + '()';
+          }).join(', ');
+          out.push(`  ${prefix}: ${methodList}${remaining > 0 ? ` +${remaining}` : ''}`);
+          shown += toShow.length;
+        }
+        
+        if (methods.length > MAX_METHODS) {
+          out.push(`  ... +${methods.length - MAX_METHODS} more methods`);
+        }
+        
+        out.push('', `→ mcx_adapter({ name: "${foundAdapter.name}", call: "method" })`);
+        
+        trackToolUsage('mcx_adapter');
+        return { content: [{ type: "text" as const, text: out.join('\n') }] };
+      }
+      
+      // === Mode 3: Call method (with fuzzy matching) ===
+      const methodNames = Object.keys(foundAdapter.tools);
+      let resolvedMethod = params.call;
+      let methodDef = foundAdapter.tools[resolvedMethod];
+      
+      // Fuzzy: case-insensitive, then prefix match
+      if (!methodDef) {
+        const ciMatch = methodNames.find(m => m.toLowerCase() === resolvedMethod.toLowerCase());
+        if (ciMatch) { resolvedMethod = ciMatch; methodDef = foundAdapter.tools[resolvedMethod]; }
+      }
+      if (!methodDef) {
+        const pfx = resolvedMethod.toLowerCase().slice(0, 6);
+        const pfxMatches = methodNames.filter(m => m.toLowerCase().startsWith(pfx));
+        if (pfxMatches.length === 1) { resolvedMethod = pfxMatches[0]; methodDef = foundAdapter.tools[resolvedMethod]; }
+      }
+      
+      if (!methodDef) {
+        const similar = methodNames.filter(m => m.toLowerCase().includes(params.call!.toLowerCase().slice(0, 4)));
+        const toShow = similar.length > 0 ? similar.slice(0, 5) : methodNames.slice(0, 5);
+        const hint = methodNames.length > 5 ? ` (+${methodNames.length - 5})` : '';
+        return {
+          content: [{ type: "text" as const, text: `✗ "${params.call}" not found\n→ ${toShow.join(', ')}${hint}` }],
+          isError: true,
+        };
+      }
+      const callParams = params.params ? JSON.stringify(params.params) : '';
+      // Convert hyphenated names to camelCase for JS execution
+      const adapterVar = foundAdapter.name.includes('-') 
+        ? foundAdapter.name.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+        : foundAdapter.name;
+      const execCode = `${adapterVar}.${resolvedMethod}(${callParams})`;
+      
+      try {
+        const sandboxState = getSandboxState();
+        const execResult = await sandbox.execute(FILE_HELPERS_CODE + execCode, {
+          adapters: adapterContext,
+          variables: sandboxState.getAllPrefixed(),
+          env: config?.env || {},
+        });
+        
+        if (execResult.error) {
+          // Store full error for debugging
+          const state = getSandboxState();
+          const fullErr = typeof execResult.error === 'object' 
+            ? JSON.stringify(execResult.error, null, 2)
+            : String(execResult.error);
+          state.set('_lastError', { text: fullErr, lines: fullErr.split('\n').map((l, i) => `${i+1}: ${l}`) });
+          
+          // Extract compact message
+          let errText: string;
+          if (typeof execResult.error === 'object' && execResult.error !== null) {
+            const errObj = execResult.error as Record<string, unknown>;
+            const msg = errObj.message || errObj.error || JSON.stringify(errObj);
+            if (typeof msg === 'string' && msg.includes('Invalid parameters')) {
+              // Extract required params from error message
+              const match = msg.match(/Expected: (\w+)\(([^)]*)\)/);
+              if (match) {
+                const paramList = match[2].split(',').map(p => p.trim().split(':')[0].replace(/[{}]/g, '').trim()).filter(Boolean);
+                errText = `${match[1]}(${paramList.join(', ')})`;
+              } else {
+                errText = msg.split('\n')[0].slice(0, 80);
+              }
+            } else {
+              errText = String(msg).split('\n')[0].slice(0, 100);
+            }
+          } else {
+            errText = String(execResult.error).slice(0, 150);
+          }
+          return {
+            content: [{ type: "text" as const, text: `✗ ${errText}\n💡 $\_lastError for full details` }],
+            isError: true,
+          };
+        }
+        
+        // Compact output + store full result for later access
+        const val = execResult.value;
+        const rawLen = JSON.stringify(val).length;
+        const state = getSandboxState();
+        state.set('_adapterResult', val); // Store for later access
+        
+        let resultStr: string;
+        let truncated = false;
+        
+        if (Array.isArray(val)) {
+          if (val.length === 0) {
+            resultStr = '[] (empty)';
+          } else if (typeof val[0] === 'object' && val[0] !== null) {
+            // Array of objects: table format
+            const allKeys = Object.keys(val[0]);
+            const priority = ['id', 'name', 'title', 'status', 'type', 'email', 'slug', 'ref'];
+            const prioritized = priority.filter(k => allKeys.includes(k));
+            const rest = allKeys.filter(k => !priority.includes(k));
+            const keys = [...prioritized, ...rest].slice(0, 4);
+            const rows = val.slice(0, 5).map(item => 
+              keys.map(k => {
+                const v = (item as Record<string, unknown>)[k];
+                if (v === null || v === undefined) return '-';
+                if (typeof v === 'object') return Array.isArray(v) ? `[${v.length}]` : '{…}';
+                const s = String(v);
+                return s.length > 20 ? s.slice(0, 17) + '...' : s;
+              }).join(' | ')
+            );
+            resultStr = `${keys.join(' | ')}\n${'─'.repeat(Math.min(60, keys.join(' | ').length))}\n${rows.join('\n')}`;
+            truncated = val.length > 5 || allKeys.length > 4;
+            if (val.length > 5) resultStr += `\n... +${val.length - 5} rows`;
+          } else {
+            const sample = val.slice(0, 8).map(v => String(v).slice(0, 20)).join(', ');
+            resultStr = `[${sample}${val.length > 8 ? `, +${val.length - 8}` : ''}]`;
+            truncated = val.length > 8;
+          }
+        } else if (val && typeof val === 'object') {
+          const keys = Object.keys(val);
+          if (keys.length <= 4 && rawLen < 300) {
+            resultStr = JSON.stringify(val, null, 2);
+          } else {
+            const sample = keys.slice(0, 4).map(k => {
+              const v = (val as Record<string, unknown>)[k];
+              const vStr = v === null ? 'null' : typeof v === 'object' ? (Array.isArray(v) ? `[${v.length}]` : '{…}') : String(v).slice(0, 12);
+              return `${k}: ${vStr}`;
+            }).join(', ');
+            resultStr = `{ ${sample}${keys.length > 4 ? `, +${keys.length - 4}` : ''} }`;
+            truncated = true;
+          }
+        } else {
+          resultStr = String(val);
+          if (resultStr.length > 150) {
+            resultStr = resultStr.slice(0, 150) + '...';
+            truncated = true;
+          }
+        }
+        
+        const header = `${foundAdapter.name}.${resolvedMethod}()`;
+        const typeInfo = Array.isArray(val) ? `[${val.length}]` : typeof val === 'object' ? `{${Object.keys(val || {}).length}}` : typeof val;
+        const hint = truncated ? '\n💡 $_adapterResult for full JSON' : '';
+        
+        trackToolUsage('mcx_adapter');
+        return {
+          content: [{ type: "text" as const, text: `${header} → ${typeInfo}\n${resultStr}${hint}` }],
+          _rawBytes: rawLen,
+        };
+      } catch (execErr) {
+        const errMsg = execErr instanceof Error ? execErr.message : String(execErr);
+        return {
+          content: [{ type: "text" as const, text: `✗ ${errMsg}` }],
+          isError: true,
+        };
+      }
     }
   );
 
