@@ -2731,7 +2731,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             }
             if (filteredStderr) {
               outputParts.push('');
-              outputParts.push(`stderr:\n${filteredStderr}`);
+              outputParts.push(filteredStderr);
             }
             if (!filteredStdout && !filteredStderr) {
               outputParts.push('(no output)');
@@ -2859,7 +2859,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             }
             
             if (finalStdout) outputParts.push('', finalStdout);
-            if (finalStderr) outputParts.push('', `stderr:\n${finalStderr}`);
+            if (finalStderr) outputParts.push('', finalStderr);
             if (!finalStdout && !finalStderr) outputParts.push('(no output)');
 
             return { content: [{ type: "text" as const, text: outputParts.join('\n') }], _rawBytes: totalBytes };
