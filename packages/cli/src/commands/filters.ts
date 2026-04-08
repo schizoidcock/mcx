@@ -587,41 +587,72 @@ export function formatDockerLogs(output: string): string | null {
 }
 
 /**
- * Format ls -la output - tree-like with sizes (like RTK ls command)
+ * Format ls -la output - compact with sizes (RTK style)
+ * Dirs first with /, then files with size, summary at end
  */
 export function formatLsOutput(output: string): string | null {
   const lines = output.split('\n').filter(l => l.trim());
   
-  // Filter out . and .. and total line
-  const entries = lines.filter(l => 
-    !l.startsWith('total ') && 
-    !/ \.\.*$/.test(l)
-  );
+  const dirs: string[] = [];
+  const files: Array<{ name: string; size: string; ext: string }> = [];
+  const byExt = new Map<string, number>();
   
-  if (entries.length === 0) return '(empty directory)';
-  
-  const formatted = entries.map((line, i) => {
-    // Parse: drwxr-xr-x 1 user group size date name
+  for (const line of lines) {
+    // Skip total, empty, . and ..
+    if (line.startsWith('total ') || !line.trim()) continue;
+    
     const parts = line.trim().split(/\s+/);
-    if (parts.length < 9) return line;
+    if (parts.length < 9) continue;
+    
+    const name = parts.slice(8).join(' ');
+    if (name === '.' || name === '..') continue;
     
     const perms = parts[0];
-    const size = parseInt(parts[4]) || 0;
-    const name = parts.slice(8).join(' ');
     const isDir = perms.startsWith('d');
-    const isLast = i === entries.length - 1;
-    const prefix = isLast ? '└── ' : '├── ';
     
-    const sizeStr = size >= 1024 
-      ? `${(size / 1024).toFixed(1)}KB`
-      : `${size}B`;
-    
-    return isDir 
-      ? `${prefix}${name}/`
-      : `${prefix}${name} (${sizeStr})`;
-  });
+    if (isDir) {
+      dirs.push(name);
+    } else if (perms.startsWith('-') || perms.startsWith('l')) {
+      const bytes = parseInt(parts[4]) || 0;
+      const size = bytes >= 1048576 
+        ? `${(bytes / 1048576).toFixed(1)}M`
+        : bytes >= 1024 
+          ? `${(bytes / 1024).toFixed(1)}K`
+          : `${bytes}B`;
+      
+      const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : 'no ext';
+      byExt.set(ext, (byExt.get(ext) || 0) + 1);
+      files.push({ name, size, ext });
+    }
+  }
   
-  return formatted.join('\n');
+  if (dirs.length === 0 && files.length === 0) return '(empty)';
+  
+  const result: string[] = [];
+  
+  // Dirs first
+  for (const d of dirs) {
+    result.push(`${d}/`);
+  }
+  
+  // Files with size
+  for (const f of files) {
+    result.push(`${f.name}  ${f.size}`);
+  }
+  
+  // Summary
+  let summary = `\n${files.length} files, ${dirs.length} dirs`;
+  if (byExt.size > 0) {
+    const extCounts = [...byExt.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([ext, count]) => `${ext}: ${count}`)
+      .join(', ');
+    summary += ` (${extCounts})`;
+  }
+  result.push(summary);
+  
+  return result.join('\n');
 }
 
 /**
