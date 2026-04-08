@@ -138,16 +138,7 @@ export const BUILTIN_FILTERS: FilterRule[] = [
       onEmpty: '✓ bun: installed',
     },
   },
-  {
-    name: 'ls-long',
-    description: 'Compact long directory listings',
-    matchCommand: '\\bls\\s+.*-[la]',
-    pipeline: {
-      stripAnsi: true,
-      stripLines: ['^total\\s+\\d+'],
-      maxLines: 40,
-    },
-  },
+  
   {
     name: 'npm-list',
     description: 'Compact npm/pnpm dependency tree',
