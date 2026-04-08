@@ -5,7 +5,7 @@
  * - mcx_execute: Execute code in sandboxed environment with adapter access
  * - mcx_adapter: Unified adapter/skill discovery and execution
  * - mcx_search: Search adapters, methods, and indexed content (FTS5)
- * - mcx_batch: Batch executions and searches (bypasses throttling)
+ * - mcx_tasks: Background tasks and batch operations
  * - mcx_file: Process local files with code ($file)
  * - mcx_fetch: Fetch URL and index content
  * - mcx_stats: Session statistics
@@ -565,7 +565,7 @@ function detectInefficiency(tool: string, file?: string): string | null {
     }
   }
 
-  // Pattern: 5+ unique files read without processing (suggest mcx_batch or storeAs)
+  // Pattern: 5+ unique files read without processing (suggest mcx_tasks batch or storeAs)
   if (tool === 'mcx_file') {
     const recentFileReads = sessionWorkflow.lastTools.filter(t => 
       t.tool === 'mcx_file' && t.file && Date.now() - t.timestamp < 120000 // last 2 min
@@ -577,7 +577,7 @@ function detectInefficiency(tool: string, file?: string): string | null {
       );
       if (!hasExecute) {
         return `⚠️ Reading ${uniqueFiles.size} files without processing.\n` +
-               `Consider: mcx_batch({ commands: [...] }) or process each file with code.`;
+               `Consider: mcx_tasks({ commands: [...] }) or process each file with code.`;
       }
     }
   }
@@ -622,7 +622,7 @@ const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
   mcx_write: [
     { tool: "mcx_find", hint: "find importers via related param" },
   ],
-  mcx_batch: [
+  mcx_tasks: [
     { tool: "mcx_find", hint: "find dependencies via related param" },
   ],
   mcx_fetch: [
@@ -3574,7 +3574,7 @@ Use storeAs to save results and return summary only:
       const throttle = checkAndConsumeThrottle();
       if (throttle.blocked) {
         return {
-          content: [{ type: "text" as const, text: `Search blocked: ${throttle.calls} calls in ${Math.floor(THROTTLE_WINDOW_MS / 1000)}s. Use mcx_batch or wait.` }],
+          content: [{ type: "text" as const, text: `Search blocked: ${throttle.calls} calls in ${Math.floor(THROTTLE_WINDOW_MS / 1000)}s. Use mcx_tasks with commands/operations for batch mode.` }],
           isError: true,
         };
       }
@@ -3984,266 +3984,6 @@ Use storeAs to save results and return summary only:
     }
   );
 
-  // Tool: mcx_batch
-  server.registerTool(
-    "mcx_batch",
-    {
-      title: "Batch Execute and Search",
-      description: `Run shell commands, code operations, and searches in one call. Bypasses throttling.
-
-## Shell Commands
-mcx_batch({ commands: [
-  { label: "Git Status", command: "git status" },
-  { label: "Tests", command: "npm test" }
-]})
-
-## Code Operations  
-mcx_batch({ operations: [{ code: "alegra.getInvoices()", storeAs: "inv" }] })
-
-## FTS5 Searches
-mcx_batch({ queries: ["error", "timeout"] })
-
-Output is auto-indexed with markdown headings (# label) for chunking.`,
-      inputSchema: BatchInputSchema,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true,
-      },
-    },
-    async (params: BatchInput) => {
-      // Support 'operations' as alias for 'executions'
-      const operations = params.operations || params.executions;
-      const timeout = params.timeout ?? 30000;
-      
-      const output: string[] = [];
-      const results: {
-        commands: Array<{ label: string; success: boolean; exitCode?: number; error?: string }>;
-        executions: Array<{ storeAs?: string; success: boolean; error?: string }>;
-        searches: Array<{ query: string; count: number }>;
-      } = { commands: [], executions: [], searches: [] };
-      
-      // Track sourceIds for scoped queries
-      const batchSourceIds: number[] = [];
-
-      // Run shell commands first
-      if (params.commands && params.commands.length > 0) {
-        const safeEnv = getSafeEnv();
-
-        for (const cmd of params.commands) {
-          output.push(`# ${cmd.label}`);
-          output.push('');
-          
-          try {
-            const proc = Bun.spawn([SHELL_PATH, '-c', cmd.command], {
-              cwd: process.cwd(),
-              env: { ...safeEnv, ...(config?.env || {}) },
-              stdout: 'pipe',
-              stderr: 'pipe',
-            });
-
-            // Race with timeout
-            const timeoutPromise = new Promise<'timeout'>((resolve) => 
-              setTimeout(() => resolve('timeout'), timeout)
-            );
-            const exitPromise = proc.exited.then(code => ({ code }));
-            const raceResult = await Promise.race([exitPromise, timeoutPromise]);
-
-            if (raceResult === 'timeout') {
-              killTree(proc);
-              output.push(`[TIMEOUT after ${timeout}ms]`);
-              output.push('');
-              results.commands.push({ label: cmd.label, success: false, error: 'timeout' });
-              continue;
-            }
-
-            const exitCode = raceResult.code;
-            const stdout = await new Response(proc.stdout).text();
-            const stderr = await new Response(proc.stderr).text();
-
-            // Hard cap check
-            if (stdout.length + stderr.length > HARD_CAP_BYTES) {
-              output.push(`[OUTPUT EXCEEDED 100MB LIMIT]`);
-              output.push('');
-              results.commands.push({ label: cmd.label, success: false, error: 'output exceeded 100MB' });
-              continue;
-            }
-
-            if (stdout.trim()) {
-              // Try grep formatting for shell output
-              const grepFormatted = detectAndFormatGrepOutput(stdout);
-              output.push(grepFormatted || stdout.trim());
-            }
-            if (stderr.trim()) {
-              output.push(`stderr: ${stderr.trim()}`);
-            }
-            if (!stdout.trim() && !stderr.trim()) {
-              output.push('(no output)');
-            }
-            output.push('');
-
-            results.commands.push({ 
-              label: cmd.label, 
-              success: exitCode === 0, 
-              exitCode,
-              error: exitCode !== 0 ? `exit code ${exitCode}` : undefined
-            });
-          } catch (error) {
-            const errorMsg = error instanceof Error ? error.message : String(error);
-            output.push(`[ERROR: ${errorMsg}]`);
-            output.push('');
-            results.commands.push({ label: cmd.label, success: false, error: errorMsg });
-          }
-        }
-      }
-
-      // Run operations sequentially
-      if (operations && operations.length > 0) {
-        output.push("## Operations");
-        output.push("");
-
-        // Hoist singletons outside loop
-        const state = getSandboxState();
-        const store = getContentStore();
-
-        for (const exec of operations) {
-          try {
-            // Get stored variables fresh each iteration (state mutates via storeAs)
-            const result = await sandbox.execute(FILE_HELPERS_CODE + exec.code, {
-              adapters: adapterContext,
-              variables: state.getAllPrefixed(),
-              env: config?.env || {},
-            });
-            trackSandboxIO(result.tracking);
-
-            if (result.success) {
-              // Store if requested
-              if (exec.storeAs) {
-                state.set(exec.storeAs, result.value);
-              }
-
-              // Auto-index large results
-              const serialized = safeStringify(result.value);
-              if (serialized.length > INTENT_THRESHOLD) {
-                try {
-                  const sourceLabel = generateExecutionLabel(exec.storeAs);
-                  const sourceId = store.index(serialized, sourceLabel, { contentType: 'plaintext' });
-                  batchSourceIds.push(sourceId);
-                  output.push(`- ${exec.storeAs || 'exec'}: Indexed (${serialized.length} chars)`);
-                } catch {
-                  // Indexing failed, still report success
-                  output.push(`- ${exec.storeAs || 'exec'}: OK (${serialized.length} chars, index failed)`);
-                }
-              } else {
-                output.push(`- ${exec.storeAs || 'exec'}: OK (${serialized.length} chars)`);
-              }
-
-              results.executions.push({ storeAs: exec.storeAs, success: true });
-            } else {
-              const errorMsg = result.error ? result.error.message : "Unknown error";
-              output.push(`- ${exec.storeAs || 'exec'}: ERROR - ${errorMsg}`);
-              results.executions.push({ storeAs: exec.storeAs, success: false, error: errorMsg });
-            }
-          } catch (error) {
-            logger.error("mcx_batch execution error", error);
-            const errorMsg = error instanceof Error ? error.message : String(error);
-            output.push(`- ${exec.storeAs || 'exec'}: ERROR - ${errorMsg}`);
-            results.executions.push({ storeAs: exec.storeAs, success: false, error: errorMsg });
-          }
-        }
-        output.push("");
-      }
-
-      // Run searches (bypass throttling) - use batchSearch for efficiency
-      if (params.queries && params.queries.length > 0) {
-        output.push("## Search Results");
-        output.push("");
-
-        const store = getContentStore();
-        const sources = store.getSources();
-
-        if (sources.length === 0) {
-          output.push("No indexed content available.");
-        } else {
-          // Determine search scope:
-          // 1. User-specified source takes priority
-          // 2. Otherwise, scope to batch-created sources if any
-          // 3. Otherwise, search all indexed content
-          let sourceId: number | undefined;
-          let sourceIds: number[] | undefined;
-          
-          if (params.source) {
-            const sourceLabel = params.source;
-            const source = sources.find(s => s.label === sourceLabel || s.label.includes(sourceLabel));
-            sourceId = source?.id;
-          } else if (batchSourceIds.length > 0) {
-            sourceIds = batchSourceIds;
-          }
-
-          try {
-            const batchResults = batchSearch(store, params.queries, { limit: 5, sourceId, sourceIds });
-            for (const [query, searchResults] of Object.entries(batchResults)) {
-              output.push(`### "${query}" (${searchResults.length} results)`);
-              for (const r of searchResults) {
-                output.push(`- ${r.title}: ${extractSnippet(r.snippet, query, 150)}`);
-              }
-              output.push("");
-              results.searches.push({ query, count: searchResults.length });
-            }
-          } catch (error) {
-            logger.error("mcx_batch search error", error);
-            output.push(`Search error: ${error instanceof Error ? error.message : error}`);
-            for (const query of params.queries) {
-              results.searches.push({ query, count: 0 });
-            }
-          }
-        }
-      }
-
-      // Auto-index combined output if substantial
-      const combinedOutput = output.join('\n');
-      if (combinedOutput.length > INTENT_THRESHOLD) {
-        try {
-          const store = getContentStore();
-          store.index(combinedOutput, 'batch', { contentType: 'markdown' });
-        } catch {
-          // Indexing failed, continue
-        }
-      }
-
-      // Store in $batch
-      const state = getSandboxState();
-      state.set('batch', results);
-
-      // Compact summary
-      const cmdCount = results.commands.length;
-      const execCount = results.executions.length;
-      const searchCount = results.searches.length;
-      
-      const parts: string[] = [];
-      if (cmdCount > 0) parts.push(`${cmdCount} commands`);
-      if (execCount > 0) parts.push(`${execCount} operations`);
-      if (searchCount > 0) parts.push(`${searchCount} searches`);
-      
-      const summary = [
-        `Batch complete: ${parts.join(', ') || 'nothing to run'}`,
-        combinedOutput.length > INTENT_THRESHOLD 
-          ? `Indexed ${combinedOutput.length} chars. Use mcx_search to query.`
-          : '',
-        `Stored as $batch. Access: $batch.commands, $batch.executions, $batch.searches`,
-      ].filter(Boolean).join('\n');
-
-      return {
-        content: [{ type: "text" as const, text: summary }],
-        toolResult: summary,
-        structuredContent: {
-          storedAs: ['batch'],
-          counts: { commands: cmdCount, executions: execCount, searches: searchCount },
-        },
-      };
-    }
-  );
 
   // Tool: mcx_file
 
@@ -5381,7 +5121,7 @@ Examples:
         const TOOL_SCHEMA_TOKENS: Record<string, number> = {
           mcx_execute: 650, mcx_file: 650, mcx_find: 200, mcx_grep: 200,
           mcx_edit: 200, mcx_write: 150, mcx_search: 300, mcx_fetch: 200,
-          mcx_batch: 250, mcx_stats: 100, mcx_tasks: 150, mcx_adapter: 400,
+          mcx_stats: 100, mcx_tasks: 300, mcx_adapter: 400,
           mcx_watch: 100, mcx_doctor: 100, mcx_upgrade: 100,
         };
         
@@ -5436,31 +5176,44 @@ Examples:
   );
 
 
-  // Tool: mcx_tasks (Background tasks: spawn and manage)
+  // Tool: mcx_tasks (Background tasks + batch operations)
   const TasksInputSchema = z.object({
+    // Spawn mode
     code: z.string().optional().describe("Code to spawn in background"),
     label: z.string().optional().describe("Label for spawned task"),
+    // Check mode
     id: z.string().optional().describe("Get specific task by ID"),
     status: z.enum(['all', 'running', 'completed', 'failed']).optional().default('all'),
+    // Batch mode (sync)
+    commands: coerceJsonArray(z.array(z.object({
+      label: z.string().describe("Label for command"),
+      command: z.string().describe("Shell command"),
+    }))).optional().describe("Shell commands to run (sync batch)"),
+    operations: coerceJsonArray(z.array(z.object({
+      code: z.string().describe("Code to execute"),
+      storeAs: z.string().optional().describe("Store result as variable"),
+    }))).optional().describe("Code operations to run (sync batch)"),
   });
   type TasksInput = z.infer<typeof TasksInputSchema>;
 
   server.registerTool(
     "mcx_tasks",
     {
-      title: "Background Tasks",
-      description: `Spawn background tasks and check their status.
+      title: "Tasks & Batch Operations",
+      description: `Spawn background tasks, run batch operations, or check status.
 
-## Spawn
-- mcx_tasks({ code: "await slowApi.process()" })
-- mcx_tasks({ code: "poll(...)", label: "sync" })
+## Spawn (async)
+mcx_tasks({ code: "await slowApi.process()", label: "job1" })
+
+## Batch (sync)
+mcx_tasks({ commands: [{ label: "Build", command: "npm run build" }] })
+mcx_tasks({ operations: [{ code: "api.getData()", storeAs: "data" }] })
 
 ## List/Check
-- mcx_tasks() → list all tasks
-- mcx_tasks({ status: "running" }) → only running
-- mcx_tasks({ id: "task_1" }) → specific task
+mcx_tasks() → list all
+mcx_tasks({ id: "job1" }) → specific task
 
-Results stored as $taskId (e.g., $task_1 or $sync).`,
+Results: $taskId (spawn) or $batch (batch).`,
       inputSchema: TasksInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -5470,6 +5223,62 @@ Results stored as $taskId (e.g., $task_1 or $sync).`,
       },
     },
     async (params: TasksInput) => {
+      // === Batch mode (sync) ===
+      if (params.commands || params.operations) {
+        const results: { commands: any[]; operations: any[] } = { commands: [], operations: [] };
+        const output: string[] = [];
+        const state = getSandboxState();
+
+        // Execute shell commands
+        if (params.commands) {
+          for (const cmd of params.commands) {
+            output.push(`# ${cmd.label}`);
+            try {
+              const proc = Bun.spawn(['bash', '-c', cmd.command], {
+                cwd: process.cwd(),
+                stdout: 'pipe',
+                stderr: 'pipe',
+              });
+              await proc.exited;
+              const stdout = await new Response(proc.stdout).text();
+              const stderr = await new Response(proc.stderr).text();
+              output.push(stdout.trim() || '(no output)');
+              if (stderr.trim()) output.push(`stderr: ${stderr.trim()}`);
+              results.commands.push({ label: cmd.label, exitCode: proc.exitCode, stdout, stderr });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              output.push(`Error: ${msg}`);
+              results.commands.push({ label: cmd.label, error: msg });
+            }
+          }
+        }
+
+        // Execute code operations
+        if (params.operations) {
+          for (const op of params.operations) {
+            try {
+              const execResult = await sandbox.execute(FILE_HELPERS_CODE + op.code, {
+                adapters: adapterContext,
+                variables: state.getAllPrefixed(),
+                env: config?.env || {},
+              });
+              if (execResult.error) {
+                results.operations.push({ code: op.code, error: execResult.error });
+              } else {
+                if (op.storeAs) state.set(op.storeAs, execResult.value);
+                results.operations.push({ code: op.code, value: execResult.value, storeAs: op.storeAs });
+              }
+            } catch (err) {
+              results.operations.push({ code: op.code, error: String(err) });
+            }
+          }
+        }
+
+        state.set('batch', results);
+        const summary = `Batch: ${results.commands.length} commands, ${results.operations.length} operations. Stored as $batch.`;
+        return { content: [{ type: "text" as const, text: summary }] };
+      }
+
       // === Spawn mode (when code provided) ===
       if (params.code) {
         const taskId = params.label || generateTaskId();
@@ -6136,10 +5945,10 @@ Modes: plain (default), regex, fuzzy.`,
           dynamicTip = `\n→ Next: mcx_file({ path: "${compactPath(firstPath, 40)}", code: "around(${firstLineNum}, 20)" })`;
         } else if (grepCallLog.count === 2) {
           // 2nd grep: hint about batch/search options
-          dynamicTip = `\n→ For multiple patterns: mcx_batch, or mode: "regex" with "p1|p2"`;
+          dynamicTip = `\n→ For multiple patterns: mcx_tasks batch, or mode: "regex" with "p1|p2"`;
         } else {
           // 3rd+: warning about inefficiency
-          dynamicTip = `\n💡 Multiple greps detected. Consider mcx_batch for parallel searches.`;
+          dynamicTip = `\n💡 Multiple greps detected. Consider mcx_tasks batch for parallel searches.`;
         }
 
         // Add hidden match tip if significant truncation occurred
@@ -6206,7 +6015,7 @@ async function runStdio(fffSearchPath?: string) {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_adapter, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_stats, mcx_tasks, mcx_watch, mcx_doctor, mcx_upgrade, mcx_find, mcx_grep"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_adapter, mcx_search, mcx_tasks, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_stats, mcx_watch, mcx_doctor, mcx_upgrade, mcx_find, mcx_grep"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
