@@ -4751,8 +4751,17 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
         // Always show "no need to re-read" tip
         const noRereadTip = '\n💡 No need to re-read to verify.';
         
-        // Pattern C: Additionally suggest batching after multiple edits
+        // Pattern C: Enforce batching after multiple edits
         const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
+        
+        // Block on 3rd+ edit without build/test
+        if (recentEdits >= 3) {
+          return {
+            content: [{ type: "text" as const, text: `3+ consecutive edits detected. Must use batch:\n💡 mcx_tasks({ batch: [{ tool: "mcx_edit", params: {...} }, ...] })` }],
+            isError: true,
+          };
+        }
+        
         const batchTip = recentEdits >= 2 
           ? '\n💡 Multiple edits done. Batch remaining changes before build/test.'
           : '';
