@@ -2162,6 +2162,14 @@ const tree = (obj, depth = 2, indent = '') => {
   return indent + type;
 };
 `;
+  const FILE_HELPERS_LINE_COUNT = FILE_HELPERS_CODE.split('\n').length;
+  
+  // Filter out lint warnings from prepended helpers (lines in helper code, not user code)
+  const filterHelperLogs = (logs: string[]) => logs.filter(log => {
+    const match = log.match(/\(line (\d+)\)/);
+    if (!match) return true;
+    return parseInt(match[1], 10) > FILE_HELPERS_LINE_COUNT;
+  });
 
   const adapterContext = buildAdapterContext(adapters);
 
@@ -2361,7 +2369,7 @@ const tree = (obj, depth = 2, indent = '') => {
       });
 
       task.completedAt = Date.now();
-      task.logs = result.logs || [];
+      task.logs = filterHelperLogs(result.logs || []);
 
       if (result.success) {
         task.status = 'completed';
@@ -2944,7 +2952,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           }
           
           // Skip logs/context for undefined var errors (not helpful)
-          const truncatedLogs = isUndefinedVarError ? [] : truncateLogs(result.logs);
+          const truncatedLogs = isUndefinedVarError ? [] : truncateLogs(filterHelperLogs(result.logs));
           const logsSection = truncatedLogs.length > 0 ? `\n\nLogs:\n${truncatedLogs.join("\n")}` : "";
 
           // Auto-fetch error context using FFF if available (skip for undefined var errors)
@@ -3090,7 +3098,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           maxItems: params.maxItems,
           maxStringLength: params.maxStringLength,
         });
-        const truncatedLogs = truncateLogs(result.logs);
+        const truncatedLogs = truncateLogs(filterHelperLogs(result.logs));
 
         // Build store message with metadata
         const storedVars = params.storeAs && params.storeAs !== 'result'
