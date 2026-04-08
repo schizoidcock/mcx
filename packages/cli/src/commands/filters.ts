@@ -176,6 +176,72 @@ export const BUILTIN_FILTERS: FilterRule[] = [
     matchCommand: '\\bps\\s',
     pipeline: { stripAnsi: true, truncateLinesAt: 120, maxLines: 30 },
   },
+  {
+    name: 'cargo-test',
+    description: 'Rust test failures only',
+    matchCommand: '\\bcargo\\s+(test|t)\\b',
+    matchOutput: 'test result: ok',
+    pipeline: {
+      stripAnsi: true,
+      keepLines: ['^test .* FAILED', '^failures:', '^    ', '^thread .* panicked', '^error\\[', 'test result:'],
+      maxLines: 50,
+      onEmpty: '✓ cargo test: passed',
+    },
+  },
+  {
+    name: 'pytest',
+    description: 'Python test failures only',
+    matchCommand: '\\b(pytest|py\\.test)\\b',
+    matchOutput: 'passed',
+    pipeline: {
+      stripAnsi: true,
+      keepLines: ['^FAILED', '^ERROR', '^=+ FAILURES', '^=+ ERRORS', '^    ', '^E\\s+', '^>\\s+', 'passed|failed|error'],
+      maxLines: 50,
+      onEmpty: '✓ pytest: passed',
+    },
+  },
+  {
+    name: 'go-test',
+    description: 'Go test failures only',
+    matchCommand: '\\bgo\\s+test\\b',
+    matchOutput: '^ok\\s+',
+    pipeline: {
+      stripAnsi: true,
+      keepLines: ['^---\\s*FAIL', '^FAIL', '^panic:', '\\s+Error:', '\\s+Got:', '\\s+Want:', 'coverage:'],
+      maxLines: 50,
+      onEmpty: '✓ go test: passed',
+    },
+  },
+  {
+    name: 'ruff-check',
+    description: 'Compact ruff linter output',
+    matchCommand: '\\bruff\\s+(check|\\.)\\b',
+    matchOutput: 'All checks passed',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^Found \\d+ error'],
+      truncateLinesAt: 100,
+      maxLines: 40,
+      onEmpty: '✓ ruff: ok',
+    },
+  },
+  {
+    name: 'npm-test',
+    description: 'JS test failures only',
+    matchCommand: '\\b(npm|pnpm|bun)\\s+(test|t)\\b',
+    pipeline: {
+      stripAnsi: true,
+      keepLines: ['^\\s*(FAIL|PASS|✓|✗|×)', '^\\s+●', '^\\s+at\\s', 'Tests:', 'failed', 'passed'],
+      maxLines: 50,
+      onEmpty: '✓ tests: passed',
+    },
+  },
+  {
+    name: 'tree',
+    description: 'Compact tree output',
+    matchCommand: '\\btree\\b',
+    pipeline: { stripAnsi: true, maxLines: 50 },
+  },
 ];
 
 // ============================================================================
