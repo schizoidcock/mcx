@@ -516,6 +516,11 @@ const sessionWorkflow = {
   maxHistory: 10,
 };
 
+/** Track consecutive lines() calls per variable for hunting detection */
+const linesCallTracker = new Map<string, { count: number; lastRange: [number, number]; timestamp: number }>();
+const LINES_HUNT_THRESHOLD = 3; // Block on 3rd consecutive call
+const LINES_HUNT_WINDOW_MS = 60_000; // Reset after 60s
+
 /** Detect inefficient usage patterns and return suggestion */
 function detectInefficiency(tool: string, file?: string): string | null {
   const recent = sessionWorkflow.lastTools.slice(-5);
@@ -2896,6 +2901,48 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           };
         }
 
+        // === Enforcement: Detect lines() hunting pattern ===
+        let linesHuntingTip = '';
+        const linesMatch = code.match(/lines\(\$(\w+),\s*(\d+),\s*(\d+)\)/);
+        if (linesMatch) {
+          const [, varName, startStr, endStr] = linesMatch;
+          const start = parseInt(startStr, 10);
+          const end = parseInt(endStr, 10);
+          const now = Date.now();
+          const tracker = linesCallTracker.get(varName);
+          
+          if (tracker && now - tracker.timestamp < LINES_HUNT_WINDOW_MS) {
+            // Check if ranges are adjacent/overlapping (hunting pattern)
+            const [lastStart, lastEnd] = tracker.lastRange;
+            const isHunting = start <= lastEnd + 50 && start >= lastStart - 50;
+            
+            if (isHunting) {
+              tracker.count++;
+              tracker.lastRange = [start, end];
+              tracker.timestamp = now;
+              
+              if (tracker.count >= LINES_HUNT_THRESHOLD) {
+                linesCallTracker.delete(varName); // Reset after block
+                return {
+                  content: [{ type: "text" as const, text: `Hunting pattern detected (${tracker.count}+ overlapping lines() calls)\n💡 Must use grepContext($${varName}, 'pattern') to locate first, then lines()` }],
+                  isError: true,
+                };
+              } else if (tracker.count === 2) {
+                // 2nd overlapping call - add tip to result
+                linesHuntingTip = `\n💡 Overlapping ranges detected. Use grepContext($${varName}, 'pattern') to locate first.`;
+              }
+            } else {
+              // Non-overlapping range, reset counter
+              tracker.count = 1;
+              tracker.lastRange = [start, end];
+              tracker.timestamp = now;
+            }
+          } else {
+            // First call or expired, start tracking
+            linesCallTracker.set(varName, { count: 1, lastRange: [start, end], timestamp: now });
+          }
+        }
+
         // Auto-recovery: detect file helper patterns with undefined variables
         // and auto-load matching files before execution
         if (fileFinder) {
@@ -3155,7 +3202,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
 
         // Build content array with text first, then images
         const content: Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string }> = [
-          { type: "text" as const, text: textOutput + suggestNextTool("mcx_execute") },
+          { type: "text" as const, text: textOutput + linesHuntingTip + suggestNextTool("mcx_execute") },
           ...images,
         ];
 
