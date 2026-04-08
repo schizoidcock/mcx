@@ -2849,7 +2849,8 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             if (finalStderr) outputParts.push('', finalStderr);
             if (!finalStdout && !finalStderr) outputParts.push('(no output)');
 
-            return { content: [{ type: "text" as const, text: outputParts.join('\n') }], _rawBytes: totalBytes };
+            const outputText = outputParts.join('\n');
+            return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: totalBytes };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { content: [{ type: "text" as const, text: `Python error: ${message}` }], isError: true };
@@ -4960,6 +4961,7 @@ Examples:
             trackToolUsage('mcx_fetch');
             return {
               content: [{ type: "text" as const, text: outputText }],
+              toolResult: outputText,
               _rawBytes: cachedSize,
             };
           }
@@ -5073,6 +5075,7 @@ Examples:
         trackToolUsage('mcx_fetch');
         return {
           content: [{ type: "text" as const, text: outputText }],
+          toolResult: outputText,
           _rawBytes: content.length,
         };
       } catch (error) {
