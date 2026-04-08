@@ -4694,7 +4694,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
               ? `\nFound at lines: ${occurrences.slice(0, 5).join(', ')}${occurrences.length > 5 ? ` (+${occurrences.length - 5} more)` : ''}`
               : '';
             return {
-              content: [{ type: "text" as const, text: `Error: Multiple occurrences found.${linesInfo}\n\nUse replace_all: true or provide more context.` }],
+              content: [{ type: "text" as const, text: `Multiple occurrences found.${linesInfo}\n💡 Use replace_all: true or provide more context.` }],
               isError: true,
             };
           }
