@@ -1347,6 +1347,13 @@ function enforceShellRedirects(cmd: string): { content: Array<{ type: "text"; te
     return blocked(`❌ Use mcx_find instead:\n  mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
   }
   
+  // curl/wget → mcx_fetch
+  const curlMatch = cmd.match(/\b(curl|wget)\s+.*?(https?:\/\/[^\s"']+)/);
+  if (curlMatch) {
+    const url = curlMatch[2];
+    return blocked(`❌ Use mcx_fetch instead:\n  mcx_fetch({ url: "${url}" })`);
+  }
+  
   return null;
 }
 
