@@ -755,6 +755,58 @@ export function formatLogOutput(output: string): string | null {
   return result.join('\n');
 }
 
+// ============================================================================
+// GITHUB CLI FORMATTERS (RTK-style JSON parsing)
+// ============================================================================
+
+/** Format gh pr list - parse JSON, show compact list */
+export function formatGhPrList(output: string): string | null {
+  try {
+    const prs = JSON.parse(output.trim());
+    if (!Array.isArray(prs) || prs.length === 0) return null;
+    const result = ['Pull Requests'];
+    for (const pr of prs.slice(0, 20)) {
+      const icon = pr.state === 'MERGED' ? '✓' : pr.state === 'CLOSED' ? '✗' : '○';
+      result.push(`  ${icon} #${pr.number || '?'} ${(pr.title || '').slice(0, 60)} (${pr.author?.login || '?'})`);
+    }
+    if (prs.length > 20) result.push(`  ... +${prs.length - 20} more`);
+    return result.join('\n');
+  } catch (e) { return null; }
+}
+
+/** Format gh issue list - parse JSON, show compact list */
+export function formatGhIssueList(output: string): string | null {
+  try {
+    const issues = JSON.parse(output.trim());
+    if (!Array.isArray(issues) || issues.length === 0) return null;
+    const out = ['Issues'];
+    for (const i of issues.slice(0, 20)) {
+      const icon = i.state === 'CLOSED' ? '✓' : '○';
+      const labels = (i.labels || []).map((l: any) => l.name).slice(0, 2).join(', ');
+      out.push(`  ${icon} #${i.number || '?'} ${(i.title || '').slice(0, 60)}${labels ? ` [${labels}]` : ''}`);
+    }
+    if (issues.length > 20) out.push(`  ... +${issues.length - 20} more`);
+    return out.join('\n');
+  } catch (_) { return null; }
+}
+
+/** Format gh run list - parse JSON, show workflow runs */
+export function formatGhRunList(output: string): string | null {
+  try {
+    const runs = JSON.parse(output.trim());
+    if (!Array.isArray(runs) || runs.length === 0) return null;
+    const lines: string[] = ['Workflow Runs'];
+    for (const r of runs.slice(0, 15)) {
+      const icon = r.conclusion === 'success' ? '✓' : r.conclusion === 'failure' ? '✗' : r.status === 'in_progress' ? '●' : '○';
+      lines.push(`  ${icon} ${r.databaseId || r.id || '?'} ${(r.name || r.workflowName || '').slice(0, 40)} (${r.headBranch || ''})`);
+    }
+    if (runs.length > 15) lines.push(`  ... +${runs.length - 15} more`);
+    return lines.join('\n');
+  } catch (err) { return null; }
+}
+
+/**
+
 /**
  * Smart 60/40 truncation - preserve head and tail
  */
@@ -841,10 +893,24 @@ export function applyHybridFilter(
     if (formatted) return formatted;
   }
 
-  // ls -la output (tree format with sizes)
+  // ls -la output (compact with sizes)
   if (/\bls\s+.*-[la]/.test(mainCmd)) {
     const lsFormatted = formatLsOutput(output);
     if (lsFormatted) return lsFormatted;
+  }
+
+  // GitHub CLI - parse JSON output
+  if (/\bgh\s+pr\s+list\b/.test(mainCmd)) {
+    const ghFormatted = formatGhPrList(output);
+    if (ghFormatted) return ghFormatted;
+  }
+  if (/\bgh\s+issue\s+list\b/.test(mainCmd)) {
+    const ghIssues = formatGhIssueList(output);
+    if (ghIssues) return ghIssues;
+  }
+  if (/\bgh\s+run\s+list\b/.test(mainCmd)) {
+    const ghRuns = formatGhRunList(output);
+    if (ghRuns) return ghRuns;
   }
 
   // Log deduplication (for tail, logs commands)
