@@ -727,12 +727,23 @@ export function applyHybridFilter(
   
   // 1. Try declarative filters FIRST (always, regardless of size)
   const declarative = applyDeclarativeFilter(mainCmd, output);
+
+  // 2. JSON structure detection (applies to any output that looks like JSON)
+  // Run this BEFORE returning declarative result so JSON is always formatted
+  const baseOutput = declarative || output;
+  const trimmed = baseOutput.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    const jsonFormatted = formatJsonStructure(baseOutput);
+    if (jsonFormatted) return jsonFormatted;
+  }
+
+  // Return declarative result if not JSON
   if (declarative) return declarative;
-  
+
   // Skip fallbacks if output is small (no point in truncating/formatting)
   if (output.length < 500) return output;
-  
-  // 2. Try hardcoded formatters
+
+  // 3. Try hardcoded formatters
   if (/\bgit\s+(diff|show)\b/.test(mainCmd)) {
     const formatted = formatGitDiff(output);
     if (formatted) return formatted;
@@ -752,13 +763,8 @@ export function applyHybridFilter(
     const formatted = formatDockerLogs(output);
     if (formatted) return formatted;
   }
-  
-  // JSON structure (for curl, cat *.json, etc.)
-  if (/\b(curl|wget|cat)\b.*\.json/i.test(mainCmd) || output.trim().startsWith('{') || output.trim().startsWith('[')) {
-    const jsonFormatted = formatJsonStructure(output);
-    if (jsonFormatted) return jsonFormatted;
-  }
-  
+
+
   // Log deduplication (for tail, logs commands)
   if (/\b(tail|logs?)\b/i.test(mainCmd)) {
     const logFormatted = formatLogOutput(output);
