@@ -4555,12 +4555,16 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
 
   // Tool: mcx_edit (bypass native Edit's read requirement)
   const EditInputSchema = z.object({
-    file_path: z.string().describe("Absolute path to the file to edit"),
+    file_path: z.string().optional().describe("Absolute path to the file to edit"),
     old_string: z.string().optional().describe("String mode: exact string to find and replace"),
-    new_string: z.string().describe("The replacement string/content"),
+    new_string: z.string().optional().describe("The replacement string/content"),
     replace_all: z.boolean().optional().default(false).describe("String mode: replace all occurrences"),
     start: z.coerce.number().optional().describe("Line mode: start line (1-indexed)"),
     end: z.coerce.number().optional().describe("Line mode: end line (1-indexed, inclusive)"),
+    // Allow extra params for detecting wrong tool usage
+    mode: z.string().optional(),
+    path: z.string().optional(),
+    code: z.string().optional(),
   });
   type EditInput = z.infer<typeof EditInputSchema>;
 
@@ -4587,6 +4591,22 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
     },
     async (params: EditInput): Promise<MCP.CallToolResult> => {
       try {
+        // Detect wrong tool usage (mcx_file params sent to mcx_edit)
+        if (params.mode || params.code || (params.path && !params.file_path)) {
+          return {
+            content: [{ type: "text" as const, text: `Wrong tool. Use mcx_file for reading/processing files.\n💡 mcx_edit({ file_path, new_string, start, end }) for edits` }],
+            isError: true,
+          };
+        }
+
+        // Validate required params
+        if (!params.file_path || !params.new_string) {
+          return {
+            content: [{ type: "text" as const, text: `Missing required params: file_path and new_string\n💡 mcx_edit({ file_path: "...", new_string: "...", start: N, end: N })` }],
+            isError: true,
+          };
+        }
+
         const { file_path, old_string, new_string, replace_all, start, end } = params;
 
         let resolvedPath = file_path;
