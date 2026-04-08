@@ -421,45 +421,52 @@ function compactPath(filePath: string, maxLen: number = 50): string {
  * Format git diff output - group changes by file with +/- summary
  */
 export function formatGitDiff(output: string): string | null {
-  const lines = output.replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+  const diffLines = output.replace(/\x1b\[[0-9;]*m/g, '').split('\n');
   
-  // Check if this looks like diff output
-  if (!lines.some(l => l.startsWith('diff --git') || l.startsWith('@@'))) {
+  if (!diffLines.some(l => l.startsWith('diff --git') || l.startsWith('@@'))) {
     return null;
   }
   
-  const files: { name: string; adds: number; dels: number }[] = [];
-  let current: typeof files[0] | null = null;
+  const MAX_CHANGES = 10;
+  type FileChange = { name: string; adds: number; dels: number; changes: string[] };
+  const files: FileChange[] = [];
+  let cur: FileChange | null = null;
   
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      const match = line.match(/diff --git a\/(.+) b\//);
-      if (match) {
-        current = { name: match[1], adds: 0, dels: 0 };
-        files.push(current);
+  for (const ln of diffLines) {
+    if (ln.startsWith('diff --git')) {
+      const m = ln.match(/diff --git a\/(.+) b\//);
+      if (m) {
+        cur = { name: m[1], adds: 0, dels: 0, changes: [] };
+        files.push(cur);
       }
-    } else if (line.startsWith('+') && !line.startsWith('+++') && current) {
-      current.adds++;
-    } else if (line.startsWith('-') && !line.startsWith('---') && current) {
-      current.dels++;
+    } else if (cur && ln.startsWith('+') && !ln.startsWith('+++')) {
+      cur.adds++;
+      cur.changes = [...cur.changes, ln];
+    } else if (cur && ln.startsWith('-') && !ln.startsWith('---')) {
+      cur.dels++;
+      cur.changes = [...cur.changes, ln];
     }
   }
   
   if (files.length === 0) return null;
   
-  const result: string[] = [`${files.length} file${files.length > 1 ? 's' : ''} changed:`];
-  for (const f of files.slice(0, 15)) {
-    result.push(`  ${compactPath(f.name, 50)} (+${f.adds} -${f.dels})`);
-  }
-  if (files.length > 15) {
-    result.push(`  ... +${files.length - 15} more files`);
+  const out: string[] = [];
+  for (const f of files) {
+    out.push(`[file] ${compactPath(f.name, 50)} (+${f.adds} -${f.dels})`);
+    const visible = f.changes.slice(0, MAX_CHANGES);
+    visible.forEach(c => {
+      out.push(`  ${c.length > 100 ? c.slice(0, 100) + '...' : c}`);
+    });
+    if (f.changes.length > MAX_CHANGES) {
+      out.push(`  ... +${f.changes.length - MAX_CHANGES} more`);
+    }
   }
   
-  const totalAdds = files.reduce((s, f) => s + f.adds, 0);
-  const totalDels = files.reduce((s, f) => s + f.dels, 0);
-  result.push(`\nTotal: +${totalAdds} -${totalDels}`);
+  const totAdd = files.reduce((s, f) => s + f.adds, 0);
+  const totDel = files.reduce((s, f) => s + f.dels, 0);
+  out.push(`\nTotal: +${totAdd} -${totDel}`);
   
-  return result.join('\n');
+  return out.join('\n');
 }
 
 /**
