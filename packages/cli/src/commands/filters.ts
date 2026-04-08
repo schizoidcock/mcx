@@ -242,6 +242,72 @@ export const BUILTIN_FILTERS: FilterRule[] = [
     matchCommand: '\\btree\\b',
     pipeline: { stripAnsi: true, maxLines: 50 },
   },
+  // GitHub CLI
+  {
+    name: 'gh-pr-list',
+    description: 'Compact PR listing',
+    matchCommand: '\\bgh\\s+pr\\s+(list|ls)\\b',
+    pipeline: { stripAnsi: true, truncateLinesAt: 95, maxLines: 25 },
+  },
+  {
+    name: 'gh-pr-view',
+    description: 'Compact PR details',
+    matchCommand: '\\bgh\\s+pr\\s+(view|show)\\b',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*$', '^labels:', '^projects:', '^milestone:'],
+      maxLines: 35,
+    },
+  },
+  {
+    name: 'gh-issue-list',
+    description: 'Compact issue listing',
+    matchCommand: '\\bgh\\s+issue\\s+(list|ls)\\b',
+    pipeline: { stripAnsi: true, truncateLinesAt: 90, maxLines: 25 },
+  },
+  {
+    name: 'gh-run-list',
+    description: 'Compact workflow runs',
+    matchCommand: '\\bgh\\s+run\\s+(list|ls|view)\\b',
+    pipeline: { stripAnsi: true, truncateLinesAt: 110, maxLines: 22 },
+  },
+  {
+    name: 'gh-pr-checks',
+    description: 'Compact PR checks',
+    matchCommand: '\\bgh\\s+pr\\s+checks\\b',
+    pipeline: { stripAnsi: true, maxLines: 20 },
+  },
+  // kubectl
+  {
+    name: 'kubectl-get',
+    description: 'Compact k8s resources',
+    matchCommand: '\\bkubectl\\s+(get|describe)\\b',
+    pipeline: { stripAnsi: true, truncateLinesAt: 115, maxLines: 45 },
+  },
+  {
+    name: 'kubectl-logs',
+    description: 'Compact pod logs',
+    matchCommand: '\\bkubectl\\s+logs\\b',
+    pipeline: { stripAnsi: true, maxLines: 55 },
+  },
+  // AWS CLI
+  {
+    name: 'aws-cli',
+    description: 'Compact AWS output',
+    matchCommand: '\\baws\\s+',
+    pipeline: { stripAnsi: true, truncateLinesAt: 105, maxLines: 42 },
+  },
+  // curl/wget
+  {
+    name: 'curl-wget',
+    description: 'Strip progress bars',
+    matchCommand: '\\b(curl|wget)\\s+',
+    pipeline: {
+      stripAnsi: true,
+      stripLines: ['^\\s*%', '^\\s*\\d+\\s+\\d+', '^--', '^\\s*$'],
+      maxLines: 60,
+    },
+  },
 ];
 
 // ============================================================================
@@ -521,6 +587,98 @@ export function formatDockerLogs(output: string): string | null {
 }
 
 /**
+ * Format JSON output - show structure without values (like RTK json command)
+ */
+export function formatJsonStructure(output: string): string | null {
+  try {
+    const parsed = JSON.parse(output.trim());
+    return formatJsonObject(parsed, '', 0);
+  } catch {
+    return null;
+  }
+}
+
+function formatJsonObject(obj: any, path: string, depth: number): string {
+  if (depth > 4) return `${path}: ...`;
+  
+  const lines: string[] = [];
+  const type = Array.isArray(obj) ? 'array' : typeof obj;
+  
+  if (type === 'object' && obj !== null) {
+    const keys = Object.keys(obj);
+    if (keys.length === 0) {
+      lines.push(`${path || 'root'}: {}`);
+    } else {
+      lines.push(`${path || 'root'}: {${keys.length} keys}`);
+      for (const key of keys.slice(0, 10)) {
+        const child = formatJsonObject(obj[key], key, depth + 1);
+        lines.push('  ' + child);
+      }
+      if (keys.length > 10) lines.push(`  ... +${keys.length - 10} more keys`);
+    }
+  } else if (type === 'array') {
+    const arr = obj as any[];
+    if (arr.length === 0) {
+      lines.push(`${path || 'root'}: []`);
+    } else {
+      const itemType = typeof arr[0];
+      lines.push(`${path || 'root'}: [${arr.length} ${itemType}s]`);
+      if (itemType === 'object' && arr[0] !== null) {
+        const sample = formatJsonObject(arr[0], '[0]', depth + 1);
+        lines.push('  ' + sample);
+      }
+    }
+  } else {
+    lines.push(`${path}: ${type}`);
+  }
+  
+  return lines.join('\n');
+}
+
+/**
+ * Deduplicate log lines with counts (like RTK log command)
+ */
+export function formatLogOutput(output: string): string | null {
+  const lines = output.split('\n').filter(l => l.trim());
+  if (lines.length < 10) return null;
+  
+  // Normalize timestamps and count occurrences
+  const seen = new Map<string, { count: number; first: string }>();
+  const order: string[] = [];
+  
+  for (const line of lines) {
+    // Strip common timestamp patterns
+    const normalized = line
+      .replace(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*Z?\s*/g, '')
+      .replace(/^\[\d{4}-\d{2}-\d{2}.*?\]\s*/g, '')
+      .replace(/^\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s*/g, '')
+      .trim();
+    
+    if (!normalized) continue;
+    
+    if (!seen.has(normalized)) {
+      order.push(normalized);
+      seen.set(normalized, { count: 0, first: line.slice(0, 30) });
+    }
+    seen.get(normalized)!.count++;
+  }
+  
+  // Only format if meaningful deduplication
+  const deduped = lines.length - order.length;
+  if (deduped < 5) return null;
+  
+  const result: string[] = [`${lines.length} lines → ${order.length} unique:`];
+  for (const line of order.slice(0, 40)) {
+    const info = seen.get(line)!;
+    const truncated = line.slice(0, 90);
+    result.push(info.count > 1 ? `${truncated} (×${info.count})` : truncated);
+  }
+  if (order.length > 40) result.push(`... +${order.length - 40} more`);
+  
+  return result.join('\n');
+}
+
+/**
  * Smart 60/40 truncation - preserve head and tail
  */
 export function smartTruncate(output: string, maxChars: number = 4000): string {
@@ -593,6 +751,18 @@ export function applyHybridFilter(
   if (/\bdocker\s+logs\b/.test(mainCmd)) {
     const formatted = formatDockerLogs(output);
     if (formatted) return formatted;
+  }
+  
+  // JSON structure (for curl, cat *.json, etc.)
+  if (/\b(curl|wget|cat)\b.*\.json/i.test(mainCmd) || output.trim().startsWith('{') || output.trim().startsWith('[')) {
+    const jsonFormatted = formatJsonStructure(output);
+    if (jsonFormatted) return jsonFormatted;
+  }
+  
+  // Log deduplication (for tail, logs commands)
+  if (/\b(tail|logs?)\b/i.test(mainCmd)) {
+    const logFormatted = formatLogOutput(output);
+    if (logFormatted) return logFormatted;
   }
   
   // 3. Try grep detection (passed in from serve.ts)
