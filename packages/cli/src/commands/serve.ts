@@ -5242,7 +5242,7 @@ Results: $taskId (spawn) or $batch (batch).`,
           for (const cmd of params.commands) {
             output.push(`# ${cmd.label}`);
             try {
-              const proc = Bun.spawn(['bash', '-c', cmd.command], {
+              const proc = Bun.spawn([SHELL_PATH, '-c', cmd.command], {
                 cwd: process.cwd(),
                 stdout: 'pipe',
                 stderr: 'pipe',
