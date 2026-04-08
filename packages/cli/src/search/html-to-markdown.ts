@@ -37,8 +37,15 @@ export function htmlToMarkdown(html: string): string {
   // Convert inline code
   md = md.replace(/<code[^>]*>([^<]*)<\/code>/gi, '`$1`');
 
-  // Convert links
-  md = md.replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, '[$2]($1)');
+  // Convert links (but NOT anchor-only links)
+  md = md.replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, (_, href, text) => {
+    const cleanText = text.replace(/<[^>]+>/g, '').trim();
+    // Skip anchor-only links - just return the text
+    if (href.startsWith('#')) return cleanText;
+    // Skip empty links
+    if (!cleanText) return '';
+    return `[${cleanText}](${href})`;
+  });
 
   // Convert lists
   md = md.replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\n');
@@ -54,8 +61,17 @@ export function htmlToMarkdown(html: string): string {
   // Decode HTML entities
   md = decodeEntities(md);
 
-  // Clean up whitespace
-  md = md.replace(/\n{3,}/g, '\n\n').trim();
+  // Remove leftover anchor link syntax: [](#...) or [text](#...)
+  md = md.replace(/\[([^\]]*)\]\(#[^)]*\)/g, '$1');
+
+  // Remove empty brackets
+  md = md.replace(/\[\s*\]/g, '');
+
+  // Clean up whitespace aggressively
+  md = md.replace(/^[ \t]+/gm, '');         // Leading spaces (crucial for rendering)
+  md = md.replace(/[ \t]+$/gm, '');         // Trailing spaces
+  md = md.replace(/\n{3,}/g, '\n\n');       // Max 2 consecutive newlines
+  md = md.trim();
 
   return md;
 }
