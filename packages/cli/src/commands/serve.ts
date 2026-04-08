@@ -4,7 +4,7 @@
  * Exposes MCP tools:
  * - mcx_execute: Execute code in sandboxed environment with adapter access
  * - mcx_run_skill: Run a named skill with optional inputs
- * - mcx_list: List available adapters and skills
+ * - mcx_adapter: Unified adapter discovery and execution
  * - mcx_search: Search adapters, methods, and indexed content (FTS5)
  * - mcx_batch: Batch executions and searches (bypasses throttling)
  * - mcx_file: Process local files with code ($file)
@@ -3219,69 +3219,6 @@ ${skillList}`,
     }
   );
 
-  // Tool: mcx_list
-  server.registerTool(
-    "mcx_list",
-    {
-      title: "List MCX Adapters and Skills",
-      description: "List all available MCX adapters and skills with their methods and descriptions.",
-      inputSchema: ListInputSchema,
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async (params: ListInput) => {
-      // Apply truncation if enabled
-      const maxItems = params.truncate ? params.maxItems : Infinity;
-
-      const adaptersList = adapters.slice(0, maxItems).map((a) => ({
-        name: a.name,
-        description: a.description || "No description",
-        methodCount: Object.keys(a.tools).length,
-      }));
-
-      const skillsList = Array.from(skills.entries())
-        .slice(0, maxItems)
-        .map(([name, skill]) => ({
-          name,
-          description: skill.description || "No description",
-        }));
-
-      const output = {
-        adapters: adaptersList,
-        skills: skillsList,
-        truncated: params.truncate && (adapters.length > maxItems || skills.size > maxItems),
-        total: { adapters: adapters.length, skills: skills.size },
-      };
-
-      // Store in $list
-      const state = getSandboxState();
-      state.set('list', output);
-
-      // Return compact summary
-      const summary = [
-        `${output.total.adapters} adapters, ${output.total.skills} skills`,
-        `Adapters: ${adaptersList.map(a => `${a.name}(${a.methodCount})`).join(', ')}`,
-        output.total.skills > 0 ? `Skills: ${skillsList.map(s => s.name).join(', ')}` : '',
-        '',
-        'Stored as $list. Use mcx_search(adapter: "name") for details.',
-      ].filter(Boolean).join('\n');
-
-      return {
-        content: [{ type: "text" as const, text: summary }],
-        toolResult: summary,
-        structuredContent: {
-          storedAs: ['list'],
-          counts: output.total,
-          truncated: output.truncated,
-        },
-      };
-    }
-  );
-
 
   // Tool: mcx_adapter - Unified adapter discovery and execution
   const AdapterInputSchema = z.object({
@@ -5459,8 +5396,8 @@ Examples:
         const TOOL_SCHEMA_TOKENS: Record<string, number> = {
           mcx_execute: 650, mcx_file: 650, mcx_find: 200, mcx_grep: 200,
           mcx_edit: 200, mcx_write: 150, mcx_search: 300, mcx_fetch: 200,
-          mcx_batch: 250, mcx_stats: 100, mcx_spawn: 100, mcx_tasks: 100,
-          mcx_watch: 100, mcx_doctor: 100, mcx_upgrade: 100, mcx_list: 100,
+          mcx_batch: 250, mcx_stats: 100, mcx_tasks: 150, mcx_adapter: 400,
+          mcx_watch: 100, mcx_doctor: 100, mcx_upgrade: 100,
           mcx_run_skill: 150,
         };
         
@@ -5514,68 +5451,11 @@ Examples:
     }
   );
 
-  // Tool: mcx_spawn (Background execution)
-  const SpawnInputSchema = z.object({
-    code: z.string().min(1).describe("Code to run in background"),
-    label: z.string().optional().describe("Optional label for the task"),
-  });
-  type SpawnInput = z.infer<typeof SpawnInputSchema>;
 
-  server.registerTool(
-    "mcx_spawn",
-    {
-      title: "Background Execution",
-      description: `Run code in background, returns immediately with task ID.
-
-Examples:
-- mcx_spawn({ code: "await slowApi.processData()" })
-- mcx_spawn({ code: "poll(...)", label: "data-sync" })
-
-Check status with mcx_tasks. Results stored as $task_N.`,
-      inputSchema: SpawnInputSchema,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true,
-      },
-    },
-    async (params: SpawnInput) => {
-      const taskId = params.label || generateTaskId();
-
-      // Check if label already exists and is running
-      if (params.label && backgroundTasks.has(taskId)) {
-        const existing = backgroundTasks.get(taskId)!;
-        if (existing.status === 'running') {
-          return {
-            content: [{ type: "text" as const, text: `Task "${taskId}" already running` }],
-            isError: true,
-          };
-        }
-      }
-
-      const task: BackgroundTask = {
-        id: taskId,
-        code: params.code.slice(0, 100) + (params.code.length > 100 ? '...' : ''),
-        status: 'running',
-        startedAt: Date.now(),
-        logs: [],
-      };
-
-      backgroundTasks.set(taskId, task);
-
-      // Run in background (don't await)
-      runBackgroundTask(taskId, params.code);
-
-      return {
-        content: [{ type: "text" as const, text: `Started ${taskId}. Check with mcx_tasks, result in $${taskId}` }],
-        structuredContent: { taskId, status: 'running' },
-      };
-    }
-  );
-
-  // Tool: mcx_tasks (List/check background tasks)
+  // Tool: mcx_tasks (Background tasks: spawn and manage)
   const TasksInputSchema = z.object({
+    code: z.string().optional().describe("Code to spawn in background"),
+    label: z.string().optional().describe("Label for spawned task"),
     id: z.string().optional().describe("Get specific task by ID"),
     status: z.enum(['all', 'running', 'completed', 'failed']).optional().default('all'),
   });
@@ -5585,22 +5465,60 @@ Check status with mcx_tasks. Results stored as $task_N.`,
     "mcx_tasks",
     {
       title: "Background Tasks",
-      description: `List or check background tasks started with mcx_spawn.
+      description: `Spawn background tasks and check their status.
 
-Examples:
+## Spawn
+- mcx_tasks({ code: "await slowApi.process()" })
+- mcx_tasks({ code: "poll(...)", label: "sync" })
+
+## List/Check
 - mcx_tasks() → list all tasks
 - mcx_tasks({ status: "running" }) → only running
-- mcx_tasks({ id: "task_1" }) → specific task details`,
+- mcx_tasks({ id: "task_1" }) → specific task
+
+Results stored as $taskId (e.g., $task_1 or $sync).`,
       inputSchema: TasksInputSchema,
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
       },
     },
     async (params: TasksInput) => {
-      // Specific task lookup
+      // === Spawn mode (when code provided) ===
+      if (params.code) {
+        const taskId = params.label || generateTaskId();
+
+        // Check if label already exists and is running
+        if (params.label && backgroundTasks.has(taskId)) {
+          const existing = backgroundTasks.get(taskId)!;
+          if (existing.status === 'running') {
+            return {
+              content: [{ type: "text" as const, text: `Task "${taskId}" already running` }],
+              isError: true,
+            };
+          }
+        }
+
+        const task: BackgroundTask = {
+          id: taskId,
+          code: params.code.slice(0, 100) + (params.code.length > 100 ? '...' : ''),
+          status: 'running',
+          startedAt: Date.now(),
+          logs: [],
+        };
+
+        backgroundTasks.set(taskId, task);
+        runBackgroundTask(taskId, params.code);
+
+        return {
+          content: [{ type: "text" as const, text: `Started ${taskId}. Result in $${taskId}` }],
+          structuredContent: { taskId, status: 'running' },
+        };
+      }
+
+      // === Get specific task ===
       if (params.id) {
         const task = backgroundTasks.get(params.id);
         if (!task) {
@@ -6304,7 +6222,7 @@ async function runStdio(fffSearchPath?: string) {
   logger.startup(pkg.version, "stdio");
 
   console.error(pc.green("MCX MCP server running"));
-  console.error(pc.dim("Tools: mcx_execute, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_find, mcx_grep, mcx_stats, mcx_watch, mcx_doctor, mcx_upgrade, mcx_list, mcx_run_skill"));
+  console.error(pc.dim("Tools: mcx_execute, mcx_adapter, mcx_search, mcx_batch, mcx_file, mcx_edit, mcx_write, mcx_fetch, mcx_stats, mcx_tasks, mcx_watch, mcx_doctor, mcx_upgrade, mcx_find, mcx_grep, mcx_run_skill"));
   console.error(pc.dim(`Logs: ${logger.getLogPath()}`));
 }
 
