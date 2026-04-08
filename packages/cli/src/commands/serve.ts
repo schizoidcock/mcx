@@ -2134,7 +2134,7 @@ const paths = (obj, prefix = '', _depth = 0) => {
   }
   if (_depth > 0) return result;
   return result.slice(0, 50).join('\\n') + (result.length > 50 ? '\\n... +' + (result.length - 50) : '');
-;
+};
 const tree = (obj, depth = 2, indent = '') => {
   if (obj === null) return indent + 'null';
   if (obj === undefined) return indent + 'undefined';
