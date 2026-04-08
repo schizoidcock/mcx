@@ -4765,15 +4765,19 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           }
         }
 
-        // Pattern C: Block on 3rd+ consecutive edit (BEFORE writing)
-        // Check is BEFORE trackToolUsage, so 2 in history = this is the 3rd attempt
-        const recentEdits = sessionWorkflow.lastTools.filter(t => t.tool === 'mcx_edit').length;
-        if (recentEdits >= 3) {
-          return {
-            content: [{ type: "text" as const, text: `4+ consecutive edits detected. Must use batch:\n💡 mcx_tasks({ batch: [{ tool: "mcx_edit", params: {...} }, ...] })` }],
-            isError: true,
-          };
-        }
+        // Pattern C: Block on 4th+ consecutive edit (DISABLED - re-enable when MCX is CLI)
+        // TODO: Re-enable when mcx_tasks batch mode supports tool calls
+        // let consecutiveEdits = 0;
+        // for (let i = sessionWorkflow.lastTools.length - 1; i >= 0; i--) {
+        //   if (sessionWorkflow.lastTools[i].tool === 'mcx_edit') consecutiveEdits++;
+        //   else break;
+        // }
+        // if (consecutiveEdits >= 3) {
+        //   return {
+        //     content: [{ type: "text" as const, text: `4+ consecutive edits detected. Must use batch:\n💡 mcx_tasks({ batch: [{ tool: "mcx_edit", params: {...} }, ...] })` }],
+        //     isError: true,
+        //   };
+        // }
 
         await Bun.write(resolvedPath, newContent);
 
@@ -5977,7 +5981,7 @@ Use path param to search in a different directory (e.g., path: "D:/projects/myap
       // Detect unsupported glob patterns
       if (params.query.includes('**')) {
         return { 
-          content: [{ type: "text" as const, text: `Glob patterns with ** not supported\n💡 Use simple patterns: "*.ts", "pool/", "models.ts"` }], 
+          content: [{ type: "text" as const, text: `Recursive glob ** not supported. FFF uses fuzzy search.\n💡 Use: "*.ts" (by extension), "pool/" (by directory), or "models" (fuzzy match)` }], 
           isError: true 
         };
       }
@@ -6098,6 +6102,22 @@ Modes: plain (default), regex, fuzzy.`,
           }],
           isError: true,
         };
+      }
+
+      // Detect "filename.ext searchterm" where filename lacks wildcards
+      const spaceIdx = params.query.indexOf(' ');
+      if (spaceIdx > 0) {
+        const firstPart = params.query.slice(0, spaceIdx);
+        const searchPart = params.query.slice(spaceIdx + 1);
+        // If first part looks like a filename (has .) but no wildcards (* or **)
+        if (firstPart.includes('.') && !firstPart.includes('*')) {
+          return {
+            content: [{ type: "text" as const, text: 
+              `Filename "${firstPart}" needs wildcard to match subdirs\n💡 mcx_grep({ query: "**/${firstPart} ${searchPart}" }) or mcx_grep({ query: "${searchPart}", glob: "**/${firstPart}" })`
+            }],
+            isError: true,
+          };
+        }
       }
 
       // Resolve symlinks so FFF searches the actual directory
