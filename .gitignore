@@ -38,3 +38,7 @@ packages/adapters/src/github.ts
 .claude/
 examples/
 .codemap/
+
+# CLI prototypes (experimental)
+packages/mcx-zig/
+packages/mcx-rust/

@@ -4663,7 +4663,8 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
             const replacedLines = lines.slice(start - 1, end).join('\n');
             const oldBraces = checkBraceBalance(replacedLines);
             const newBraces = checkBraceBalance(new_string);
-            if (oldBraces !== newBraces) {
+            // Allow if new content is self-balanced OR if balance matches
+            if (newBraces !== 0 && oldBraces !== newBraces) {
               const diff = newBraces - oldBraces;
               return {
                 content: [{ type: "text" as const, 
@@ -4742,7 +4743,8 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           // Check brace balance of old_string vs new_string
           const oldBraces = checkBraceBalance(old_string);
           const newBraces = checkBraceBalance(new_string);
-          if (oldBraces !== newBraces) {
+          // Allow if new content is self-balanced OR if balance matches
+          if (newBraces !== 0 && oldBraces !== newBraces) {
             const diff = newBraces - oldBraces;
             return {
               content: [{ type: "text" as const, 
