@@ -4298,7 +4298,8 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             : storeAsOutput;
 
           return {
-            content: [{ type: "text" as const, text: finalOutput }]
+            content: [{ type: "text" as const, text: finalOutput }],
+            toolResult: `Stored $${params.storeAs} (${__raw.lines.length} lines)`
           };
         }
 
