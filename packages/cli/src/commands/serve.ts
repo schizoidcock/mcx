@@ -4611,8 +4611,8 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           };
         }
 
-        // Validate required params
-        if (!params.file_path || !params.new_string) {
+        // Validate required params (new_string can be empty string for deletions)
+        if (!params.file_path || params.new_string === undefined) {
           return {
             content: [{ type: "text" as const, text: `Missing required params: file_path and new_string\n💡 mcx_edit({ file_path: "...", new_string: "...", start: N, end: N })` }],
             isError: true,
