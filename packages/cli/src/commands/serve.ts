@@ -4656,6 +4656,25 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           isAppend = start > lines.length;
           const before = isAppend ? lines : lines.slice(0, start - 1);
           const after = isAppend ? [] : lines.slice(end);
+          
+          // Check brace balance of replaced section vs new content
+          if (!isAppend) {
+            const replacedLines = lines.slice(start - 1, end).join('\n');
+            const oldBraces = checkBraceBalance(replacedLines);
+            const newBraces = checkBraceBalance(new_string);
+            if (oldBraces !== newBraces) {
+              const diff = newBraces - oldBraces;
+              return {
+                content: [{ type: "text" as const, 
+                  text: `⚠️ Brace imbalance: replacing lines ${start}-${end} changes brace count by ${diff > 0 ? '+' : ''}${diff}\n` +
+                        `   Original section: ${oldBraces} braces | New content: ${newBraces} braces\n` +
+                        `💡 Verify new_string includes all { } from original lines`
+                }],
+                isError: true,
+              };
+            }
+          }
+          
           newContent = [...before, new_string, ...after].join('\n');
           editStartLine = start;
         }
@@ -4715,6 +4734,20 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
               : '';
             return {
               content: [{ type: "text" as const, text: `Multiple occurrences found.${linesInfo}\n💡 Use replace_all: true or provide more context.` }],
+              isError: true,
+            };
+          }
+          
+          // Check brace balance of old_string vs new_string
+          const oldBraces = checkBraceBalance(old_string);
+          const newBraces = checkBraceBalance(new_string);
+          if (oldBraces !== newBraces) {
+            const diff = newBraces - oldBraces;
+            return {
+              content: [{ type: "text" as const, 
+                text: `⚠️ Brace imbalance: old_string has ${oldBraces} braces, new_string has ${newBraces} (diff: ${diff > 0 ? '+' : ''}${diff})\n` +
+                      `💡 Verify new_string includes all { } from old_string`
+              }],
               isError: true,
             };
           }
@@ -4841,8 +4874,11 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
 
   // Tool: mcx_write (create/overwrite files, bypasses native Write's read requirement)
   const WriteInputSchema = z.object({
-    file_path: z.string().describe("Absolute path to the file to create/overwrite"),
+    file_path: z.string().optional().describe("Absolute path to the file to create/overwrite"),
+    path: z.string().optional().describe("Alias for file_path"),
     content: z.string().describe("The content to write to the file"),
+  }).refine(data => data.file_path || data.path, {
+    message: "Either file_path or path is required"
   });
   type WriteInput = z.infer<typeof WriteInputSchema>;
 
@@ -4860,11 +4896,12 @@ Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
     },
     async (params: WriteInput): Promise<MCP.CallToolResult> => {
       try {
-        const { file_path, content } = params;
+        const { file_path, path, content } = params;
+        const filePath = file_path || path!;
 
-        let resolvedPath = file_path;
-        if (!isAbsolute(file_path)) {
-          resolvedPath = join(process.cwd(), file_path);
+        let resolvedPath = filePath;
+        if (!isAbsolute(filePath)) {
+          resolvedPath = join(process.cwd(), filePath);
         }
 
         await Bun.write(resolvedPath, content);
@@ -4873,8 +4910,10 @@ Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
         fileEditTime.set(resolvedPath, Date.now());
 
         const lines = content.split('\n').length;
+        const msg = `✓ Wrote ${lines} lines to ${basename(resolvedPath)}`;
         return {
-          content: [{ type: "text" as const, text: `✓ Wrote ${lines} lines to ${basename(resolvedPath)}` }],
+          content: [{ type: "text" as const, text: msg }],
+          toolResult: msg,
         };
       } catch (error) {
         logger.error("mcx_write error", error);
