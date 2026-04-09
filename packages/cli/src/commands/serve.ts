@@ -536,6 +536,13 @@ const blockedResponse = (msg: string) => ({
   isError: true as const 
 });
 
+/** Sanitize string for JSON serialization (remove lone surrogates) */
+const sanitizeForJson = (str: string): string => {
+  // Remove lone surrogates (U+D800-U+DFFF) that would break JSON
+  // These can appear when UTF-16 strings are improperly handled
+  return str.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+};
+
 /** Workflow tracking for inefficiency detection (Optimization #5) */
 const sessionWorkflow = {
   lastTools: [] as Array<{ tool: string; file?: string; timestamp: number }>,
@@ -1191,13 +1198,15 @@ function extractSnippet(text: string, query: string, windowSize: number = 300): 
 
 
 /**
- * Enforce character limit on text output
+ * Enforce character limit on text output and sanitize for JSON
  */
 function enforceCharacterLimit(text: string, limit: number = CHARACTER_LIMIT): { text: string; truncated: boolean } {
-  if (text.length <= limit) {
-    return { text, truncated: false };
+  // Sanitize first to remove lone surrogates that break JSON
+  const sanitized = sanitizeForJson(text);
+  if (sanitized.length <= limit) {
+    return { text: sanitized, truncated: false };
   }
-  const truncatedText = text.slice(0, limit) + `\n\n... [Response truncated at ${limit} chars, original was ${text.length}]`;
+  const truncatedText = sanitized.slice(0, limit) + `\n\n... [Response truncated at ${limit} chars, original was ${sanitized.length}]`;
   return { text: truncatedText, truncated: true };
 }
 
