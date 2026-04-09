@@ -4870,7 +4870,8 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
 
         if (patternHTip) {
           return {
-            content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.\n${patternHTip}` }],
+            content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.${patternHTip}` }],
+            toolResult: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.${patternHTip}`,
           };
         }
 
@@ -4885,11 +4886,13 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
 
         return {
           content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}${noRereadTip}${batchTip}` }],
+          toolResult: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}${noRereadTip}${batchTip}`,
         };
       } catch (error) {
         logger.error("mcx_edit error", error);
         return {
           content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          toolResult: `Error: ${error instanceof Error ? error.message : String(error)}`,
           isError: true,
         };
       }
@@ -4943,6 +4946,7 @@ Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
         logger.error("mcx_write error", error);
         return {
           content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          toolResult: `Error: ${error instanceof Error ? error.message : String(error)}`,
           isError: true,
         };
       }
