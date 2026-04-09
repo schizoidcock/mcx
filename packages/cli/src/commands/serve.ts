@@ -2875,6 +2875,8 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         if (code === '$clear') {
           const count = state.keys().length;
           state.clear();
+          storedFileVars.clear();
+          fileStoreTime.clear();
           return {
             content: [{ type: "text" as const, text: `Cleared ${count} variables.` }],
             structuredContent: { cleared: count },
@@ -2885,6 +2887,14 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         if (deleteMatch) {
           const varName = deleteMatch[1];
           const deleted = state.delete(varName);
+          // Also clean storedFileVars entry for this variable
+          for (const [path, name] of storedFileVars) {
+            if (name === varName) {
+              storedFileVars.delete(path);
+              fileStoreTime.delete(path);
+              break;
+            }
+          }
           return {
             content: [{ type: "text" as const, text: deleted ? `Deleted $${varName}` : `Variable $${varName} not found` }],
             structuredContent: { deleted: deleted ? varName : null },
