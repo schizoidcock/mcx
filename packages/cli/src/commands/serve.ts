@@ -693,15 +693,15 @@ function formatSearchResults(
   let totalMatches = 0;
   for (const [query, results] of Object.entries(batchResults)) {
     totalMatches += results.length;
-    output.push(`\n## ${query}`);
-    output.push('');
+    output.push(`\n## ${query}\n`);
     if (results.length === 0) {
       output.push('(no matches)');
     } else {
-      for (const r of results.slice(0, 3)) {
-        output.push(`### ${r.title}`);
-        output.push(extractSnippet(r.snippet, query, 1500));
-        output.push('');
+      const sliced = results.slice(0, 3);
+      for (let i = 0; i < sliced.length; i++) {
+        output.push(`### ${sliced[i].title}`);
+        output.push(extractSnippet(sliced[i].snippet, query, 1500));
+        if (i < sliced.length - 1) output.push(''); // blank between snippets, not after last
       }
     }
   }
@@ -1184,7 +1184,8 @@ function extractSnippet(text: string, query: string, windowSize: number = 300): 
   const prefix = start > 0 ? '...' : '';
   const suffix = end < text.length ? '...' : '';
   
-  return prefix + text.slice(start, end).trim() + suffix;
+  const snippet = text.slice(start, end).trim().replace(/\n{2,}/g, '\n\n').replace(/[ \t]+/g, ' ');
+  return prefix + snippet + suffix;
 }
 
 
@@ -2062,6 +2063,7 @@ const block = (stored, line) => {
 const grep = (stored, pattern) => {
   const re = new RegExp(pattern, 'gi');
   const matches = stored.lines.map((l, i) => [l, i]).filter(([l]) => re.test(l));
+  if (matches.length === 0) return "No matches for '" + pattern + "'";
   if (isNumbered(stored.lines)) return matches.map(([l]) => l).join('\\n');
   return matches.map(([l, i]) => (i + 1) + ':\\t' + l).join('\\n');
 };
@@ -4974,11 +4976,12 @@ Examples:
                            age < 3600000 ? `${Math.floor(age / 60000)}m` :
                            `${Math.floor(age / 3600000)}h`;
             const store = getContentStore();
+            const cachedChunks = store.getChunkCount(cached.sourceId);
 
             // Optional immediate search on cached content
             const output: string[] = [
-              `Cached "${cached.label}" (${ageStr} ago)`,
-              `Use force:true to re-fetch`,
+              `✓ ${cached.label} | ${cachedChunks} sections | ${cached.sizeKB || '?'}KB | cached ${ageStr} ago`,
+              `→ mcx_search({ queries: [...] }) or force: true`,
             ];
 
             if (params.queries?.length) {
@@ -5079,12 +5082,18 @@ Examples:
           const oldest = urlCache.keys().next().value;
           if (oldest) urlCache.delete(oldest);
         }
-        urlCache.set(params.url, { sourceId, indexedAt: Date.now(), label });
-
         const totalKB = (content.length / 1024).toFixed(1);
+        urlCache.set(params.url, { sourceId, indexedAt: Date.now(), label, sizeKB: totalKB });
+
+        // Build 3KB preview (clean newlines)
+        const PREVIEW_CHARS = 3072;
+        const cleanContent = content.replace(/(\n\s*){2,}/g, '\n\n').replace(/[ \t]+/g, ' ');
+        const preview = cleanContent.length > PREVIEW_CHARS
+          ? cleanContent.slice(0, PREVIEW_CHARS) + '\n\n…[truncated]'
+          : cleanContent;
 
         const output: string[] = [
-          `Indexed "${label}": ${chunks} sections (${totalKB}KB)`,
+          `✓ ${label} | ${chunks} sections | ${totalKB}KB`,
           ...(terms.length > 0 ? [`Terms: ${terms.slice(0, 20).join(', ')}`] : []),
         ];
 
@@ -5097,12 +5106,16 @@ Examples:
             output.push('→ Try mcx_search({ queries: [...] }) with different terms');
           }
         } else {
-          // No queries: show hint
-          output.push('Use mcx_search({ queries: [...] }) to search this content.');
+          // No queries: show hint + preview
+          output.push('Full content indexed — use mcx_search({ queries: [...] }) for retrieval');
+          output.push('');
+          output.push('---');
+          output.push(preview);
+          output.push('---');
         }
 
-        // Add preview only if explicitly requested
-        if (params.preview) {
+        // Add preview only if explicitly requested (backwards compat)
+        if (params.preview && params.queries?.length) {
           const PREVIEW_SIZE = 3000;
           const previewContent = content.length > PREVIEW_SIZE 
             ? content.slice(0, PREVIEW_SIZE) + `\n\n…[truncated — ${content.length - PREVIEW_SIZE} more chars indexed]`
