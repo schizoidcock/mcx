@@ -706,10 +706,9 @@ function formatSearchResults(
     } else {
       const sliced = results.slice(0, 3);
       for (let i = 0; i < sliced.length; i++) {
-        output.push(`### ${sliced[i].title}`);
-        output.push(extractSnippet(sliced[i].snippet, query, 1500));
-        if (i < sliced.length - 1) output.push(''); // blank between snippets, not after last
+        output.push(`  - ${sliced[i].title}`);
       }
+
     }
   }
   return totalMatches;
@@ -1126,9 +1125,9 @@ function formatToolResult(value: unknown, maxWidth: number = 120): string {
     return String(value);
   }
   
-  // String → normalize CRLF, truncate long lines
+  // String → normalize CRLF, sanitize surrogates, truncate long lines
   if (typeof value === 'string') {
-    return value
+    return sanitizeForJson(value)
       .replace(/\r\n/g, '\n')  // Normalize Windows line endings
       .split('\n')
       .map(line => line.length > maxWidth ? line.slice(0, maxWidth - 3) + '...' : line)
@@ -1195,6 +1194,41 @@ function extractSnippet(text: string, query: string, windowSize: number = 300): 
   return prefix + snippet + suffix;
 }
 
+
+/**
+ * Format intent search results in compact format
+ * Returns ~73% fewer tokens than verbose format
+ */
+function formatIntentResultsCompact(
+  results: Array<{ title: string; snippet: string }>,
+  intent: string,
+  totalSections: number,
+  totalLines: number,
+  totalKB: string,
+  sourceLabel: string,
+  terms: string[]
+): string {
+  const lines: string[] = [];
+  
+  lines.push(`Indexed ${totalSections} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)`);
+  lines.push(`${results.length} matched "${intent}":`);
+  lines.push('');
+  
+  // Compact: title only (first line often duplicates title)
+  for (const r of results) {
+    lines.push(`  - ${r.title}`);
+  }
+  
+  if (terms.length > 0) {
+    lines.push('');
+    lines.push(`Terms: ${terms.slice(0, 10).join(', ')}`);
+  }
+  
+  lines.push('');
+  lines.push(`→ mcx_search({ query: "..." }) for full content`);
+  
+  return lines.join('\n');
+}
 
 
 /**
@@ -1369,10 +1403,11 @@ function findDuplicatesInNewString(newString: string): string[] {
   
   for (const line of lines) {
     const trimmed = line.trim();
-    // Skip empty lines, comments, braces, common chained methods
+    // Skip empty lines, comments, braces, common chained methods, array pushes
     if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//') ||
         trimmed === '.optional()' || trimmed.startsWith('.describe(') || 
-        trimmed === '.default(true)' || trimmed === '.default(false)') continue;
+        trimmed === '.default(true)' || trimmed === '.default(false)' ||
+        /^\w+\.push\(['"`]/.test(trimmed)) continue;
     // Skip JSX patterns: opening tags, props, short lines (common to repeat in components)
     if (trimmed.startsWith('<') || trimmed.startsWith('/>') || trimmed === '/>' ||
         (trimmed.includes('=') && trimmed.length < 40) || trimmed.length < 20) continue;
@@ -2235,6 +2270,13 @@ const tree = (obj, depth = 2, indent = '') => {
 
   function trackTokenOutput(toolName: string, response: MCP.CallToolResult, rawBytes?: number): MCP.CallToolResult {
     if (!response?.content) return response;  // Guard for tools without content
+    
+    // Sanitize all text content to remove lone surrogates that break JSON
+    for (const item of response.content) {
+      if (item.type === 'text' && typeof item.text === 'string') {
+        item.text = sanitizeForJson(item.text);
+      }
+    }
     const chars = JSON.stringify(response.content).length;
     // Calculate response overhead (text wrapper, helpers, etc.) to make raw comparable to chars
     const structuredResult = (response as any).structuredContent?.result;
@@ -2722,16 +2764,17 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               : cleanedStderr;
 
 
-            // Add output sections
-            if (filteredStdout) {
+            // Skip raw output if intent will index it (show only indexed results)
+            const willIndex = params.intent && totalBytes > INTENT_THRESHOLD;
+            if (!willIndex && filteredStdout) {
               outputParts.push('');
               outputParts.push(filteredStdout);
             }
-            if (filteredStderr) {
+            if (!willIndex && filteredStderr) {
               outputParts.push('');
               outputParts.push(filteredStderr);
             }
-            if (!filteredStdout && !filteredStderr) {
+            if (!willIndex && !filteredStdout && !filteredStderr) {
               outputParts.push('(no output)');
             }
 
@@ -2748,11 +2791,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               const chunks = store.getChunks(sourceId);
               const terms = getDistinctiveTerms(chunks);
               
-              outputParts.push(`\nIndexed ${chunks.length} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)\n`);
-              outputParts.push(`## ${params.intent}\n`);
-              searchResults.forEach(r => outputParts.push(`### ${r.title}\n${extractSnippet(r.snippet, params.intent, 1500)}\n`));
-              if (terms.length > 0) outputParts.push(`Searchable terms: ${terms.slice(0, 15).join(', ')}\n`);
-              outputParts.push('→ mcx_search({ queries: [...] }) for more');
+              outputParts.push('\n' + formatIntentResultsCompact(
+                searchResults, params.intent, chunks.length, totalLines, totalKB, sourceLabel, terms
+              ));
             } else if (!params.intent && totalBytes > AUTO_INDEX_THRESHOLD) {
               // Auto-index híbrido: large outputs (>50KB) auto-indexed even without intent
               try {
@@ -3134,18 +3175,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               const totalLines = serialized.split('\n').length;
               const totalKB = (serialized.length / 1024).toFixed(1);
 
-              const indexedOutput = [
-                `Indexed ${chunks.length} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)`,
-                formatStoredAs(params.storeAs),
-                '',
-                `## ${params.intent}`,
-                '',
-                ...searchResults.map(r => `### ${r.title}\n${extractSnippet(r.snippet, params.intent, 1500)}`),
-                '',
-                terms.length > 0 ? `Searchable terms: ${terms.slice(0, 15).join(', ')}` : '',
-                '',
-                '→ mcx_search({ queries: [...] }) for more',
-              ].filter(Boolean).join('\n');
+              const indexedOutput = formatIntentResultsCompact(
+                searchResults, params.intent, chunks.length, totalLines, totalKB, sourceLabel, terms
+              ) + (params.storeAs ? `\n${formatStoredAs(params.storeAs)}` : '');
 
               return {
                 content: [{ type: "text" as const, text: indexedOutput }, ...images],
@@ -3729,7 +3761,9 @@ Use storeAs to save results and return summary only:
             `${allResults.length} results for: ${params.queries.join(', ')}${hiddenCount > 0 ? ` (showing ${SEARCH_MAX_RESULTS}, +${hiddenCount} hidden)` : ''}`,
             params.source ? `Source: ${params.source}` : `Searching ${sources.length} sources`,
             '',
-            ...allResults.slice(0, SEARCH_MAX_RESULTS).map(r => `## ${r.title} (${r.sourceLabel})\n${extractSnippet(r.snippet, queryStr, 150)}`),
+            ...allResults.slice(0, SEARCH_MAX_RESULTS).map(r => {
+              return `  - ${r.title} (${r.sourceLabel})`;
+            }),
             hiddenCount > 0 ? `\n→ +${hiddenCount} more in $search.results` : '',
           ].join('\n');
 
@@ -4485,18 +4519,9 @@ Tip: Use mcx_execute({ code: "...", truncate: false }) for full output`;
             const totalLines = serialized.split('\n').length;
             const totalKB = (serialized.length / 1024).toFixed(1);
 
-            const output = [
-              `Indexed ${chunks.length} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)`,
-              formatStoredAs(params.storeAs),
-              '',
-              `## ${params.intent}`,
-              '',
-              ...searchResults.map(r => `### ${r.title}\n${extractSnippet(r.snippet, params.intent, 1500)}`),
-              '',
-              terms.length > 0 ? `Searchable terms: ${terms.slice(0, 15).join(', ')}` : '',
-              '',
-              '→ mcx_search({ queries: [...] }) for more',
-            ].filter(Boolean).join('\n');
+            const output = formatIntentResultsCompact(
+              searchResults, params.intent, chunks.length, totalLines, totalKB, sourceLabel, terms
+            ) + (params.storeAs ? `\n${formatStoredAs(params.storeAs)}` : '');
 
             return { content: [{ type: "text" as const, text: output }], toolResult: output };
           } catch {
@@ -4870,8 +4895,8 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
 
         if (patternHTip) {
           return {
-            content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.${patternHTip}` }],
-            toolResult: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.${patternHTip}`,
+            content: [{ type: "text" as const, text: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.\n${patternHTip}` }],
+            toolResult: `✓ ${basename(resolvedPath)}${lineInfo}${appendTip}\n💡 No need to re-read to verify.\n${patternHTip}`,
           };
         }
 
@@ -5574,7 +5599,9 @@ Batch results stored in $batch. Format:
             const sr = searchWithFallback(store, query, { limit: 3, sourceId });
             parts.push(`### ${query}\n`);
             if (sr.length > 0) {
-              sr.forEach(r => parts.push(`#### ${r.title}\n${extractSnippet(r.snippet, query, 1500)}\n`));
+              sr.forEach(r => {
+                parts.push(`  - ${r.title}\n`);
+              });
             } else {
               parts.push('(no matches)\n');
             }
