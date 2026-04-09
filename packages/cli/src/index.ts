@@ -171,6 +171,7 @@ program
   .option("-n, --name <name>", "Adapter name")
   .option("-b, --base-url <url>", "Base URL for the API")
   .option("-a, --auth <type>", "Auth type: basic, bearer, apikey, none (default: basic)")
+  .option("-i, --interactive", "Interactive mode with TUI")
   .option("--read-only", "Only generate GET methods")
   .option("--include <patterns>", "Include only endpoints matching patterns (comma-separated)")
   .option("--exclude <patterns>", "Exclude endpoints matching patterns (comma-separated)")
@@ -184,6 +185,7 @@ program
       readOnly: options.readOnly,
       include: options.include,
       exclude: options.exclude,
+      interactive: options.interactive,
       // Don't auto-set interactive - let genCommand try discovery first
     });
   }));
