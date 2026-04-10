@@ -11,51 +11,48 @@ import { extractSnippet } from './snippets.js';
  * - BM25 ranking (relevance scoring)
  * - Trigram index for substring matching
  */
-// Max vocabulary size to prevent unbounded memory growth
-const VOCABULARY_CAP = 10000;
+// Max vocabulary size to prevent unbounded memory
+const VOCABULARY_CAP = 10_000;
 
 export class ContentStore {
   private db: Database;
-  private vocabulary: Set<string>;
-  private isFileDb: boolean;
+  private vocabulary = new Set<string>();
 
   constructor(dbPath = ':memory:') {
     this.db = new Database(dbPath);
-    this.vocabulary = new Set();
-    this.isFileDb = dbPath !== ':memory:';
-    this.initialize();
-  }
+    this.db.exec('PRAGMA journal_mode = WAL');
 
-  private initialize(): void {
-    // Sources metadata
-    this.db.run(`
+    // FTS5 with Porter stemmer for text search
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        label TEXT NOT NULL,
-        chunk_count INTEGER DEFAULT 0,
-        code_chunk_count INTEGER DEFAULT 0,
-        indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        label TEXT NOT NULL UNIQUE,
+        indexed_at INTEGER DEFAULT (strftime('%s', 'now'))
       )
     `);
 
-    // FTS5 with Porter stemming
-    this.db.run(`
+    this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
-        title, content, source_id UNINDEXED, content_type UNINDEXED,
-        tokenize='porter unicode61'
+        title,
+        content,
+        source_id UNINDEXED,
+        content_type UNINDEXED,
+        tokenize='porter'
       )
     `);
 
     // FTS5 with trigram for substring matching
-    this.db.run(`
+    this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
-        title, content, source_id UNINDEXED,
+        title,
+        content,
+        source_id UNINDEXED,
         tokenize='trigram'
       )
     `);
 
-    // Vocabulary for fuzzy correction
-    this.db.run(`
+    // Vocabulary table for fuzzy correction
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS vocabulary (
         word TEXT PRIMARY KEY
       )
@@ -63,47 +60,26 @@ export class ContentStore {
   }
 
   /**
-   * Delete source by label. Returns true if found and deleted.
+   * Index content with chunking and store in FTS5.
    */
-  deleteByLabel(label: string): boolean {
-    const source = this.db.prepare('SELECT id FROM sources WHERE label = ?').get(label) as { id: number } | undefined;
-    if (!source) return false;
-    
-    // Delete chunks first (FTS5 tables)
-    this.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(source.id);
-    this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?').run(source.id);
-    this.db.prepare('DELETE FROM sources WHERE id = ?').run(source.id);
-    return true;
-  }
+  index(content: string, sourceLabel: string, options: IndexOptions = {}): number {
+    // Get or create source
+    let source = this.db.prepare('SELECT id FROM sources WHERE label = ?').get(sourceLabel) as Source | undefined;
 
-  /**
-   * Re-index content (delete old, insert new). Returns new source ID.
-   */
-  reindex(content: string, label: string, options: IndexOptions = {}): number {
-    this.deleteByLabel(label);
-    return this.index(content, label, options);
-  }
+    if (source) {
+      // Clear existing chunks for this source
+      this.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(source.id);
+      this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?').run(source.id);
+    } else {
+      this.db.prepare('INSERT INTO sources (label) VALUES (?)').run(sourceLabel);
+      source = this.db.prepare('SELECT id FROM sources WHERE label = ?').get(sourceLabel) as Source;
+    }
 
-  /**
-   * Index content and return source ID.
-   */
-  index(content: string, label: string, options: IndexOptions = {}): number {
-    const chunks = chunkContent(content, options.contentType, options.linesPerChunk);
-    return this.indexChunks(chunks, label);
-  }
+    const sourceId = source.id;
+    const contentType = options.contentType ?? 'markdown';
+    const chunks = chunkContent(content, contentType, sourceLabel);
 
-  /**
-   * Index pre-chunked content.
-   */
-  indexChunks(chunks: Chunk[], label: string): number {
-    // Create source
-    const sourceResult = this.db.prepare(
-      'INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, ?, ?)'
-    ).run(label, chunks.length, chunks.filter(c => c.hasCode).length);
-
-    const sourceId = Number(sourceResult.lastInsertRowid);
-
-    // Insert chunks
+    // Batch insert chunks
     const insertChunk = this.db.prepare(
       'INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)'
     );
@@ -124,9 +100,9 @@ export class ContentStore {
         if (this.vocabulary.size < VOCABULARY_CAP) {
           const words = chunk.content.toLowerCase().match(/\b[a-z_][a-z0-9_]*\b/g) || [];
           for (const word of words) {
-            if (word.length >= 3) {
-              insertWord.run(word);
+            if (word.length >= 3 && word.length <= 30 && !this.vocabulary.has(word)) {
               this.vocabulary.add(word);
+              insertWord.run(word);
               if (this.vocabulary.size >= VOCABULARY_CAP) break;
             }
           }
@@ -149,7 +125,8 @@ export class ContentStore {
    * Search using trigram (Layer 2).
    */
   searchTrigram(query: string, options: SearchOptions = {}): SearchResult[] {
-    return this.searchFts('chunks_trigram', query, 'trigram', options);
+    // Sanitize for trigram too - FTS5 syntax applies to all virtual tables
+    return this.searchFts('chunks_trigram', this.sanitizeForFts(query), 'trigram', options);
   }
 
   /**
@@ -193,85 +170,56 @@ export class ContentStore {
       LIMIT ?
     `;
 
-    const rows = this.db.prepare(sql).all(...params) as Array<{
-      title: string;
-      snippet: string;
-      score: number;
-      source_id: number;
-      source_label: string;
-    }>;
+    try {
+      const rows = this.db.prepare(sql).all(...params) as Array<{
+        title: string;
+        snippet: string;
+        score: number;
+        source_id: number;
+        source_label: string;
+      }>;
 
-    return rows.map(row => ({
-      title: row.title,
-      snippet: row.snippet,
-      score: Math.abs(row.score),
-      sourceId: row.source_id,
-      sourceLabel: row.source_label,
-      matchType,
-    }));
-  }
-
-  /**
-   * Get vocabulary for fuzzy correction.
-   */
-  getVocabulary(): Set<string> {
-    if (this.vocabulary.size > 0) return this.vocabulary;
-
-    const rows = this.db.prepare('SELECT word FROM vocabulary').all() as Array<{ word: string }>;
-    for (const row of rows) {
-      this.vocabulary.add(row.word);
+      return rows.map(row => ({
+        title: row.title,
+        content: extractSnippet(row.snippet, query),
+        score: -row.score, // BM25 returns negative scores
+        sourceId: row.source_id,
+        sourceLabel: row.source_label,
+        matchType,
+      }));
+    } catch {
+      // Query syntax error (e.g., unbalanced quotes)
+      return [];
     }
-
-    return this.vocabulary;
   }
 
   /**
-   * Get all sources.
+   * Get all indexed sources with metadata.
    */
-  getSources(): Source[] {
-    const rows = this.db.prepare(`
-      SELECT id, label, chunk_count, code_chunk_count, indexed_at
-      FROM sources ORDER BY indexed_at DESC
-    `).all() as Array<{
-      id: number;
-      label: string;
-      chunk_count: number;
-      code_chunk_count: number;
-      indexed_at: string;
-    }>;
-
-    return rows.map(row => ({
-      id: row.id,
-      label: row.label,
-      chunkCount: row.chunk_count,
-      codeChunkCount: row.code_chunk_count,
-      indexedAt: new Date(row.indexed_at),
-    }));
+  getSources(): Array<{ id: number; label: string; chunkCount: number }> {
+    return this.db.prepare(`
+      SELECT s.id, s.label, COUNT(c.rowid) as chunk_count
+      FROM sources s
+      LEFT JOIN chunks c ON c.source_id = s.id
+      GROUP BY s.id
+      ORDER BY s.indexed_at DESC
+    `).all() as Array<{ id: number; label: string; chunk_count: number }>;
   }
 
   /**
-   * Get chunk count for a source.
+   * Get source by label.
    */
-  getChunkCount(sourceId: number): number {
-    const row = this.db.prepare(
-      'SELECT chunk_count FROM sources WHERE id = ?'
-    ).get(sourceId) as { chunk_count: number } | undefined;
-
-    return row?.chunk_count ?? 0;
+  getSourceByLabel(label: string): Source | undefined {
+    return this.db.prepare('SELECT * FROM sources WHERE label = ?').get(label) as Source | undefined;
   }
 
   /**
-   * Get chunks for a source (for vocabulary extraction).
+   * Get chunks for a source.
    */
   getChunks(sourceId: number): Chunk[] {
-    const rows = this.db.prepare(
+    return this.db.prepare(
       'SELECT title, content FROM chunks WHERE source_id = ?'
-    ).all(sourceId) as Array<{ title: string; content: string }>;
-
-    return rows.map(row => ({
-      title: row.title,
-      content: row.content,
-    }));
+    ).all(sourceId) as Chunk[];
   }
 
   /**
@@ -284,59 +232,104 @@ export class ContentStore {
   }
 
   /**
-   * Clean up stale sources older than maxAgeMs.
-   * Returns number of sources deleted.
+   * Get vocabulary for fuzzy matching.
    */
-  cleanupStale(maxAgeMs: number = 24 * 60 * 60 * 1000): number {
-    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
-    const stale = this.db.prepare(
-      'SELECT id FROM sources WHERE indexed_at < ?'
-    ).all(cutoff) as Array<{ id: number }>;
-
-    for (const { id } of stale) {
-      this.deleteSource(id);
+  getVocabulary(): string[] {
+    if (this.vocabulary.size > 0) {
+      return Array.from(this.vocabulary);
     }
-
-    return stale.length;
+    // Load from DB if not in memory
+    const rows = this.db.prepare('SELECT word FROM vocabulary').all() as Array<{ word: string }>;
+    return rows.map(r => r.word);
   }
 
   /**
-   * Get database stats for diagnostics.
+   * Get total chunk count.
    */
-  getStats(): { sources: number; chunks: number; vocabulary: number } {
-    const sources = (this.db.prepare('SELECT COUNT(*) as c FROM sources').get() as { c: number }).c;
-    const chunks = (this.db.prepare('SELECT COUNT(*) as c FROM chunks').get() as { c: number }).c;
-    return {
-      sources,
-      chunks,
-      vocabulary: this.vocabulary.size,
-    };
+  getChunkCount(): number {
+    const result = this.db.prepare('SELECT COUNT(*) as count FROM chunks').get() as { count: number };
+    return result.count;
+  }
+
+  /**
+   * Get chunk count for a specific source.
+   */
+  getSourceChunkCount(sourceId: number): number {
+    const result = this.db.prepare(
+      'SELECT COUNT(*) as count FROM chunks WHERE source_id = ?'
+    ).get(sourceId) as { count: number };
+    return result.count;
   }
 
   /**
    * Clear all data.
    */
   clear(): void {
-    this.db.run('DELETE FROM chunks');
-    this.db.run('DELETE FROM chunks_trigram');
-    this.db.run('DELETE FROM sources');
-    this.db.run('DELETE FROM vocabulary');
+    this.db.exec('DELETE FROM chunks');
+    this.db.exec('DELETE FROM chunks_trigram');
+    this.db.exec('DELETE FROM sources');
+    this.db.exec('DELETE FROM vocabulary');
     this.vocabulary.clear();
   }
 
   /**
-   * Close the database connection.
-   * Runs WAL checkpoint for file-based DBs.
+   * Close database connection.
    */
   close(): void {
-    if (this.isFileDb) {
-      try {
-        this.db.run("PRAGMA wal_checkpoint(TRUNCATE)");
-      } catch {
-        // Ignore checkpoint errors on close
+    this.db.close();
+  }
+
+  /**
+   * Get all content from a source (for re-indexing or export).
+   */
+  getSourceContent(sourceId: number): string {
+    const chunks = this.getChunks(sourceId);
+    return chunks.map(c => `## ${c.title}\n\n${c.content}`).join('\n\n');
+  }
+
+  /**
+   * Check if a source exists.
+   */
+  hasSource(label: string): boolean {
+    const result = this.db.prepare('SELECT 1 FROM sources WHERE label = ?').get(label);
+    return result !== undefined;
+  }
+
+  /**
+   * Get distinctive terms using IDF scoring.
+   * Returns terms that are relatively unique to this source.
+   */
+  getDistinctiveTerms(sourceId: number, limit = 10): string[] {
+    // Get all terms from this source
+    const chunks = this.getChunks(sourceId);
+    const sourceTerms = new Map<string, number>();
+
+    for (const chunk of chunks) {
+      const words = chunk.content.toLowerCase().match(/\b[a-z_][a-z0-9_]{2,}\b/g) || [];
+      for (const word of words) {
+        sourceTerms.set(word, (sourceTerms.get(word) || 0) + 1);
       }
     }
-    this.db.close();
+
+    // Score by frequency (simple TF, no IDF needed for single source)
+    return Array.from(sourceTerms.entries())
+      .filter(([word]) => word.length >= 4) // Skip short words
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([word]) => word);
+  }
+
+  /**
+   * Sanitize query for FTS5 - remove special characters that break syntax.
+   * FTS5 special chars: " * - + ( ) ^ ~ : % NEAR AND OR NOT
+   */
+  private sanitizeForFts(query: string): string {
+    return query
+      // Remove FTS5 operators and special chars
+      .replace(/["%*+\-()^~:]/g, ' ')
+      // Collapse multiple spaces
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   /**
@@ -344,14 +337,15 @@ export class ContentStore {
    * Handles special characters and multi-word queries.
    */
   private buildFtsQuery(query: string): string {
-    // Split into terms and escape special chars
-    const terms = query
+    // Sanitize first to remove FTS5 special chars
+    const sanitized = this.sanitizeForFts(query);
+    const terms = sanitized
       .split(/\s+/)
       .filter(t => t.length >= 2)
       .map(t => `"${t.replace(/"/g, '""')}"`)
       .join(' OR ');
 
-    return terms || `"${query.replace(/"/g, '""')}"`;
+    return terms || `"${sanitized.replace(/"/g, '""')}"`;
   }
 }
 
