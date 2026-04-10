@@ -121,7 +121,7 @@ function proximityRerank(
   
   return results
     .map(result => {
-      const content = result.snippet.toLowerCase();
+      const content = (result.snippet || result.content || '').toLowerCase();
       const boost = calculateProximityBoost(content, terms);
       return { ...result, _proximityBoost: boost };
     })
