@@ -4761,24 +4761,8 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
           const before = isAppend ? lines : lines.slice(0, start - 1);
           const after = isAppend ? [] : lines.slice(end);
           
-          // Check brace balance of replaced section vs new content
-          if (!isAppend) {
-            const replacedLines = lines.slice(start - 1, end).join('\n');
-            const oldBraces = checkBraceBalance(replacedLines);
-            const newBraces = checkBraceBalance(new_string);
-            // Allow if new content is self-balanced OR if balance matches
-            if (newBraces !== 0 && oldBraces !== newBraces) {
-              const diff = newBraces - oldBraces;
-              return {
-                content: [{ type: "text" as const, 
-                  text: `⚠️ Brace imbalance: replacing lines ${start}-${end} changes brace count by ${diff > 0 ? '+' : ''}${diff}\n` +
-                        `   Original section: ${oldBraces} braces | New content: ${newBraces} braces\n` +
-                        `💡 Verify new_string includes all { } from original lines`
-                }],
-                isError: true,
-              };
-            }
-          }
+          // Note: Fragment-level brace check removed - full file check at L4878 catches real issues
+          // without false positives from regex/strings in fragments
           
           newContent = [...before, new_string, ...after].join('\n');
           editStartLine = start;
@@ -4843,21 +4827,7 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
             };
           }
           
-          // Check brace balance of old_string vs new_string
-          const oldBraces = checkBraceBalance(old_string);
-          const newBraces = checkBraceBalance(new_string);
-          // Allow if new content is self-balanced OR if balance matches
-          if (newBraces !== 0 && oldBraces !== newBraces) {
-            const diff = newBraces - oldBraces;
-            return {
-              content: [{ type: "text" as const, 
-                text: `⚠️ Brace imbalance: old_string has ${oldBraces} braces, new_string has ${newBraces} (diff: ${diff > 0 ? '+' : ''}${diff})\n` +
-                      `💡 Verify new_string includes all { } from old_string`
-              }],
-              isError: true,
-            };
-          }
-          
+          // Note: Fragment-level brace check removed - full file check below catches real issues
           // Do replacement in LF mode, then restore original line endings
           const resultLF = replace_all ? contentLF.replaceAll(oldLF, () => newLF) : contentLF.replace(oldLF, () => newLF);
           newContent = hasCRLF ? resultLF.replace(/\n/g, '\r\n') : resultLF;
