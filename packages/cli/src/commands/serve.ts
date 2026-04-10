@@ -1311,15 +1311,54 @@ function detectRawData(value: unknown, serializedLength: number): string | null 
 /**
  * Check brace balance in code content
  * Returns 0 if balanced, positive if too many opening, negative if too many closing
+ * 
+ * Ignores braces inside:
+ * - Strings: "...", '...', `...`
+ * - Regex: /.../ (heuristic: / after operator or at line start)
+ * - Comments: // and block comments
  */
 function checkBraceBalance(content: string): number {
   let balance = 0;
   let inString = false;
   let stringChar = '';
+  let inRegex = false;
+  let inLineComment = false;
+  let inBlockComment = false;
   let escaped = false;
   
   for (let i = 0; i < content.length; i++) {
     const char = content[i];
+    const next = content[i + 1];
+    
+    // Handle newlines - reset line comment
+    if (char === '\n') {
+      inLineComment = false;
+      continue;
+    }
+    
+    // Skip line comments
+    if (inLineComment) continue;
+    
+    // Handle block comments
+    if (inBlockComment) {
+      if (char === '*' && next === '/') {
+        inBlockComment = false;
+        i++; // skip /
+      }
+      continue;
+    }
+    
+    // Detect comment start
+    if (char === '/' && next === '/') {
+      inLineComment = true;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      inBlockComment = true;
+      i++; // skip *
+      continue;
+    }
+    
     if (escaped) {
       escaped = false;
       continue;
@@ -1330,9 +1369,18 @@ function checkBraceBalance(content: string): number {
       continue;
     }
     
+    // Handle strings
     if (inString) {
       if (char === stringChar) {
         inString = false;
+      }
+      continue;
+    }
+    
+    // Handle regex
+    if (inRegex) {
+      if (char === '/') {
+        inRegex = false;
       }
       continue;
     }
@@ -1341,6 +1389,15 @@ function checkBraceBalance(content: string): number {
       inString = true;
       stringChar = char;
       continue;
+    }
+    
+    // Detect regex start (heuristic: / after operator, paren, or at line start)
+    if (char === '/') {
+      const prevNonSpace = content.slice(0, i).trimEnd().slice(-1);
+      if (!prevNonSpace || /[=(:,;\[{!&|?]/.test(prevNonSpace)) {
+        inRegex = true;
+        continue;
+      }
     }
     
     if (char === '{') balance++;
