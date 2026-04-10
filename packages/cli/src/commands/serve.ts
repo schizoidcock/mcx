@@ -38,6 +38,7 @@ import { startDaemon, stopDaemon } from "../daemon";
 import { type FileFinder, isExcludedPath } from "../utils/fff";
 import { coerceJsonArray } from "../utils/zod";
 import { isDangerousEnvKey, isBlockedUrl, detectShellEscape } from "../utils/security";
+import { analyzeCodeTraits, analyzeShellTraits, formatTraitWarnings } from "../utils/traits";
 import { logger } from "../utils/logger";
 import { getContentStore, searchWithFallback, getDistinctiveTerms, batchSearch, htmlToMarkdown, isHtml } from "../search";
 import { getSandboxState } from "../sandbox";
@@ -2735,7 +2736,11 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
           // === Enforcement: Redirect file ops to MCX tools ===
           const shellEnforcement = enforceShellRedirects(cmd);
           if (shellEnforcement) return shellEnforcement;
-          
+
+          // === Trait analysis: detect potentially risky shell patterns ===
+          const shellTraits = analyzeShellTraits(cmd);
+          const shellTraitWarnings = formatTraitWarnings(shellTraits);
+
           try {
             const startTime = performance.now();
             const safeEnv = getSafeEnv();
@@ -2866,7 +2871,10 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             }
 
             trackToolUsage('mcx_execute');
-            
+
+            // Prepend trait warnings (informational, does not block execution)
+            if (shellTraitWarnings) outputParts.unshift(shellTraitWarnings);
+
             return {
               content: [{ type: "text" as const, text: outputParts.join('\n') + suggestNextTool("mcx_execute") }],
               toolResult: outputParts.join('\n'),
@@ -2899,7 +2907,11 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
               isError: true,
             };
           }
-          
+
+          // === Trait analysis: detect potentially risky python patterns ===
+          const pythonTraits = analyzeCodeTraits(code, 'python');
+          const pythonTraitWarnings = formatTraitWarnings(pythonTraits);
+
           try {
             const startTime = performance.now();
             const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
@@ -2958,6 +2970,9 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             if (finalStderr) outputParts.push('', finalStderr);
             if (!finalStdout && !finalStderr) outputParts.push('(no output)');
 
+            // Prepend trait warnings (informational, does not block execution)
+            if (pythonTraitWarnings) outputParts.unshift(pythonTraitWarnings);
+
             const outputText = outputParts.join('\n');
             return { content: [{ type: "text" as const, text: outputText }], toolResult: outputText, _rawBytes: totalBytes };
           } catch (error) {
@@ -3007,6 +3022,10 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
             isError: true,
           };
         }
+
+        // === Trait analysis: detect potentially risky JS/TS patterns ===
+        const jsTraits = analyzeCodeTraits(code, 'javascript');
+        const jsTraitWarnings = formatTraitWarnings(jsTraits);
 
         // === Enforcement: Detect lines() hunting pattern ===
         let linesHuntingTip = '';
@@ -3283,6 +3302,7 @@ IMPORTANT: Always filter/transform data before returning to minimize context.`,
         const storeMsg = `Stored as ${storedVars} (${metaStr})`;
 
         const rawTextOutput = [
+          jsTraitWarnings,
           storeMsg,
           autoIndexedLabel ? `📦 Auto-indexed as "${autoIndexedLabel}" (${Math.round(serialized.length/1024)}KB). Use mcx_search to query.` : "",
           truncatedLogs.length > 0 ? `Logs:\n${truncatedLogs.join("\n")}` : "",
