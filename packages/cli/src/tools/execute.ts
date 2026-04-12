@@ -1,6 +1,6 @@
 /**
  * mcx_execute Tool
- * 
+ *
  * Execute JavaScript/TypeScript code OR shell commands.
  * Supports adapters, file helpers, and variable management.
  */
@@ -8,6 +8,32 @@
 import type { ToolContext, ToolDefinition, McpResult, AdapterSpec } from "./types.js";
 import { formatToolResult, formatError } from "./utils.js";
 
+// ============================================================================
+// Shell Constants
+// ============================================================================
+
+const SHELL_PATH = process.platform === 'win32'
+  ? 'C:\\Program Files\\Git\\bin\\sh.exe'
+  : '/bin/sh';
+
+const DENIED_ENV = new Set([
+  'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GITHUB_TOKEN',
+  'NPM_TOKEN', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DATABASE_URL',
+]);
+
+let cachedSafeEnv: Record<string, string> | null = null;
+
+function getSafeEnv(): Record<string, string> {
+  if (cachedSafeEnv) return cachedSafeEnv;
+  const safeEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && !DENIED_ENV.has(key) && !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('TOKEN') && !key.includes('CREDENTIAL')) {
+      safeEnv[key] = value;
+    }
+  }
+  cachedSafeEnv = safeEnv;
+  return safeEnv;
+}
 // ============================================================================
 // Types
 // ============================================================================
@@ -29,37 +55,48 @@ async function executeCode(
   code: string,
   storeAs?: string
 ): Promise<McpResult> {
-  // Inject variables into sandbox context
-  const context: Record<string, unknown> = {};
-  
-  // Add stored variables
-  for (const [name, entry] of ctx.variables.stored) {
-    context[`$${name}`] = entry.value;
+  // Build variables from stored state
+  // PersistentState.getAllPrefixed() returns { $name: value } format
+  let variables: Record<string, unknown> = {};
+  try {
+    const stored = ctx.variables.stored as any;
+    if (stored && typeof stored.getAllPrefixed === 'function') {
+      variables = { ...stored.getAllPrefixed() };
+    }
+  } catch {
+    // Ignore errors getting variables
   }
-  
+
   // Add last result as $result
   if (ctx.variables.lastResult !== undefined) {
-    context.$result = ctx.variables.lastResult;
+    variables.$result = ctx.variables.lastResult;
   }
-  
+
   try {
-    const result = await ctx.sandbox.execute(code, context);
-    const value = result.value;
+    // Prepend file helpers so grep(), lines(), etc. are available
+    const helpers = ctx.fileHelpersCode || '';
+    const fullCode = helpers + code;
     
-    // Store result
+    // Sandbox expects { adapters, variables, env } structure
+    const result = await ctx.sandbox.execute(fullCode, {
+      adapters: {},
+      variables,
+      env: {},
+    });
+    const value = result.value;
+
+    // Store result via PersistentState.set() if available
     ctx.variables.lastResult = value;
     if (storeAs) {
-      ctx.variables.stored.set(storeAs, {
-        value,
-        timestamp: Date.now(),
-        source: "mcx_execute",
-      });
+      if (typeof stored.set === 'function') {
+        stored.set(storeAs, value);
+      }
     }
-    
+
     // Format output
     const output = formatValue(value);
     const storedMsg = storeAs ? `\n\nStored as $${storeAs}` : "";
-    
+
     return formatToolResult(output + storedMsg);
   } catch (err) {
     return formatError(`Execution failed: ${String(err)}`);
@@ -70,7 +107,7 @@ function formatValue(value: unknown): string {
   if (value === undefined) return "(undefined)";
   if (value === null) return "(null)";
   if (typeof value === "string") return value;
-  
+
   try {
     const json = JSON.stringify(value, null, 2);
     return json.length > 5000 ? json.slice(0, 5000) + "\n... [truncated]" : json;
@@ -88,41 +125,31 @@ async function executeShell(
   command: string,
   storeAs?: string
 ): Promise<McpResult> {
-  // Wrap shell command in Bun's $ template literal
-  const code = `await $\`${command}\``;
-  
-  try {
-    const result = await ctx.sandbox.execute(code, {});
-    const value = result.value;
-    
-    // Store if requested
-    if (storeAs) {
-      ctx.variables.stored.set(storeAs, {
-        value,
-        timestamp: Date.now(),
-        source: `mcx_execute:shell`,
-      });
-    }
-    
-    const output = formatShellOutput(value);
-    return formatToolResult(output);
-  } catch (err) {
-    return formatError(`Shell command failed: ${String(err)}`);
-  }
-}
+  const cmd = command.trim();
+  if (!cmd) return formatError("Empty command");
 
-function formatShellOutput(value: unknown): string {
-  if (value === undefined || value === null) return "(no output)";
-  
-  // Shell output is usually text
-  const text = typeof value === "string" 
-    ? value 
-    : JSON.stringify(value, null, 2);
-  
-  // Truncate long outputs
-  return text.length > 10000 
-    ? text.slice(0, 10000) + "\n... [truncated]" 
-    : text;
+  const proc = Bun.spawn([SHELL_PATH, '-c', cmd], {
+    cwd: process.cwd(),
+    env: getSafeEnv(),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  const exitCode = await proc.exited;
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+
+  const result = { exitCode, stdout: stdout.trim(), stderr: stderr.trim(), command: cmd };
+
+  // Store result
+  const stored = ctx.variables.stored as any;
+  stored.set?.('result', result);
+  if (storeAs) stored.set?.(storeAs, result);
+
+  // Format output
+  const status = exitCode === 0 ? '✓' : `✗ Exit ${exitCode}`;
+  const output = stdout.trim() || stderr.trim() || '(no output)';
+  return formatToolResult(`${status}\n${output}`);
 }
 
 // ============================================================================
@@ -131,29 +158,35 @@ function formatShellOutput(value: unknown): string {
 
 async function executePython(
   ctx: ToolContext,
-  pythonCode: string,
+  code: string,
   storeAs?: string
 ): Promise<McpResult> {
-  const wrappedCode = `await $\`python -c ${JSON.stringify(pythonCode)}\``;
-  
-  try {
-    const result = await ctx.sandbox.execute(wrappedCode, {});
-    const value = result.value;
-    
-    // Store if requested
-    if (storeAs) {
-      ctx.variables.stored.set(storeAs, {
-        value,
-        timestamp: Date.now(),
-        source: `mcx_execute:python`,
-      });
-    }
-    
-    const output = formatValue(value);
-    return formatToolResult(output);
-  } catch (err) {
-    return formatError(`Python execution failed: ${String(err)}`);
-  }
+  const pythonCode = code.trim();
+  if (!pythonCode) return formatError("Empty Python code");
+
+  const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
+  const proc = Bun.spawn([pythonPath, '-c', pythonCode], {
+    cwd: process.cwd(),
+    env: getSafeEnv(),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  const exitCode = await proc.exited;
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+
+  const result = { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+
+  // Store result
+  const stored = ctx.variables.stored as any;
+  stored.set?.('result', result);
+  if (storeAs) stored.set?.(storeAs, result);
+
+  // Format output
+  const status = exitCode === 0 ? '✓ Python' : `✗ Exit ${exitCode}`;
+  const output = stdout.trim() || stderr.trim() || '(no output)';
+  return formatToolResult(`${status}\n${output}`);
 }
 
 // ============================================================================
@@ -167,7 +200,7 @@ function handleLargeOutput(
 ): McpResult {
   const sourceId = ctx.contentStore.index(output, intent, { contentType: "text" });
   const chunks = ctx.contentStore.getChunkCount(sourceId);
-  
+
   return formatToolResult(
     `Output indexed: ${intent} (${chunks} chunks)\n` +
     `→ mcx_search({ queries: [...] }) to search results`
@@ -183,7 +216,7 @@ async function handleExecute(
   params: ExecuteParams
 ): Promise<McpResult> {
   const { code, shell, python, storeAs, intent } = params;
-  
+
   // Validate: exactly one mode
   const modes = [code, shell, python].filter(Boolean);
   if (modes.length === 0) {
@@ -198,10 +231,10 @@ async function handleExecute(
   if (modes.length > 1) {
     return formatError("Specify only one of: code, shell, or python");
   }
-  
+
   // Execute appropriate mode
   let result: McpResult;
-  
+
   if (code) {
     result = await executeCode(ctx, code, storeAs);
   } else if (shell) {
@@ -209,7 +242,7 @@ async function handleExecute(
   } else {
     result = await executePython(ctx, python!, storeAs);
   }
-  
+
   // Handle large output indexing
   if (intent && !result.isError) {
     const text = result.content?.[0];
@@ -217,7 +250,7 @@ async function handleExecute(
       return handleLargeOutput(ctx, text.text, intent);
     }
   }
-  
+
   return result;
 }
 
@@ -227,14 +260,14 @@ async function handleExecute(
 
 function buildAdapterSummary(spec: AdapterSpec | null): string {
   if (!spec?.adapters?.length) return "No adapters loaded";
-  
+
   const byDomain = new Map<string, string[]>();
   for (const a of spec.adapters) {
     const domain = a.domain || "general";
     if (!byDomain.has(domain)) byDomain.set(domain, []);
     byDomain.get(domain)!.push(`${a.name}(${a.methods?.length || 0})`);
   }
-  
+
   return Array.from(byDomain.entries())
     .map(([domain, adapters]) => `[${domain}] ${adapters.join(", ")}`)
     .join("\n");
@@ -246,7 +279,7 @@ function buildAdapterSummary(spec: AdapterSpec | null): string {
 
 export function createExecuteTool(spec: AdapterSpec | null): ToolDefinition<ExecuteParams> {
   const adapterSummary = buildAdapterSummary(spec);
-  
+
   return {
     name: "mcx_execute",
     description: `Execute JavaScript/TypeScript code OR shell commands.

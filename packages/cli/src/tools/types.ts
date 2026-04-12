@@ -135,6 +135,7 @@ export interface SkillDef {
 export type McpResult = {
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
   isError?: boolean;
+  toolResult?: string;
 };
 
 export type ToolHandler<P = Record<string, unknown>> = (

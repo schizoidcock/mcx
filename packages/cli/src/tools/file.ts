@@ -1,6 +1,6 @@
 /**
  * mcx_file Tool
- * 
+ *
  * Process file with code. Supports JavaScript (default), shell, and Python.
  * Use storeAs to read files, then query with helpers.
  */
@@ -37,10 +37,10 @@ async function resolveFilePath(
   pathInput: string
 ): Promise<{ path: string; content: string } | McpResult> {
   // Try absolute or relative path first
-  const tryPath = isAbsolute(pathInput) 
-    ? pathInput 
+  const tryPath = isAbsolute(pathInput)
+    ? pathInput
     : resolve(ctx.basePath, pathInput);
-  
+
   try {
     const content = await readFile(tryPath, "utf-8");
     return { path: tryPath, content };
@@ -48,13 +48,13 @@ async function resolveFilePath(
     if (!ctx.finder) {
       return formatError(`File not found: ${pathInput}`);
     }
-    
+
     // Fuzzy search fallback
     const results = ctx.finder.fileSearch(pathInput, { pageSize: 3 });
     if (!results.ok || results.value.length === 0) {
       return formatError(`File not found: ${pathInput}`);
     }
-    
+
     const bestMatch = results.value[0].item;
     try {
       const content = await readFile(bestMatch.path, "utf-8");
@@ -75,17 +75,13 @@ function parseFileContent(content: string, path: string): FileContent {
 }
 
 function storeVariable(
-  ctx: ToolContext,
-  name: string,
-  value: unknown,
-  source: string
-): void {
-  ctx.variables.stored.set(name, {
-    value,
-    timestamp: Date.now(),
-    source,
-  });
-}
+    ctx: ToolContext,
+    name: string,
+    value: unknown,
+    source: string
+  ): void {
+    ctx.variables.stored.set(name, value);
+  }
 
 function handleStoreMode(
   ctx: ToolContext,
@@ -95,13 +91,13 @@ function handleStoreMode(
 ): McpResult {
   const parsed = parseFileContent(content, path);
   const lineCount = parsed.lines.length;
-  
+
   // Store as variable
   storeVariable(ctx, storeAs, parsed, `mcx_file:${basename(path)}`);
-  
+
   // Track for stale detection
   ctx.workflow.proximityContext.recentFiles.push(path);
-  
+
   return formatToolResult(
     `Stored $${storeAs} (${lineCount} lines)\n\n` +
     `💡 Use helpers: grep($${storeAs}, 'pattern'), lines($${storeAs}, start, end)`
@@ -131,8 +127,12 @@ async function executeJsCode(
   } else {
     fileVar = parseFileContent(content, path);
   }
-  
-  const result = await ctx.sandbox.execute(code, { $file: fileVar });
+
+  const result = await ctx.sandbox.execute(code, {
+      adapters: {},
+      variables: { $file: fileVar },
+      env: {},
+    });
   return result.value;
 }
 
@@ -146,7 +146,11 @@ async function executeShellCode(
     const $FILE_PATH = FILE_PATH;
     ${code.includes("$FILE_PATH") ? code : `await $\`${code}\``}
   `;
-  const result = await ctx.sandbox.execute(wrappedCode, {});
+  const result = await ctx.sandbox.execute(wrappedCode, {
+      adapters: {},
+      variables: {},
+      env: {},
+    })
   return result.value;
 }
 
@@ -160,7 +164,11 @@ FILE_PATH = "${path.replace(/\\/g, "/")}"
 ${code}
 `;
   const wrappedCode = `await $\`python -c ${JSON.stringify(pythonCode)}\``;
-  const result = await ctx.sandbox.execute(wrappedCode, {});
+  const result = await ctx.sandbox.execute(wrappedCode, {
+      adapters: {},
+      variables: {},
+      env: {},
+    });
   return result.value;
 }
 
@@ -195,7 +203,7 @@ function handleLargeOutput(
 ): McpResult {
   const sourceId = ctx.contentStore.index(output, intent, { contentType: "text" });
   const chunks = ctx.contentStore.getChunkCount(sourceId);
-  
+
   return formatToolResult(
     `Output indexed (${chunks} chunks)\n→ mcx_search({ queries: [...] }) to search`
   );
@@ -210,22 +218,22 @@ async function handleFile(
   params: FileParams
 ): Promise<McpResult> {
   const { path: pathInput, code, language = "js", intent, storeAs } = params;
-  
+
   if (!pathInput) {
     return formatError("Missing path parameter");
   }
-  
+
   // Resolve file
   const resolved = await resolveFilePath(ctx, pathInput);
   if ("isError" in resolved) return resolved; // Error result
-  
+
   const { path, content } = resolved;
-  
+
   // Store mode (no code)
   if (!code && storeAs) {
     return handleStoreMode(ctx, content, path, storeAs);
   }
-  
+
   // Must have code for processing
   if (!code) {
     return formatError(
@@ -233,22 +241,22 @@ async function handleFile(
       `💡 mcx_file({ path: "${pathInput}", storeAs: "x" }), then grep($x, 'pattern')`
     );
   }
-  
+
   // Execute code
   try {
     const result = await executeCode(ctx, code, content, path, language);
     const output = formatOutput(result);
-    
+
     // Store result if requested
     if (storeAs) {
       storeVariable(ctx, storeAs, result, `mcx_file:${basename(path)}`);
     }
-    
+
     // Index large output
     if (intent && output.length > 5000) {
       return handleLargeOutput(ctx, output, intent);
     }
-    
+
     return formatToolResult(output.slice(0, 10000));
   } catch (err) {
     return formatError(`Execution failed: ${String(err)}`);
