@@ -143,9 +143,8 @@ async function handleDoctor(
 
 export const mcxDoctor: ToolDefinition<DoctorParams> = {
   name: "mcx_doctor",
-  title: "MCX Diagnostics",
-  description: "Run diagnostics to check MCX health: runtime, database, adapters, sandbox.",
-  parameters: {},
+  description: "Run diagnostics to check MCX configuration, FFF status, and adapter health.",
+  inputSchema: { type: "object", properties: {} },
   handler: handleDoctor,
 };
 

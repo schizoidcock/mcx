@@ -82,27 +82,29 @@ async function handleWrite(
 
 export const mcxWrite: ToolDefinition<WriteParams> = {
   name: "mcx_write",
-  title: "Write File",
   description: `Create or overwrite a file. Bypasses native Write's "must read first" requirement.
 
 Example:
 mcx_write({ file_path: "/path/to/file.ts", content: "const x = 1;" })
 
 Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
-  parameters: {
-    file_path: {
-      type: "string",
-      description: "Absolute path to the file to write",
+  inputSchema: {
+    type: "object",
+    properties: {
+      file_path: {
+        type: "string",
+        description: "Absolute path to the file to write",
+      },
+      path: {
+        type: "string",
+        description: "Alias for file_path",
+      },
+      content: {
+        type: "string",
+        description: "The content to write to the file",
+      },
     },
-    path: {
-      type: "string",
-      description: "Alias for file_path",
-    },
-    content: {
-      type: "string",
-      description: "The content to write to the file",
-      required: true,
-    },
+    required: ["content"],
   },
   handler: handleWrite,
 };

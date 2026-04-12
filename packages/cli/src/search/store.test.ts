@@ -29,8 +29,8 @@ describe('ContentStore', () => {
     });
 
     test('tracks chunk count in source metadata', () => {
-      // 3 paragraphs separated by blank lines = 3 chunks
-      const sourceId = store.index('Line 1\n\nLine 2\n\nLine 3', 'test-source');
+      // 3 paragraphs separated by blank lines = 3 chunks (with text contentType)
+      const sourceId = store.index('Line 1\n\nLine 2\n\nLine 3', 'test-source', { contentType: 'text' });
       const count = store.getChunkCount(sourceId);
       expect(count).toBe(3);
     });
@@ -122,18 +122,18 @@ describe('ContentStore', () => {
       store.index('authentication authorization bearer_token', 'vocab-test');
       const vocab = store.getVocabulary();
 
-      expect(vocab.has('authentication')).toBe(true);
-      expect(vocab.has('authorization')).toBe(true);
-      expect(vocab.has('bearer_token')).toBe(true);
+      expect(vocab.includes('authentication')).toBe(true);
+      expect(vocab.includes('authorization')).toBe(true);
+      expect(vocab.includes('bearer_token')).toBe(true);
     });
 
     test('filters short words', () => {
       store.index('a ab abc abcd', 'short-words');
       const vocab = store.getVocabulary();
 
-      expect(vocab.has('a')).toBe(false);
-      expect(vocab.has('ab')).toBe(false);
-      expect(vocab.has('abc')).toBe(true);
+      expect(vocab.includes('a')).toBe(false);
+      expect(vocab.includes('ab')).toBe(false);
+      expect(vocab.includes('abc')).toBe(true);
     });
   });
 
@@ -145,7 +145,7 @@ describe('ContentStore', () => {
       store.clear();
 
       expect(store.getSources().length).toBe(0);
-      expect(store.getVocabulary().size).toBe(0);
+      expect(store.getVocabulary().length).toBe(0);
     });
   });
 

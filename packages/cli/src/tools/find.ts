@@ -197,7 +197,6 @@ async function handleFindRelated(
 
 export const mcxFind: ToolDefinition<FindParams> = {
   name: "mcx_find",
-  title: "Fuzzy File Search",
   description: `Find FILES by name. NOT for searching content inside files.
 
 USE THIS FOR: "where is config.ts?", "find all *.test.ts files"
@@ -212,27 +211,30 @@ Query syntax:
 
 Related files mode:
 - mcx_find({ related: "serve.ts" }) - Find imports, importers, and siblings`,
-  parameters: {
-    query: {
-      type: "string",
-      description: "Fuzzy search query. Supports: *.ext, !exclude, /path/, status:modified",
-    },
-    pattern: {
-      type: "string",
-      description: "Alias for query (for compatibility)",
-    },
-    path: {
-      type: "string",
-      description: "Directory to search in (default: current project)",
-    },
-    related: {
-      type: "string",
-      description: "Find files related to this file (imports, importers, siblings)",
-    },
-    limit: {
-      type: "number",
-      description: "Maximum number of results",
-      default: 20,
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "File name or pattern to search for",
+      },
+      pattern: {
+        type: "string",
+        description: "Alias for query (for compatibility)",
+      },
+      path: {
+        type: "string",
+        description: "Directory to search in (default: current project)",
+      },
+      related: {
+        type: "string",
+        description: "Find files related to this file (imports, importers, siblings)",
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results",
+        default: 20,
+      },
     },
   },
   handler: handleFind,

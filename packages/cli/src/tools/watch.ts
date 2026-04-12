@@ -140,7 +140,6 @@ async function handleWatch(
 
 export const mcxWatch: ToolDefinition<WatchParams> = {
   name: "mcx_watch",
-  title: "Watch Projects",
   description: `Manage which project directories are watched for automatic FTS5 content indexing.
 
 Examples:
@@ -149,16 +148,20 @@ Examples:
 - mcx_watch({ projects: ["/path"], action: "remove" }) - Stop watching
 
 The daemon automatically indexes file changes in watched projects.`,
-  parameters: {
-    projects: {
-      type: "array",
-      description: "List of project paths to watch/unwatch",
-    },
-    action: {
-      type: "string",
-      description: "Action to perform",
-      enum: ["add", "remove", "list"],
-      default: "add",
+  inputSchema: {
+    type: "object",
+    properties: {
+      projects: {
+        type: "array",
+        items: { type: "string" },
+        description: "List of project paths to watch/unwatch",
+      },
+      action: {
+        type: "string",
+        description: "Action to perform",
+        enum: ["add", "remove", "list"],
+        default: "add",
+      },
     },
   },
   handler: handleWatch,

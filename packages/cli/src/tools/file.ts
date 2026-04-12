@@ -217,7 +217,7 @@ async function handleFile(
   
   // Resolve file
   const resolved = await resolveFilePath(ctx, pathInput);
-  if ("content" in resolved === false) return resolved; // Error result
+  if ("isError" in resolved) return resolved; // Error result
   
   const { path, content } = resolved;
   
