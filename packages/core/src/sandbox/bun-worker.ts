@@ -17,6 +17,12 @@ function getMemoryUsageMB(): { heapUsed: number; heapTotal: number; rss: number 
 /** Memory warning threshold in MB */
 const MEMORY_WARNING_THRESHOLD = 256;
 
+const DEFAULT_POOL_CONFIG = {
+  enabled: true,
+  maxWorkers: 4,
+  idleTimeout: 30000,
+};
+
 const DEFAULT_CONFIG: Required<SandboxConfig> = {
   timeout: 5000,
   memoryLimit: 128, // Not enforced in workers, kept for API compat
@@ -25,7 +31,94 @@ const DEFAULT_CONFIG: Required<SandboxConfig> = {
   networkPolicy: DEFAULT_NETWORK_POLICY,
   normalizeCode: true,
   analysis: DEFAULT_ANALYSIS_CONFIG,
+  pool: DEFAULT_POOL_CONFIG,
 };
+
+/** Pooled worker wrapper */
+interface PooledWorker {
+  worker: Worker;
+  url: string;
+  busy: boolean;
+  lastUsed: number;
+  executionCount: number;
+}
+
+/** Worker pool for reusing workers across executions */
+class WorkerPool {
+  private workers: PooledWorker[] = [];
+  private maxWorkers: number;
+  private idleTimeout: number;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+  constructor(maxWorkers = 4, idleTimeout = 30000) {
+    this.maxWorkers = maxWorkers;
+    this.idleTimeout = idleTimeout;
+    this.startCleanup();
+  }
+
+  private startCleanup(): void {
+    this.cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      this.workers = this.workers.filter(pw => {
+        const isIdle = !pw.busy && (now - pw.lastUsed) > this.idleTimeout;
+        if (isIdle) {
+          pw.worker.terminate();
+          URL.revokeObjectURL(pw.url);
+        }
+        return !isIdle;
+      });
+    }, 10000);
+  }
+
+  acquire(workerCode: string): PooledWorker | null {
+    // Reuse available worker
+    const available = this.workers.find(pw => !pw.busy);
+    if (available) {
+      available.busy = true;
+      available.executionCount++;
+      return available;
+    }
+    // Create new if pool not full
+    if (this.workers.length < this.maxWorkers) {
+      const blob = new Blob([workerCode], { type: "application/javascript" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const worker = new Worker(url, { smol: true });
+        const pw: PooledWorker = { worker, url, busy: true, lastUsed: Date.now(), executionCount: 1 };
+        this.workers.push(pw);
+        return pw;
+      } catch {
+        URL.revokeObjectURL(url);
+        return null;
+      }
+    }
+    return null; // Pool exhausted
+  }
+
+  release(pw: PooledWorker): void {
+    pw.busy = false;
+    pw.lastUsed = Date.now();
+  }
+
+  remove(pw: PooledWorker): void {
+    const idx = this.workers.indexOf(pw);
+    if (idx >= 0) this.workers.splice(idx, 1);
+    try { pw.worker.terminate(); URL.revokeObjectURL(pw.url); } catch { /* cleanup error */ }
+  }
+
+  dispose(): void {
+    if (this.cleanupInterval) clearInterval(this.cleanupInterval);
+    this.cleanupInterval = null;
+    for (const pw of this.workers) {
+      try { pw.worker.terminate(); URL.revokeObjectURL(pw.url); } catch { /* dispose error */ }
+    }
+    this.workers = [];
+  }
+
+  get stats() {
+    return { total: this.workers.length, busy: this.workers.filter(w => w.busy).length };
+  }
+}
 
 /**
  * Bun Worker based sandbox implementation.
@@ -52,9 +145,14 @@ const DEFAULT_CONFIG: Required<SandboxConfig> = {
  */
 export class BunWorkerSandbox implements ISandbox {
   private config: Required<SandboxConfig>;
+  private pool: WorkerPool | null = null;
 
   constructor(config?: SandboxConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    const poolConfig = this.config.pool ?? DEFAULT_POOL_CONFIG;
+    if (poolConfig.enabled) {
+      this.pool = new WorkerPool(poolConfig.maxWorkers, poolConfig.idleTimeout);
+    }
   }
 
   getConfig(): SandboxConfig {
@@ -128,27 +226,69 @@ export class BunWorkerSandbox implements ISandbox {
       // The Function constructor here is INTENTIONAL - this is a code execution sandbox
       const workerCode = this.buildWorkerCode();
 
-      const blob = new Blob([workerCode], { type: "application/javascript" });
-      const url = URL.createObjectURL(blob);
-      // smol: true reduces memory usage (JSC::HeapSize = Small)
-      const worker = new Worker(url, { smol: true });
-
+      // Use pool if available, otherwise create worker directly
+      let pooledWorker: PooledWorker | null = null;
+      let worker: Worker;
+      let url: string;
+      
+      if (this.pool) {
+        // First attempt to acquire from pool
+        // Try to acquire from pool
+        pooledWorker = this.pool.acquire(workerCode);
+        // No retry - if pool is exhausted, return error immediately
+        if (pooledWorker === null) {
+          return resolve({
+            success: false,
+            error: { name: "PoolExhaustedError", message: "Worker pool exhausted, try again later" },
+            logs: [...logs, `[ERROR] Pool exhausted (max: ${this.config.pool?.maxWorkers ?? 4})`],
+            executionTime: performance.now() - startTime, // pool exhausted
+          });
+        }
+        worker = pooledWorker.worker;
+        url = pooledWorker.url;
+      } else {
+        // Direct worker creation (pool disabled)
+        const blob = new Blob([workerCode], { type: "application/javascript" });
+        url = URL.createObjectURL(blob);
+        try {
+          worker = new Worker(url, { smol: true });
+        } catch (err) {
+          URL.revokeObjectURL(url);
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          return resolve({
+            success: false,
+            error: { name: "WorkerCreationError", message: `Failed to create worker: ${errorMsg}` },
+            logs: [...logs, `[ERROR] Worker creation failed: ${errorMsg}`],
+            executionTime: performance.now() - startTime, // creation error
+          });
+        }
+      }
       let resolved = false;
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-      const cleanup = () => {
+      const cleanup = (error = false) => {
         if (!resolved) {
           resolved = true;
           if (timeoutId) clearTimeout(timeoutId);
-          worker.terminate();
-          URL.revokeObjectURL(url);
+          if (pooledWorker && this.pool) {
+            // Return to pool or remove on error
+            if (error) {
+              this.pool.remove(pooledWorker);
+            } else {
+              this.pool.release(pooledWorker);
+            }
+          } else {
+            // Direct worker - terminate and cleanup
+            worker.terminate();
+            URL.revokeObjectURL(url);
+          }
         }
       };
 
       // Timeout handler
       timeoutId = setTimeout(() => {
         if (!resolved) {
-          cleanup();
+          cleanup(true); // timeout error
           resolve({
             success: false,
             error: { name: "TimeoutError", message: `Execution timed out after ${this.config.timeout}ms` },
@@ -203,7 +343,7 @@ export class BunWorkerSandbox implements ISandbox {
       };
 
       worker.onerror = (error: ErrorEvent) => {
-        cleanup();
+        cleanup(true); // worker error - remove from pool
         // Include memory stats in error for debugging
         const mem = getMemoryUsageMB();
         const memInfo = `[Memory: heap=${mem.heapUsed}/${mem.heapTotal}MB, rss=${mem.rss}MB]`;
@@ -505,6 +645,9 @@ export class BunWorkerSandbox implements ISandbox {
         return signatures;
       };
 
+      // Track user-set variables for cleanup between executions (pooled workers)
+      const userVariableKeys = new Set<string>();
+
       // SECURITY: Reserved keys that must not be overwritten by user-provided variables/globals
       const RESERVED_KEYS = new Set([
         'onmessage', 'postMessage', 'close', 'terminate', 'self',
@@ -521,12 +664,19 @@ export class BunWorkerSandbox implements ISandbox {
         if (type === 'init') {
           const { variables, adapterMethods, globals } = data;
 
+          // SECURITY: Clean up variables from previous execution (pooled worker reuse)
+          for (const key of userVariableKeys) {
+            try { delete globalThis[key]; } catch { /* ignore */ }
+          }
+          userVariableKeys.clear();
+
           // Inject user variables (skip reserved keys to prevent internal state corruption)
           for (const [key, value] of Object.entries(variables || {})) {
             if (RESERVED_KEYS.has(key)) {
               logs.push('[WARN] Skipped reserved variable key: ' + key);
               continue;
             }
+            userVariableKeys.add(key); // Track for cleanup on next init
             globalThis[key] = value;
           }
 
@@ -536,6 +686,7 @@ export class BunWorkerSandbox implements ISandbox {
               logs.push('[WARN] Skipped reserved globals key: ' + key);
               continue;
             }
+            userVariableKeys.add(key); // Track globals too for cleanup
             globalThis[key] = value;
           }
 
@@ -652,17 +803,17 @@ export class BunWorkerSandbox implements ISandbox {
             });
 
             adaptersObj[adapterName] = adapterProxy;
-            // Also expose at top level but as non-writable
+            // Also expose at top level (configurable for pooled worker reuse)
             Object.defineProperty(globalThis, adapterName, {
               value: adapterProxy,
               writable: false,
-              configurable: false
+              configurable: true
             });
           }
           Object.defineProperty(globalThis, 'adapters', {
             value: adaptersObj,
             writable: false,
-            configurable: false
+            configurable: true
           });
 
           self.postMessage({ type: 'ready' });
@@ -724,8 +875,16 @@ export class BunWorkerSandbox implements ISandbox {
     `;
   }
 
+  getPoolStats(): { enabled: boolean; total: number; busy: number } | null {
+    if (!this.pool) return null;
+    return { enabled: true, ...this.pool.stats };
+  }
+
   dispose(): void {
-    // Workers are created per execution, nothing to dispose
+    if (this.pool) {
+      this.pool.dispose();
+      this.pool = null;
+    }
   }
 }
 

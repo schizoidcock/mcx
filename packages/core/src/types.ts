@@ -133,6 +133,15 @@ export interface SandboxConfig {
   normalizeCode?: boolean;
   /** Pre-execution analysis - detects infinite loops, dangerous patterns (default: enabled) */
   analysis?: AnalysisConfig;
+  /** Worker pool configuration */
+  pool?: {
+    /** Enable worker pooling (default: true) */
+    enabled?: boolean;
+    /** Maximum number of workers in pool (default: 4) */
+    maxWorkers?: number;
+    /** Worker idle timeout in ms before termination (default: 30000) */
+    idleTimeout?: number;
+  };
 }
 
 /**

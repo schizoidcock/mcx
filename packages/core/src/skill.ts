@@ -13,6 +13,7 @@ const DEFAULT_SANDBOX_CONFIG: Required<SandboxConfig> = {
   networkPolicy: DEFAULT_NETWORK_POLICY,
   normalizeCode: true,
   analysis: DEFAULT_ANALYSIS_CONFIG,
+  pool: { enabled: true, maxWorkers: 4, idleTimeout: 30000 },
 };
 
 /**
