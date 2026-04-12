@@ -1,6 +1,6 @@
 /**
  * Tool Utilities
- * 
+ *
  * Common utilities used across all MCP tools.
  * Extracted from serve.ts formatting and helper functions.
  */
@@ -18,6 +18,7 @@ export function formatToolResult(text: string, suggestion?: string): McpResult {
   const content = suggestion ? text + suggestion : text;
   return {
     content: [{ type: "text" as const, text: content }],
+    toolResult: text,
   };
 }
 
@@ -45,16 +46,16 @@ export function formatImageResult(data: string, mimeType: string): McpResult {
  * Create a mixed result (text + image).
  */
 export function formatMixedResult(
-  text: string, 
+  text: string,
   images: Array<{ data: string; mimeType: string }>
 ): McpResult {
   return {
     content: [
       { type: "text" as const, text },
-      ...images.map(img => ({ 
-        type: "image" as const, 
-        data: img.data, 
-        mimeType: img.mimeType 
+      ...images.map(img => ({
+        type: "image" as const,
+        data: img.data,
+        mimeType: img.mimeType
       })),
     ],
   };
@@ -69,20 +70,20 @@ export function formatMixedResult(
  * Centers on a match position if provided.
  */
 export function truncateString(
-  str: string, 
-  maxLen: number, 
+  str: string,
+  maxLen: number,
   matchPos?: number
 ): string {
   if (str.length <= maxLen) return str;
-  
+
   if (matchPos !== undefined && matchPos >= 0) {
     // Center around match
     const beforeLen = Math.floor(maxLen / 3);
     const afterLen = maxLen - beforeLen - 3; // 3 for "..."
-    
+
     let start = Math.max(0, matchPos - beforeLen);
     let end = Math.min(str.length, matchPos + afterLen);
-    
+
     // Adjust if at boundaries
     if (start === 0) {
       end = Math.min(str.length, maxLen - 3);
@@ -92,10 +93,10 @@ export function truncateString(
       start = Math.max(0, str.length - maxLen + 3);
       return "..." + str.slice(start);
     }
-    
+
     return "..." + str.slice(start, end) + "...";
   }
-  
+
   // Default: truncate from end
   return str.slice(0, maxLen - 3) + "...";
 }
@@ -106,17 +107,17 @@ export function truncateString(
 export function cleanLine(line: string, maxLen: number = 100, pattern?: string): string {
   // Remove line number prefix if present
   let cleaned = line.replace(/^\d+:\s*/, "");
-  
+
   // Collapse whitespace
   cleaned = cleaned.replace(/\s+/g, " ").trim();
-  
+
   // Find pattern position for centering
   let matchPos: number | undefined;
   if (pattern) {
     const idx = cleaned.toLowerCase().indexOf(pattern.toLowerCase());
     if (idx >= 0) matchPos = idx;
   }
-  
+
   return truncateString(cleaned, maxLen, matchPos);
 }
 
@@ -125,20 +126,20 @@ export function cleanLine(line: string, maxLen: number = 100, pattern?: string):
  */
 export function compactPath(filePath: string, maxLen: number = 50): string {
   if (filePath.length <= maxLen) return filePath;
-  
+
   const parts = filePath.split(/[/\\]/);
   if (parts.length <= 2) {
     return truncateString(filePath, maxLen);
   }
-  
+
   // Keep first and last parts, abbreviate middle
   const first = parts[0];
   const last = parts.slice(-2).join("/");
   const middle = "...";
-  
+
   const result = `${first}/${middle}/${last}`;
   if (result.length <= maxLen) return result;
-  
+
   // Still too long, just truncate
   return truncateString(filePath, maxLen);
 }
@@ -152,7 +153,7 @@ export function compactPath(filePath: string, maxLen: number = 50): string {
  */
 export function safeStringify(obj: unknown, indent?: number): string {
   const seen = new WeakSet();
-  
+
   return JSON.stringify(obj, (key, value) => {
     if (typeof value === "object" && value !== null) {
       if (seen.has(value)) {
@@ -178,7 +179,7 @@ export function safeStringify(obj: unknown, indent?: number): string {
 export function prettyJson(obj: unknown, maxSize: number = 10000): string {
   const str = safeStringify(obj, 2);
   if (str.length <= maxSize) return str;
-  
+
   // Truncate and add indicator
   return str.slice(0, maxSize) + "\n... [truncated]";
 }
@@ -222,7 +223,7 @@ export function coerceParam<T>(
   defaultValue: T
 ): T {
   if (value === undefined || value === null) return defaultValue;
-  
+
   switch (type) {
     case "string":
       return String(value) as T;
@@ -247,11 +248,11 @@ export function coerceParam<T>(
  */
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
-  
+
   const units = ["B", "KB", "MB", "GB"];
   const k = 1024;
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  
+
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${units[i]}`;
 }
 

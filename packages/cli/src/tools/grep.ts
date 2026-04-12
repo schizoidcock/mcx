@@ -1,6 +1,6 @@
 /**
  * mcx_grep Tool
- * 
+ *
  * Search CONTENT inside files.
  * NOT for finding files by name - use mcx_find instead.
  */
@@ -35,11 +35,11 @@ interface ParsedQuery {
 
 function parseGrepQuery(query: string): ParsedQuery {
   const parts = query.trim().split(/\s+/);
-  
+
   let filePattern: string | null = null;
   let pathPrefix: string | null = null;
   const searchTerms: string[] = [];
-  
+
   for (const part of parts) {
     // File pattern: *.ts, *.{ts,tsx}
     if (part.startsWith("*.") || part.match(/^\*\.\{/)) {
@@ -54,7 +54,7 @@ function parseGrepQuery(query: string): ParsedQuery {
       searchTerms.push(part);
     }
   }
-  
+
   return {
     filePattern,
     searchTerm: searchTerms.join(" "),
@@ -71,27 +71,27 @@ async function handleGrep(
   params: GrepParams
 ): Promise<McpResult> {
   const query = params.query || params.pattern;
-  
+
   if (!query) {
     return formatError("Missing query or pattern parameter");
   }
-  
+
   // Parse query
   const parsed = parseGrepQuery(query);
-  
+
   if (!parsed.searchTerm) {
     return formatError(
       "No search term found in query",
       "Example: mcx_grep({ query: '*.ts useState' })"
     );
   }
-  
+
   // Get finder for search path
   const searchPath = params.path ? resolve(params.path) : ctx.basePath;
-  
+
   try {
     const finder = await getFinderForPath(ctx, searchPath);
-    
+
     // Build FFF query
     let fffQuery = parsed.searchTerm;
     if (parsed.filePattern) {
@@ -100,60 +100,60 @@ async function handleGrep(
     if (parsed.pathPrefix) {
       fffQuery = `${parsed.pathPrefix} ${fffQuery}`;
     }
-    
+
     // Execute search
-    const results = finder.grepFiles(fffQuery, {
-      maxResults: 200,
-      contextLines: params.context || 0,
-    });
-    
+    const results = finder.grep(fffQuery, {
+        pageSize: 200,
+        glob: parsed.filePattern || undefined,
+      });
+
     if (!results.ok) {
       return formatError(`Search failed: ${results.error}`);
     }
-    
-    const items: GrepMatch[] = results.value.matches.map(m => ({
-      relativePath: m.relativePath,
-      lineNumber: m.lineNumber,
-      lineContent: m.lineContent,
-    }));
-    
+
+    const items: GrepMatch[] = results.value.items.map(m => ({
+        relativePath: m.relativePath,
+        lineNumber: m.lineNumber,
+        lineContent: m.lineContent,
+      }));
+
     // Track usage
     trackToolUsage("mcx_grep");
-    
+
     // Update proximity context with matched files
     const matchedFiles = [...new Set(items.map(i => i.relativePath))];
     updateProximityContext(matchedFiles.slice(0, 10), [parsed.searchTerm]);
-    
+
     // No matches
     if (items.length === 0) {
       return formatToolResult(
-        `No matches for "${parsed.searchTerm}" in ${results.value.filesSearched} files.`,
+        `No matches for "${parsed.searchTerm}" in ${results.value.totalFilesSearched} files.`,
         "\n→ Next: mcx_find (try different file pattern)"
       );
     }
-    
+
     // Build proximity scores for sorting
     const proxScores = new Map<string, number>();
     for (const file of matchedFiles) {
       proxScores.set(file, getProximityScore(file));
     }
-    
+
     // Format output
     const formatted = formatGrepMCX(
-      items,
-      items.length,
-      results.value.filesSearched,
+       items,
+       results.value.totalMatched,
+       results.value.totalFilesSearched,
       {
         pattern: parsed.searchTerm,
         proxScores,
       }
     );
-    
+
     return formatToolResult(
       formatted.output,
       "\n→ Next: mcx_file (read full file context)"
     );
-    
+
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return formatError(`Grep failed: ${msg}`);
