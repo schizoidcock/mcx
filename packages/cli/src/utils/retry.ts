@@ -37,7 +37,7 @@ export function sleep(ms: number): Promise<void> {
  * Retry a fetch request with exponential backoff and jitter.
  */
 export async function fetchWithRetry(
-  input: RequestInfo | URL,
+  input: string | URL | Request,
   init?: RequestInit,
   options: RetryOptions = {}
 ): Promise<Response> {

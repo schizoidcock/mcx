@@ -41,9 +41,8 @@ async function handleUpgrade(): Promise<McpResult> {
 
 export const mcxUpgrade: ToolDefinition<UpgradeParams> = {
   name: "mcx_upgrade",
-  title: "MCX Self-Upgrade",
   description: "Get command to upgrade MCX to latest version.",
-  parameters: {},
+  inputSchema: { type: "object", properties: {} },
   handler: handleUpgrade,
 };
 

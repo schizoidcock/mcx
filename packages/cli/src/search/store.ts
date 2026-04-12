@@ -196,14 +196,20 @@ export class ContentStore {
   /**
    * Get all indexed sources with metadata.
    */
-  getSources(): Array<{ id: number; label: string; chunkCount: number }> {
-    return this.db.prepare(`
-      SELECT s.id, s.label, COUNT(c.rowid) as chunk_count
+  getSources(): Array<{ id: number; label: string; chunkCount: number; indexedAt: number }> {
+    const rows = this.db.prepare(`
+      SELECT s.id, s.label, s.indexed_at, COUNT(c.rowid) as chunk_count
       FROM sources s
       LEFT JOIN chunks c ON c.source_id = s.id
       GROUP BY s.id
       ORDER BY s.indexed_at DESC
-    `).all() as Array<{ id: number; label: string; chunk_count: number }>;
+    `).all() as Array<{ id: number; label: string; indexed_at: number; chunk_count: number }>;
+    return rows.map(row => ({
+      id: row.id,
+      label: row.label,
+      chunkCount: row.chunk_count,
+      indexedAt: row.indexed_at,
+    }));
   }
 
   /**
@@ -244,21 +250,35 @@ export class ContentStore {
   }
 
   /**
-   * Get total chunk count.
+   * Get chunk count, optionally for a specific source.
    */
-  getChunkCount(): number {
-    const result = this.db.prepare('SELECT COUNT(*) as count FROM chunks').get() as { count: number };
+  getChunkCount(sourceId?: number): number {
+    const query = sourceId !== undefined
+      ? 'SELECT COUNT(*) as count FROM chunks WHERE source_id = ?'
+      : 'SELECT COUNT(*) as count FROM chunks';
+    const result = sourceId !== undefined
+      ? this.db.prepare(query).get(sourceId) as { count: number }
+      : this.db.prepare(query).get() as { count: number };
     return result.count;
   }
 
   /**
-   * Get chunk count for a specific source.
+   * Remove stale sources older than maxAgeMs.
    */
-  getSourceChunkCount(sourceId: number): number {
-    const result = this.db.prepare(
-      'SELECT COUNT(*) as count FROM chunks WHERE source_id = ?'
-    ).get(sourceId) as { count: number };
-    return result.count;
+  cleanupStale(maxAgeMs: number): number {
+    const cutoff = Date.now() - maxAgeMs;
+    const stale = this.db.prepare(
+      'SELECT id FROM sources WHERE indexed_at < ?'
+    ).all(cutoff) as Array<{ id: number }>;
+    
+    if (stale.length === 0) return 0;
+    
+    const ids = stale.map(s => s.id);
+    this.db.exec(`DELETE FROM chunks WHERE source_id IN (${ids.join(',')})`);
+    this.db.exec(`DELETE FROM chunks_trigram WHERE source_id IN (${ids.join(',')})`);
+    this.db.exec(`DELETE FROM sources WHERE id IN (${ids.join(',')})`);
+    
+    return stale.length;
   }
 
   /**

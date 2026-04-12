@@ -295,7 +295,6 @@ async function handleEdit(
 
 export const mcxEdit: ToolDefinition<EditParams> = {
   name: "mcx_edit",
-  title: "Edit File",
   description: `Edit a file. Two modes:
 
 **Line mode** (PREFERRED - minimal tokens):
@@ -311,36 +310,46 @@ mcx_edit({ file_path, old_string: "unique text", new_string: "replacement" })
 - Stale line detection: warns if file changed since last storeAs
 
 **Workflow:** mcx_file({ storeAs }) → grep/around to find lines → mcx_edit({ start, end })`,
-  parameters: {
-    file_path: {
-      type: "string",
-      description: "Absolute path to the file to edit",
-    },
-    path: {
-      type: "string",
-      description: "Alias for file_path",
-    },
-    start: {
-      type: "number",
-      description: "Line mode: start line (1-indexed)",
-    },
-    end: {
-      type: "number",
-      description: "Line mode: end line (1-indexed, inclusive)",
-    },
-    old_string: {
-      type: "string",
-      description: "String mode: exact string to find and replace",
-    },
-    new_string: {
-      type: "string",
-      description: "The replacement string/content",
-      required: true,
-    },
-    replace_all: {
-      type: "boolean",
-      description: "String mode: replace all occurrences",
-      default: false,
+  inputSchema: {
+    type: "object",
+    properties: {
+      file_path: {
+        type: "string",
+        description: "Absolute path to the file to edit",
+      },
+      path: {
+        type: "string",
+        description: "Alias for file_path",
+      },
+      start: {
+        type: "number",
+        description: "Line mode: start line (1-indexed)",
+      },
+      end: {
+        type: "number",
+        description: "Line mode: end line (1-indexed, inclusive)",
+      },
+      old_string: {
+        type: "string",
+        description: "String mode: exact string to find and replace",
+      },
+      new_string: {
+        type: "string",
+        description: "The replacement string/content",
+      },
+      code: {
+        type: "string",
+        description: "JS code for transform mode",
+      },
+      mode: {
+        type: "string",
+        description: "Edit mode: line, string, or transform",
+      },
+      replace_all: {
+        type: "boolean",
+        description: "String mode: replace all occurrences",
+        default: false,
+      },
     },
   },
   handler: handleEdit,

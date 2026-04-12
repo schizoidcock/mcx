@@ -59,7 +59,7 @@ import { mcxFile } from "../tools/file.js";
 import { mcxSearch } from "../tools/search.js";
 import { createExecuteTool } from "../tools/execute.js";
 import { createAdapterTool } from "../tools/adapter.js";
-import type { ToolContext } from "../tools/types.js";
+
 
 // ============================================================================
 // Global Error Handlers (P0 - Critical for debugging crashes)
@@ -240,12 +240,12 @@ function killTree(proc: { pid: number; kill: () => void }): void {
         process.kill(-proc.pid, 'SIGKILL');
       } catch {
         // Fallback to regular kill if process group kill fails
-        killTree(proc);
+        proc.kill();
       }
     }
   } catch {
-    // Last resort fallback
-    killTree(proc);
+    // Last resort fallback - simple kill, no recursion
+    proc.kill();
   }
 }
 
@@ -2486,7 +2486,7 @@ const tree = (obj, depth = 2, indent = '') => {
     watchedProjects: new Map(),
     backgroundTasks,
     basePath: fffBasePath,
-    skills,
+    fileHelpersCode: FILE_HELPERS_CODE,
   };
   
   registerExtractedTools({

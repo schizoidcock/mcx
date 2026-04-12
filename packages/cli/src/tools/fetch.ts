@@ -255,7 +255,6 @@ async function handleFetch(
 
 export const mcxFetch: ToolDefinition<FetchParams> = {
   name: "mcx_fetch",
-  title: "Fetch and Index URL",
   description: `Fetch URL, convert to markdown, index in FTS5, and optionally search.
 Caches 24h - same URL returns cached results instantly.
 
@@ -266,26 +265,30 @@ Examples:
 - mcx_fetch({ url: "https://docs.example.com/guide", queries: ["authentication", "setup"] })
 - mcx_fetch({ url: "https://api.example.com/openapi.json" }) // index only
 - mcx_fetch({ url: "...", force: true }) // bypass 24h cache`,
-  parameters: {
-    url: {
-      type: "string",
-      description: "URL to fetch",
-      required: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: {
+        type: "string",
+        description: "URL to fetch",
+      },
+      queries: {
+        type: "array",
+        items: { type: "string" },
+        description: "Search after indexing",
+      },
+      force: {
+        type: "boolean",
+        description: "Bypass cache and re-fetch",
+        default: false,
+      },
+      preview: {
+        type: "boolean",
+        description: "Return 3KB preview (full content still indexed)",
+        default: false,
+      },
     },
-    queries: {
-      type: "array",
-      description: "Search after indexing",
-    },
-    force: {
-      type: "boolean",
-      description: "Bypass cache and re-fetch",
-      default: false,
-    },
-    preview: {
-      type: "boolean",
-      description: "Return 3KB preview (full content still indexed)",
-      default: false,
-    },
+    required: ["url"],
   },
   handler: handleFetch,
 };

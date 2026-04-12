@@ -265,7 +265,7 @@ describe('analyzeShellTraits', () => {
 describe('formatTraitWarnings', () => {
   it('formats multiple warnings', () => {
     const analysis = {
-      traits: ['destructive', 'slow'] as const,
+      traits: ['destructive', 'slow'] as ('destructive' | 'slow')[],
       warnings: [
         { trait: 'destructive' as const, patterns: ['trash-cli'], suggestion: 'Moves files to trash' },
         { trait: 'slow' as const, patterns: ['eslint-offline'], suggestion: 'May take time' },
@@ -311,7 +311,7 @@ describe('formatTraitWarnings', () => {
 
   it('includes suggestion in output', () => {
     const analysis = {
-      traits: ['destructive'] as const,
+      traits: ['destructive'] as ('destructive')[],
       warnings: [
         { trait: 'destructive' as const, patterns: ['unlinkSync'], suggestion: 'This will permanently delete the file' },
       ],

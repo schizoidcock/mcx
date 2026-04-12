@@ -91,7 +91,7 @@ export interface OpenAPISpec {
 export interface DetectedAuth {
   type: "none" | "basic" | "bearer" | "apiKey";
   headerName?: string;
-  in?: "header" | "query";
+  in?: "header" | "query" | "cookie";
 }
 
 export interface DetectedSDK {

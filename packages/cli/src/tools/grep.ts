@@ -166,7 +166,6 @@ async function handleGrep(
 
 export const mcxGrep: ToolDefinition<GrepParams> = {
   name: "mcx_grep",
-  title: "Content Search",
   description: `Search CONTENT inside files. NOT for finding files by name.
 
 USE THIS FOR: "find useState in code", "search for TODO comments"
@@ -177,23 +176,26 @@ Query syntax:
 - "*.ts useState" - Search "useState" only in .ts files
 - "src/ handleClick" - Search in src/ directory only
 - "*.{ts,tsx} import" - Search in multiple file types`,
-  parameters: {
-    query: {
-      type: "string",
-      description: "Search query with optional file pattern prefix",
-    },
-    pattern: {
-      type: "string",
-      description: "Alias for query (for compatibility)",
-    },
-    path: {
-      type: "string",
-      description: "Directory to search in (default: current project)",
-    },
-    context: {
-      type: "number",
-      description: "Lines of context to show around matches",
-      default: 0,
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Search query with optional file pattern prefix",
+      },
+      pattern: {
+        type: "string",
+        description: "Alias for query (for compatibility)",
+      },
+      path: {
+        type: "string",
+        description: "Directory to search in (default: current project)",
+      },
+      context: {
+        type: "number",
+        description: "Lines of context to show around matches",
+        default: 0,
+      },
     },
   },
   handler: handleGrep,

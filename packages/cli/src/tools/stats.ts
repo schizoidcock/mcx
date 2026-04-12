@@ -202,18 +202,20 @@ async function handleStats(
 
 export const mcxStats: ToolDefinition<StatsParams> = {
   name: "mcx_stats",
-  title: "Session Statistics",
   description: "Session statistics: indexed content, searches, executions, variables. Use graph:true for visual bar charts.",
-  parameters: {
-    graph: {
-      type: "boolean",
-      description: "Show ASCII bar charts for tool usage",
-      default: false,
-    },
-    context: {
-      type: "boolean",
-      description: "Show context contribution estimates (schema + results)",
-      default: false,
+  inputSchema: {
+    type: "object",
+    properties: {
+      graph: {
+        type: "boolean",
+        description: "Show ASCII bar charts for tool usage",
+        default: false,
+      },
+      context: {
+        type: "boolean",
+        description: "Show context contribution estimates (schema resolution)",
+        default: false,
+      },
     },
   },
   handler: handleStats,
