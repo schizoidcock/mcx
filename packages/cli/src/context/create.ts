@@ -49,16 +49,11 @@
     const regex = typeof pattern === 'string' ? new RegExp(pattern, 'i') : pattern;
     const matches = [];
     stored.lines.forEach((line, idx) => {
-      if (regex.test(line)) {
-        if (ctx > 0) {
-          const start = Math.max(0, idx - ctx);
-          const end = Math.min(stored.lines.length, idx + ctx + 1);
-          matches.push(...stored.lines.slice(start, end));
-          matches.push('---');
-        } else {
-          matches.push(line);
-        }
-      }
+      if (!regex.test(line)) return;
+      const start = Math.max(0, idx - ctx);
+      const end = Math.min(stored.lines.length, idx + ctx + 1);
+      matches.push(...stored.lines.slice(start, end));
+      if (ctx > 0) matches.push('---');
     });
     return matches.length > 0 ? matches.join('\\n') : 'No matches';
   };

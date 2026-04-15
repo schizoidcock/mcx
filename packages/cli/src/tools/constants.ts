@@ -146,3 +146,21 @@ export const HARD_CAP_BYTES = 100 * 1024 * 1024;
 
 /** Default timeout for shell commands (30s) */
 export const DEFAULT_TIMEOUT = 30_000;
+
+// ============================================================================
+// Daemon
+// ============================================================================
+
+/** Poll interval for checking FFF changes (ms) */
+export const DAEMON_POLL_INTERVAL_MS = 1000;
+
+/** Extensions to index content for */
+export const INDEXABLE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.json', '.md', '.mdx', '.yaml', '.yml',
+  '.html', '.css', '.scss', '.less',
+  '.py', '.rb', '.go', '.rs', '.java', '.kt',
+  '.c', '.cpp', '.h', '.hpp',
+  '.sh', '.bash', '.zsh',
+  '.sql', '.graphql', '.prisma',
+]);

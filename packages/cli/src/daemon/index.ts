@@ -9,21 +9,8 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { relative, extname, basename } from 'path';
 import { getContentStore } from '../search';
+import { DAEMON_DAEMON_POLL_INTERVAL_MS, INDEXABLE_EXTENSIONS } from '../tools/constants.js';
 import type { FileFinder } from '@ff-labs/fff-bun';
-
-// Poll interval for checking FFF changes
-const POLL_INTERVAL_MS = 1000;
-
-// Extensions to index content for
-const INDEXABLE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-  '.json', '.md', '.mdx', '.yaml', '.yml',
-  '.html', '.css', '.scss', '.less',
-  '.py', '.rb', '.go', '.rs', '.java', '.kt',
-  '.c', '.cpp', '.h', '.hpp',
-  '.sh', '.bash', '.zsh',
-  '.sql', '.graphql', '.prisma',
-]);
 
 interface DaemonOptions {
   watchedProjects: Map<string, FileFinder>;
@@ -46,7 +33,7 @@ export class FileIndexerDaemon {
 
   start(): void {
     if (this.pollTimer) return;
-    this.pollTimer = setInterval(() => this.processChanges(), POLL_INTERVAL_MS);
+    this.pollTimer = setInterval(() => this.processChanges(), DAEMON_POLL_INTERVAL_MS);
   }
 
   stop(): void {
