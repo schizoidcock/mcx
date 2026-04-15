@@ -5,8 +5,14 @@
  * Modes: spec exploration, content search, adapter/method search.
  */
 
-import type { ToolContext, ToolDefinition, McpResult, AdapterSpec } from "./types.js";
-import { formatToolResult, formatError } from "./utils.js";
+import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
+import type { ResolvedSpec, ToolSpec, ParameterSpec } from "../spec/types.js";
+import type { ContentStore } from "../search/store.js";
+import { formatError } from "./utils.js";
+import { getMethodFrecency } from "../context/tracking.js";
+import { getSandboxState } from "../sandbox/index.js";
+import { checkSearchThrottle } from "../context/guards.js";
+import { MAX_PARAMS_FULL, MAX_PARAMS_TRUNCATED, MAX_DESC_LENGTH } from "./constants.js";
 
 // ============================================================================
 // Types
@@ -18,6 +24,7 @@ export interface SearchParams {
   adapter?: string;
   storeAs?: string;
   limit?: number;
+  source?: string;  // Filter by indexed source label
 }
 
 interface SearchResult {
@@ -46,18 +53,14 @@ async function handleSpecSearch(
     
     // Store if requested
     if (storeAs) {
-      ctx.variables.stored.set(storeAs, {
-        value,
-        timestamp: Date.now(),
-        source: "mcx_search:spec",
-      });
+      getSandboxState().set(storeAs, value);
     }
     
     // Format output
     const output = formatSpecResult(value);
     const storedMsg = storeAs ? `\nStored as $${storeAs}` : "";
     
-    return formatToolResult(output + storedMsg);
+    return output + storedMsg;
   } catch (err) {
     return formatError(`Spec query failed: ${String(err)}`);
   }
@@ -82,32 +85,31 @@ function formatSpecResult(value: unknown): string {
 // Mode 2: Content Search (FTS5)
 // ============================================================================
 
+// Helper: resolve source label to sourceIds (exact or partial match)
+function resolveSourceIds(store: ContentStore, source: string): number[] | undefined {
+  const exact = store.getSourceByLabel(source);
+  if (exact) return [exact.id];
+  
+  const partial = store.getSources().find(s => s.label.includes(source));
+  return partial ? [partial.id] : undefined;
+}
+
 function handleContentSearch(
   ctx: ToolContext,
   queries: string[],
   limit: number = 5,
-  storeAs?: string
+  storeAs?: string,
+  source?: string
 ): McpResult {
-  const results: Array<{ query: string; matches: SearchResult[] }> = [];
+  const sourceIds = source ? resolveSourceIds(ctx.contentStore, source) : undefined;
+  const results = queries.map(query => ({
+    query,
+    matches: ctx.contentStore.search(query, { limit, sourceIds }),
+  }));
   
-  for (const query of queries) {
-    const matches = ctx.contentStore.search(query, { limit });
-    results.push({ query, matches });
-  }
+  if (storeAs) getSandboxState().set(storeAs, results);
   
-  // Store if requested
-  if (storeAs) {
-    ctx.variables.stored.set(storeAs, {
-      value: results,
-      timestamp: Date.now(),
-      source: "mcx_search:content",
-    });
-  }
-  
-  // Format output
-  const output = formatContentResults(results);
-  
-  return formatToolResult(output);
+  return formatContentResults(results);
 }
 
 function formatContentResults(
@@ -123,7 +125,7 @@ function formatContentResults(
     } else {
       for (const m of matches) {
         const source = m.source ? ` [${m.source}]` : "";
-        lines.push(`- ${m.snippet.slice(0, 200)}${source}`);
+        lines.push(`- ${(m.snippet || m.text || '').slice(0, 200)}${source}`);
       }
     }
     lines.push("");
@@ -136,47 +138,73 @@ function formatContentResults(
 // Mode 3: Adapter/Method Search
 // ============================================================================
 
-function handleAdapterSearch(
-  spec: AdapterSpec,
-  query: string
-): McpResult {
-  const lowerQuery = query.toLowerCase();
-  const matches: string[] = [];
+
+
+/** Format single parameter line */
+function formatParam(p: ParameterSpec): string[] {
+  const req = p.required ? "(required)" : "(optional)";
+  const def = p.default !== undefined ? ` = ${JSON.stringify(p.default)}` : "";
+  const desc = p.description?.length > MAX_DESC_LENGTH 
+    ? p.description.slice(0, MAX_DESC_LENGTH - 3) + "..." : p.description;
+  const lines = [`- **${p.name}**: \`${p.type}\` ${req}${def}`];
+  if (desc) lines.push(`  ${desc}`);
+  return lines;
+}
+
+/** Format detailed method view for exact match */
+function formatMethodDetail(adapterName: string, method: ToolSpec): string {
+  const lines = [`## ${adapterName}.${method.name}`, ""];
+  if (method.description) lines.push(method.description, "");
   
-  for (const adapter of spec.adapters) {
-    // Match adapter name
+  const params = method.parameters || [];
+  const sig = params.map(p => `${p.name}${p.required ? "" : "?"}: ${p.type}`).join(", ");
+  lines.push("### Signature", `${adapterName}.${method.name}({ ${sig} })`, "");
+  
+  if (params.length === 0) return lines.join("\n");
+  
+  const showAll = params.length <= MAX_PARAMS_FULL;
+  const toShow = showAll ? params : params.slice(0, MAX_PARAMS_TRUNCATED);
+  lines.push(`### Parameters${showAll ? "" : ` (${MAX_PARAMS_TRUNCATED}/${params.length})`}`);
+  lines.push(...toShow.flatMap(formatParam), "");
+  return lines.join("\n");
+}
+
+interface MethodMatch { adapter: string; method: string; spec: ToolSpec }
+
+function handleAdapterSearch(spec: ResolvedSpec, query: string): McpResult {
+  const lowerQuery = query.toLowerCase();
+  const adapterMatches: string[] = [];
+  const methodMatches: MethodMatch[] = [];
+  
+  for (const adapter of Object.values(spec.adapters)) {
     if (adapter.name.toLowerCase().includes(lowerQuery)) {
-      matches.push(`${adapter.name} (adapter)`);
+      adapterMatches.push(`${adapter.name} (adapter)`);
     }
-    
-    // Match methods
-    for (const method of adapter.methods || []) {
+    for (const method of Object.values(adapter.tools || {})) {
       if (method.name.toLowerCase().includes(lowerQuery)) {
-        matches.push(`${adapter.name}.${method.name}`);
+        methodMatches.push({ adapter: adapter.name, method: method.name, spec: method });
       }
     }
   }
   
-  if (matches.length === 0) {
-    return formatToolResult(`No matches for "${query}"`);
+  methodMatches.sort((a, b) => getMethodFrecency(b.adapter, b.method) - getMethodFrecency(a.adapter, a.method));
+  
+  // Exact match: show detailed view
+  const isExact = methodMatches.length === 1 && methodMatches[0].method.toLowerCase() === lowerQuery;
+  if (isExact && adapterMatches.length === 0) {
+    return formatMethodDetail(methodMatches[0].adapter, methodMatches[0].spec);
   }
   
-  const output = [
-    `Found ${matches.length} matches for "${query}":`,
-    "",
-    ...matches.slice(0, 20).map((m) => `- ${m}`),
-  ];
+  // Multiple matches: show list
+  const allMatches = [...adapterMatches, ...methodMatches.map(m => `${m.adapter}.${m.method}`)];
+  if (allMatches.length === 0) return `No matches for "${query}"`;
   
-  if (matches.length > 20) {
-    output.push(`... +${matches.length - 20} more`);
-  }
-  
-  output.push("");
-  output.push("→ mcx_adapter({ name: \"...\", call: \"...\" }) to call");
-  
-  return formatToolResult(output.join("\n"));
+  const output = [`Found ${allMatches.length} matches for "${query}":`, ""];
+  output.push(...allMatches.slice(0, 20).map(m => `- ${m}`));
+  if (allMatches.length > 20) output.push(`... +${allMatches.length - 20} more`);
+  output.push("", "→ mcx_adapter({ name: \"...\", call: \"methodName\", params: {...} }) to execute");
+  return output.join("\n");
 }
-
 // ============================================================================
 // Main Handler
 // ============================================================================
@@ -185,7 +213,14 @@ async function handleSearch(
   ctx: ToolContext,
   params: SearchParams
 ): Promise<McpResult> {
-  const { code, queries, adapter, storeAs, limit = 5 } = params;
+  // Throttle check (skip for spec exploration which is lightweight)
+  const throttle = checkSearchThrottle();
+  if (throttle.blocked) {
+    return formatError(`Search throttled (${throttle.calls} calls in window). Wait a moment.`);
+  }
+  
+  const { code, queries, adapter, storeAs, limit = 5, source } = params;
+  const effectiveLimit = throttle.reducedLimit ? Math.min(limit, 3) : limit;
   
   // Mode 1: Spec exploration
   if (code) {
@@ -193,8 +228,16 @@ async function handleSearch(
   }
   
   // Mode 2: Content search
-  if (queries?.length) {
-    return handleContentSearch(ctx, queries, limit, storeAs);
+  if (queries !== undefined) {
+    if (!Array.isArray(queries)) {
+      return formatError(
+        `queries must be an array\n` +
+        `💡 Example: mcx_search({ queries: ["term1", "term2"] })`
+      );
+    }
+    if (queries.length > 0) {
+      return handleContentSearch(ctx, queries, effectiveLimit, storeAs, source);
+    }
   }
   
   // Mode 3: Adapter search
@@ -246,7 +289,8 @@ Find adapter methods by name.
       },
       adapter: { type: "string", description: "Search adapter/method names" },
       storeAs: { type: "string", description: "Store results as variable" },
-      limit: { type: "number", description: "Max results per query (default: 5)" },
+      limit: { type: "number", minimum: 1, maximum: 100, default: 5, description: "Max results per query" },
+      source: { type: "string", description: "Filter by indexed source label (e.g., 'file:path' or 'exec:var')" },
     },
   },
   handler: handleSearch,

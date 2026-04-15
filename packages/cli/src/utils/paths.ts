@@ -10,6 +10,9 @@ import { access } from "node:fs/promises";
 /** Max directory depth to traverse (prevents symlink loops) */
 const MAX_TRAVERSE_DEPTH = 100;
 
+/** Normalize path: backslash → forward slash (Windows compatibility) */
+export const normalizePath = (p: string): string => p.replace(/\\/g, '/');
+
 /**
  * Get the global MCX home directory (~/.mcx)
  */
@@ -126,7 +129,7 @@ export async function exists(path: string): Promise<boolean> {
 export function compactPath(filePath: string, maxLen = 50): string {
   if (filePath.length <= maxLen) return filePath;
   
-  const parts = filePath.replace(/\\/g, '/').split('/');
+  const parts = normalizePath(filePath).split('/');
   if (parts.length <= 2) {
     return '...' + filePath.slice(-(maxLen - 3));
   }

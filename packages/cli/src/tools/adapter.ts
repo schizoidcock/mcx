@@ -5,8 +5,48 @@
  * Modes: list adapters, show methods, call method, run skill.
  */
 
-import type { ToolContext, ToolDefinition, McpResult, AdapterSpec, SkillDef } from "./types.js";
-import { formatToolResult, formatError } from "./utils.js";
+import type { ToolContext, ToolDefinition, McpResult, SkillDef } from "./types.js";
+import type { ResolvedSpec, AdapterSpec } from "../spec/types.js";
+import { formatError } from "./utils.js";
+import { getSandboxState } from "../sandbox/index.js";
+import { extractImages } from "../utils/images.js";
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/** Convert kebab-case to camelCase for JS variable names */
+function toCamelCase(str: string): string {
+  return str.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+/** Format successful adapter result with image extraction */
+function formatAdapterSuccess(
+  adapterName: string,
+  methodName: string,
+  resultValue: unknown
+): McpResult {
+  const { value, images } = extractImages(resultValue);
+  const output = JSON.stringify(value, null, 2) ?? '(no output)';
+  const truncated = output.length > 3000;
+  const displayed = truncated ? output.slice(0, 3000) + '\n...' : output;
+  
+  if (truncated) {
+    getSandboxState().set('_adapterResult', value);
+  }
+  
+  const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+    { type: "text", text: `✓ ${adapterName}.${methodName}\n\n${displayed}` }
+  ];
+  for (const img of images) {
+    content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+  }
+  
+  return {
+    content,
+    _meta: truncated ? { truncated: true, storedAs: '_adapterResult' } : undefined,
+  };
+}
 
 // ============================================================================
 // Types
@@ -46,52 +86,44 @@ function handleRunSkill(
     `Invoke: ${skill.name}(${inputStr || ""})`,
   ];
   
-  return formatToolResult(output.filter(Boolean).join("\n"));
+  return output.filter(Boolean).join("\n");
 }
 
-function handleListAdapters(spec: AdapterSpec | null): McpResult {
-  if (!spec?.adapters?.length) {
-    return formatToolResult("No adapters loaded.\n→ mcx_doctor() to check config");
-  }
-  
-  // Group by domain
-  const byDomain = new Map<string, typeof spec.adapters>();
-  for (const a of spec.adapters) {
-    const domain = a.domain || "general";
-    if (!byDomain.has(domain)) byDomain.set(domain, []);
-    byDomain.get(domain)!.push(a);
+function handleListAdapters(spec: ResolvedSpec | null): McpResult {
+  const adapterList = spec?.adapters ? Object.values(spec.adapters) : [];
+  if (!adapterList.length) {
+    return "No adapters loaded.\n→ mcx_doctor() to check config";
   }
   
   const lines: string[] = [];
-  for (const [domain, adapters] of byDomain) {
-    const summary = adapters
-      .map((a) => `${a.name}(${a.methods?.length || 0})`)
-      .join(", ");
-    lines.push(`[${domain}] ${summary}`);
+  for (const a of adapterList) {
+    const toolCount = Object.keys(a.tools || {}).length;
+    lines.push(`- ${a.name} (${toolCount} methods)`);
   }
   
   lines.push("");
   lines.push("→ mcx_adapter({ name: \"adapter\" }) for methods");
   
-  return formatToolResult(lines.join("\n"));
+  return lines.join("\n");
 }
 
 function handleShowMethods(
-  spec: AdapterSpec,
+  spec: ResolvedSpec,
   adapterName: string
 ): McpResult {
-  const adapter = spec.adapters.find(
+  const adapterList = Object.values(spec.adapters);
+  const adapter = adapterList.find(
     (a) => a.name.toLowerCase() === adapterName.toLowerCase()
   );
   
   if (!adapter) {
-    const names = spec.adapters.map((a) => a.name).join(", ");
+    const names = adapterList.map((a) => a.name).join(", ");
     return formatError(`Adapter "${adapterName}" not found. Available: ${names}`);
   }
   
-  const methods = adapter.methods || [];
+  const methods = Object.values(adapter.tools || {});
   if (methods.length === 0) {
-    return formatToolResult(`${adapter.name}: no methods`);
+    return `${adapter.name}: no methods`;
   }
   
   // Group by prefix
@@ -114,7 +146,7 @@ function handleShowMethods(
   
   lines.push(`→ mcx_adapter({ name: "${adapter.name}", call: "method" })`);
   
-  return formatToolResult(lines.join("\n"));
+  return lines.join("\n");
 }
 
 async function handleCallMethod(
@@ -123,11 +155,13 @@ async function handleCallMethod(
   methodName: string,
   params: Record<string, unknown> = {}
 ): Promise<McpResult> {
-  if (!ctx.spec) {
+  const spec = ctx.spec as ResolvedSpec | null;
+  if (!spec) {
     return formatError("No adapters loaded");
   }
   
-  const adapter = ctx.spec.adapters.find(
+  const adapterList = Object.values(spec.adapters);
+  const adapter = adapterList.find(
     (a) => a.name.toLowerCase() === adapterName.toLowerCase()
   );
   
@@ -136,24 +170,33 @@ async function handleCallMethod(
   }
   
   // Find method (fuzzy match)
-  const method = adapter.methods?.find(
+  const methods = Object.values(adapter.tools || {});
+  const method = methods.find(
     (m) => m.name.toLowerCase() === methodName.toLowerCase() ||
            m.name.toLowerCase().includes(methodName.toLowerCase())
   );
   
   if (!method) {
-    const names = adapter.methods?.map((m) => m.name).join(", ") || "none";
+    const names = methods.map((m) => m.name).join(", ") || "none";
     return formatError(`Method "${methodName}" not found in ${adapter.name}. Available: ${names}`);
   }
   
-  // Build call code
+  // Build call code (convert kebab-case to camelCase for JS)
   const paramStr = JSON.stringify(params);
-  const code = `await ${adapter.name}.${method.name}(${paramStr})`;
+  const adapterVar = toCamelCase(adapter.name);
+  const code = `await ${adapterVar}.${method.name}(${paramStr})`;
   
   try {
-    const result = await ctx.sandbox.execute(code, {});
-    const output = JSON.stringify(result.value, null, 2);
-    return formatToolResult(`✓ ${adapter.name}.${method.name}\n\n${output.slice(0, 3000)}`);
+    const result = await ctx.sandbox.execute(code, {
+      adapters: ctx.adapterContext,
+      variables: getSandboxState().getAllPrefixed(),
+      env: {},
+    });
+    
+    if (!result.success) {
+      return formatError(`${adapter.name}.${method.name} failed: ${result.error?.message || 'Unknown error'}`);
+    }
+    return formatAdapterSuccess(adapter.name, method.name, result.value);
   } catch (err) {
     return formatError(`${adapter.name}.${method.name} failed: ${String(err)}`);
   }
@@ -180,12 +223,13 @@ async function handleAdapter(
   
   // Mode 2: Show methods
   if (params.name) {
-    if (!ctx.spec) return formatError("No adapters loaded");
-    return handleShowMethods(ctx.spec, params.name);
+    const spec = ctx.spec as ResolvedSpec | null;
+    if (!spec) return formatError("No adapters loaded");
+    return handleShowMethods(spec, params.name);
   }
   
   // Mode 1: List adapters
-  return handleListAdapters(ctx.spec);
+  return handleListAdapters(ctx.spec as ResolvedSpec | null);
 }
 
 // ============================================================================
@@ -217,6 +261,9 @@ mcx_adapter({ skill: "analyze", params: { target: "src/" } })`,
         call: { type: "string", description: "Method to call (requires name)" },
         skill: { type: "string", description: "Skill to run" },
         params: { type: "object", description: "Parameters for method/skill" },
+        truncate: { type: "boolean", default: true, description: "Truncate large results" },
+        maxItems: { type: "number", minimum: 1, maximum: 1000, default: 10, description: "Max array items" },
+        maxStringLength: { type: "number", minimum: 10, maximum: 10000, default: 500, description: "Max string length" },
       },
     },
     handler: (ctx, params) => handleAdapter(ctx, params, skills),

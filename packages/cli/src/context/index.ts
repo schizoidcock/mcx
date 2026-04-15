@@ -20,3 +20,15 @@ export {
   updateProximityContext,
   getProximityScore,
 } from "./tracking.js";
+export {
+  updateFile,
+  recordStore,
+  recordEdit,
+  recordAccess,
+  isStale,
+  getStoredAt,
+  getEditedAt,
+  getAccessCount,
+  hasStored,
+} from "./files.js";
+export { getTips, getFirstTip, type TipContext } from "./tips.js";

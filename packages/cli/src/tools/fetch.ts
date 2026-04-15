@@ -6,9 +6,9 @@
  */
 
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatToolResult, formatError, formatBytes } from "./utils.js";
-import { trackToolUsage, suggestNextTool } from "../context/tracking.js";
-import { htmlToMarkdown } from "../search/html-to-markdown.js";
+import { formatError, formatBytes } from "./utils.js";
+import { trackToolUsage, suggestNextTool, trackNetworkBytes } from "../context/tracking.js";
+import { htmlToMarkdown, extractHtmlTitle } from "../search/html-to-markdown.js";
 import { isBlockedUrl } from "../utils/security.js";
 
 // ============================================================================
@@ -20,6 +20,7 @@ export interface FetchParams {
   queries?: string[];
   force?: boolean;
   preview?: boolean;
+  timeout?: number;
 }
 
 interface CachedUrl {
@@ -128,7 +129,7 @@ function formatCacheHit(
     `→ mcx_search({ queries: [...] }) or force: true`,
     ...searchOutput,
   ];
-  return formatToolResult(lines.join("\n"));
+  return lines.join("\n");
 }
 
 // ============================================================================
@@ -139,10 +140,19 @@ async function handleFetch(
   ctx: ToolContext,
   params: FetchParams
 ): Promise<McpResult> {
-  const { url, queries = [], force = false, preview = false } = params;
+  const { url, queries: rawQueries, force = false, preview = false, timeout } = params;
   
   if (!url) {
     return formatError("Missing url parameter");
+  }
+  
+  // Validate queries if provided
+  const queries = rawQueries ?? [];
+  if (rawQueries !== undefined && !Array.isArray(rawQueries)) {
+    return formatError(
+      `queries must be an array\n` +
+      `💡 Example: mcx_fetch({ url: "...", queries: ["term1", "term2"] })`
+    );
   }
   
   // Check cache (early return)
@@ -186,10 +196,11 @@ async function handleFetch(
       label = extractLabelFromJson(json) || label;
     } else if (contentType.includes("html")) {
       const html = await response.text();
-      const md = htmlToMarkdown(html);
-      content = md.content;
+      content = htmlToMarkdown(html);
       indexType = "markdown";
-      if (md.title) label = md.title;
+      // Extract title from HTML if available
+      const title = extractHtmlTitle(html);
+      if (title) label = title;
     } else {
       content = await response.text();
     }
@@ -198,6 +209,9 @@ async function handleFetch(
     const sourceId = ctx.contentStore.index(content, label, { contentType: indexType });
     const chunks = ctx.contentStore.getChunkCount(sourceId);
     const sizeKB = Math.round(content.length / 1024 * 10) / 10;
+    
+    // Track network I/O
+    trackNetworkBytes(content.length, url.length);
     
     // Update cache
     setCachedUrl(url, { sourceId, label, sizeKB });
@@ -241,7 +255,7 @@ async function handleFetch(
     }
     
     trackToolUsage("mcx_fetch");
-    return formatToolResult(output.join("\n"), suggestNextTool("mcx_fetch"));
+    return output.join("\n") + (suggestNextTool("mcx_fetch") || "");
     
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -286,6 +300,12 @@ Examples:
         type: "boolean",
         description: "Return 3KB preview (full content still indexed)",
         default: false,
+      },
+      timeout: {
+        type: "number",
+        minimum: 1000,
+        maximum: 60000,
+        description: "Fetch timeout in ms (default: 30000)",
       },
     },
     required: ["url"],

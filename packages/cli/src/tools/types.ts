@@ -8,6 +8,7 @@
 import type { FileFinder } from "@ff-labs/fff-bun";
 import type { ContentStore } from "../search/store.js";
 import type { BunWorkerSandbox } from "@papicandela/mcx-core";
+import type { ResolvedSpec } from "../spec/types.js";
 
 // ============================================================================
 // Background Tasks
@@ -58,6 +59,12 @@ export interface SessionWorkflow {
 }
 
 // ============================================================================
+// Adapter Context
+// ============================================================================
+
+export type AdapterContext = Record<string, Record<string, (params: unknown) => Promise<unknown>>>;
+
+// ============================================================================
 // Tool Context
 // ============================================================================
 
@@ -71,8 +78,8 @@ export interface ToolContext {
   /** File finder instance (lazy initialized) */
   finder: FileFinder | null;
   
-  /** Cached adapter spec for search */
-  spec: AdapterSpec | null;
+  /** Resolved spec from adapters (ONE source - spec/types.ts) */
+  spec: ResolvedSpec | null;
   
   /** Session variables ($result, $stored, etc.) */
   variables: SessionVariables;
@@ -91,29 +98,14 @@ export interface ToolContext {
   
   /** File helpers code (injected into sandbox) */
   fileHelpersCode: string;
+  
+  /** Adapter context for sandbox execution */
+  adapterContext: AdapterContext;
 }
 
 // ============================================================================
-// Adapter Spec (for search)
+// Skill Types (skills use different param structure than adapters)
 // ============================================================================
-
-export interface AdapterSpec {
-  adapters: Record<string, AdapterDef>;
-  skills: Record<string, SkillDef>;
-}
-
-export interface AdapterDef {
-  name: string;
-  domain?: string;
-  description?: string;
-  tools: Record<string, ToolDef>;
-}
-
-export interface ToolDef {
-  name: string;
-  description?: string;
-  parameters?: Record<string, ParamDef>;
-}
 
 export interface ParamDef {
   type: string;

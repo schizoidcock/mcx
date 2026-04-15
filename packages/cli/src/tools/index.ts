@@ -14,7 +14,7 @@ export type {
   SessionVariables,
   SessionWorkflow,
   StoredVariable,
-  AdapterSpec,
+  AdapterContext,
   BackgroundTask,
   SkillDef,
   FileResult,

@@ -7,7 +7,7 @@
 
 import { basename, isAbsolute, join } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatToolResult, formatError } from "./utils.js";
+import { formatError } from "./utils.js";
 
 // ============================================================================
 // Types
@@ -50,11 +50,11 @@ async function handleWrite(
   }
   
   try {
-    // Resolve path
-    let resolvedPath = filePath;
+    // Require absolute path (consistent with mcx_edit)
     if (!isAbsolute(filePath)) {
-      resolvedPath = join(process.cwd(), filePath);
+      return formatError(`Absolute path required. Got: "${filePath}"`);
     }
+    const resolvedPath = filePath;
     
     // Write file
     await Bun.write(resolvedPath, content);
@@ -66,10 +66,7 @@ async function handleWrite(
     const lineCount = content.split("\n").length;
     const fileName = basename(resolvedPath);
     
-    return formatToolResult(
-      `✓ Wrote ${lineCount} lines to ${fileName}`,
-      "\n💡 No need to re-read to verify."
-    );
+    return `✓ Wrote ${lineCount} lines to ${fileName}\n💡 No need to re-read to verify.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return formatError(`Failed to write file: ${msg}`);

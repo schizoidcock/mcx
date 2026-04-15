@@ -1,129 +1,219 @@
 /**
- * File-based logger for MCX
- * Writes logs to ~/.mcx/logs/mcx.log with automatic rotation
+ * Session Logger for MCX
+ *
+ * Structure: ~/.mcx/logs/{YYYY-MM-DD}/{category}.toon
+ * Format: TOON tabular arrays - header once, values appended
+ * Cleanup: Deletes folders > 15 days old
  */
 
-import { appendFile, mkdir, stat, rename, unlink } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+// ============================================================================
+// Constants
+// ============================================================================
+
 export const LOG_DIR = join(homedir(), ".mcx", "logs");
-export const LOG_FILE = join(LOG_DIR, "mcx.log");
-const MAX_LOG_SIZE = 1024 * 1024; // 1MB
-const MAX_OLD_LOGS = 3; // Keep mcx.log.1, mcx.log.2, mcx.log.3
+const MAX_DAYS = 15;
 
-/** Log levels as constants for type-safe matching */
-export const LOG_LEVELS = {
-  INFO: "INFO",
-  WARN: "WARN",
-  ERROR: "ERROR",
-  DEBUG: "DEBUG",
-} as const;
+// Category schemas: field names for TOON tabular format
+const SCHEMAS: Record<string, string[]> = {
+  execute: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+  file: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+  search: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+  fetch: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+  adapter: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+  tasks: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+  stats: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+  session: ["ts", "level", "msg", "err"],
+  other: ["ts", "tool", "ok", "ms", "ch", "raw", "err"],
+};
 
-export type LogLevel = (typeof LOG_LEVELS)[keyof typeof LOG_LEVELS];
+// Tool to category mapping
+const TOOL_CATEGORY: Record<string, string> = {
+  mcx_execute: "execute",
+  mcx_file: "file",
+  mcx_edit: "file",
+  mcx_write: "file",
+  mcx_grep: "search",
+  mcx_find: "search",
+  mcx_search: "search",
+  mcx_fetch: "fetch",
+  mcx_adapter: "adapter",
+  mcx_tasks: "tasks",
+  mcx_watch: "tasks",
+  mcx_stats: "stats",
+  mcx_doctor: "stats",
+  mcx_upgrade: "stats",
+};
+
+// ============================================================================
+// State
+// ============================================================================
 
 let initialized = false;
-let bytesWrittenSinceCheck = 0;
-const CHECK_ROTATION_EVERY_BYTES = 50000; // Check rotation every ~50KB written
+let currentDate = "";
+let currentDir = "";
+const headerWritten = new Set<string>();
 
-async function ensureLogDir(): Promise<void> {
-  if (initialized) return;
-  try {
-    await mkdir(LOG_DIR, { recursive: true });
-    initialized = true;
-  } catch {
-    // Ignore - best effort logging
-  }
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function getDateStr(): string {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
-async function rotateIfNeeded(): Promise<void> {
-  try {
-    const stats = await stat(LOG_FILE);
-    if (stats.size < MAX_LOG_SIZE) return;
+function getTimeStr(): string {
+  return new Date().toISOString().slice(11, 19); // HH:MM:SS
+}
 
-    // Rotate: mcx.log.2 -> mcx.log.3, mcx.log.1 -> mcx.log.2, mcx.log -> mcx.log.1
-    for (let i = MAX_OLD_LOGS - 1; i >= 1; i--) {
-      const older = `${LOG_FILE}.${i}`;
-      const newer = `${LOG_FILE}.${i + 1}`;
+function escapeValue(val: unknown): string {
+  if (val === undefined || val === null || val === "") return "";
+  const s = String(val);
+  // Escape commas and newlines
+  if (s.includes(",") || s.includes("\n") || s.includes('"')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function toCSVLine(fields: string[], data: Record<string, unknown>): string {
+  return fields.map(f => escapeValue(data[f])).join(",");
+}
+
+async function ensureDir(): Promise<string> {
+  const date = getDateStr();
+
+  if (date !== currentDate || !initialized) {
+    currentDate = date;
+    currentDir = join(LOG_DIR, date);
+    headerWritten.clear(); // Reset headers for new day
+    await mkdir(currentDir, { recursive: true });
+
+    if (!initialized) {
+      await cleanup();
+      initialized = true;
+    }
+  }
+
+  return currentDir;
+}
+
+async function cleanup(): Promise<void> {
+  try {
+    const entries = await readdir(LOG_DIR);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - MAX_DAYS);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+    for (const entry of entries) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(entry) && entry < cutoffStr) {
+        try {
+          await rm(join(LOG_DIR, entry), { recursive: true });
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+async function writeToCategory(category: string, event: Record<string, unknown>): Promise<void> {
+  try {
+    const dir = await ensureDir();
+    const file = join(dir, `${category}.toon`);
+    const fields = SCHEMAS[category] || SCHEMAS.other;
+    const key = `${currentDate}:${category}`;
+
+    // Write TOON header if first write to this file today
+    if (!headerWritten.has(key)) {
+      // Check if file exists (might be from previous session same day)
       try {
-        await rename(older, newer);
+        await stat(file);
+        headerWritten.add(key); // File exists, assume header present
       } catch {
-        // File doesn't exist, skip
+        // File doesn't exist, write header
+        const header = `events{${fields.join(",")}}:\n`;
+        await appendFile(file, header);
+        headerWritten.add(key);
       }
     }
 
-    // mcx.log -> mcx.log.1
-    await rename(LOG_FILE, `${LOG_FILE}.1`);
-
-    // Delete oldest if exists
-    try {
-      await unlink(`${LOG_FILE}.${MAX_OLD_LOGS + 1}`);
-    } catch {
-      // Doesn't exist
-    }
-  } catch {
-    // File doesn't exist yet or other error, ignore
-  }
+    // Write CSV values line
+    const line = toCSVLine(fields, event) + "\n";
+    await appendFile(file, line);
+  } catch { /* best effort */ }
 }
 
-function formatTimestamp(): string {
-  const now = new Date();
-  return now.toISOString();
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}${error.stack ? `\n${error.stack}` : ""}`;
-  }
-  return String(error);
-}
-
-async function writeLog(level: LogLevel, message: string, error?: unknown): Promise<void> {
-  await ensureLogDir();
-
-  // Only check rotation periodically to avoid stat() on every write
-  if (bytesWrittenSinceCheck >= CHECK_ROTATION_EVERY_BYTES) {
-    await rotateIfNeeded();
-    bytesWrittenSinceCheck = 0;
-  }
-
-  const timestamp = formatTimestamp();
-  let line = `[${timestamp}] [${level}] ${message}`;
-  if (error !== undefined) {
-    line += `\n  ${formatError(error).replace(/\n/g, "\n  ")}`;
-  }
-  line += "\n";
-
-  try {
-    await appendFile(LOG_FILE, line);
-    bytesWrittenSinceCheck += line.length;
-  } catch {
-    // Best effort - don't crash on log failure
-  }
-}
+// ============================================================================
+// Logger API
+// ============================================================================
 
 export const logger = {
-  info: (message: string, error?: unknown) => writeLog("INFO", message, error),
-  warn: (message: string, error?: unknown) => writeLog("WARN", message, error),
-  error: (message: string, error?: unknown) => writeLog("ERROR", message, error),
-  debug: (message: string, error?: unknown) => writeLog("DEBUG", message, error),
+    /** Get current log directory path */
+  getLogPath: () => currentDir || join(LOG_DIR, getDateStr()),
+  tool: (event: { tool: string; ok: boolean; ms: number; ch: number; raw?: number; err?: string }) => {
+    const category = TOOL_CATEGORY[event.tool] || "other";
+    writeToCategory(category, {
+      ts: getTimeStr(),
+      tool: event.tool,
+      ok: event.ok ? 1 : 0,
+      ms: event.ms,
+      ch: event.ch,
+      raw: event.raw,
+      err: event.err,
+    });
+  },
 
-  /** Log process startup */
-  startup: (version: string, transport: string) =>
-    writeLog("INFO", `MCX started (v${version}, transport=${transport}, pid=${process.pid})`),
+  /** Log info event */
+  info: (message: string) => writeToCategory("session", {
+    ts: getTimeStr(),
+    level: "INFO",
+    msg: message,
+  }),
 
-  /** Log process shutdown */
-  shutdown: (reason: string) =>
-    writeLog("INFO", `MCX shutdown: ${reason}`),
+  /** Log warning event */
+  warn: (message: string) => writeToCategory("session", {
+    ts: getTimeStr(),
+    level: "WARN",
+    msg: message,
+  }),
+
+  /** Log error event */
+  error: (message: string, error?: unknown) => writeToCategory("session", {
+    ts: getTimeStr(),
+    level: "ERROR",
+    msg: message,
+    err: error instanceof Error ? error.message : String(error ?? ""),
+  }),
+
+  /** Log startup */
+  startup: (version: string, transport: string) => writeToCategory("session", {
+    ts: getTimeStr(),
+    level: "INFO",
+    msg: `MCX ${version} started (${transport})`,
+  }),
+
+  /** Log shutdown */
+  shutdown: (reason: string) => writeToCategory("session", {
+    ts: getTimeStr(),
+    level: "INFO",
+    msg: `Shutdown: ${reason}`,
+  }),
 
   /** Log uncaught exception */
-  uncaughtException: (error: unknown) =>
-    writeLog("ERROR", "Uncaught exception", error),
+  uncaughtException: (error: unknown) => writeToCategory("session", {
+    ts: getTimeStr(),
+    level: "ERROR",
+    msg: "Uncaught exception",
+    err: error instanceof Error ? error.stack || error.message : String(error),
+  }),
 
   /** Log unhandled rejection */
-  unhandledRejection: (reason: unknown) =>
-    writeLog("ERROR", "Unhandled rejection", reason),
-
-  /** Get log file path */
-  getLogPath: () => LOG_FILE,
+  unhandledRejection: (reason: unknown) => writeToCategory("session", {
+    ts: getTimeStr(),
+    level: "ERROR",
+    msg: "Unhandled rejection",
+    err: reason instanceof Error ? reason.stack || reason.message : String(reason),
+  }),
 };

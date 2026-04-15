@@ -7,7 +7,7 @@
 import { basename, resolve, join } from "node:path";
 import type { FileFinder } from "@ff-labs/fff-bun";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatToolResult, formatError } from "./utils.js";
+import { formatError } from "./utils.js";
 import { startDaemon, stopDaemon } from "../daemon/index.js";
 
 // ============================================================================
@@ -54,12 +54,10 @@ async function handleWatch(
   if (action === "list" || (projects.length === 0 && action !== "remove")) {
     const watched = Array.from(watchedProjects.keys());
     if (watched.length === 0) {
-      return formatToolResult("No projects currently watched.");
+      return "No projects currently watched.";
     }
-    return formatToolResult(
-      `Watched projects (${watched.length}):\n` + 
-      watched.map(p => `  - ${p}`).join("\n")
-    );
+    return `Watched projects (${watched.length}):\n` + 
+      watched.map(p => `  - ${p}`).join("\n");
   }
 
   // Remove action
@@ -83,9 +81,9 @@ async function handleWatch(
     }
     
     if (removed.length === 0) {
-      return formatToolResult("No matching projects to remove.");
+      return "No matching projects to remove.";
     }
-    return formatToolResult(`Stopped watching: ${removed.join(", ")}`);
+    return `Stopped watching: ${removed.join(", ")}`;
   }
 
   // Add action
@@ -131,7 +129,7 @@ async function handleWatch(
   }
   result.push(`Total projects watched: ${watchedProjects.size}`);
 
-  return formatToolResult(result.join("\n"));
+  return result.join("\n");
 }
 
 // ============================================================================

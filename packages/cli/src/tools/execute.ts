@@ -2,35 +2,46 @@
  * mcx_execute Tool
  *
  * Execute JavaScript/TypeScript code OR shell commands.
- * Supports adapters, file helpers, and variable management.
  */
 
-import type { ToolContext, ToolDefinition, McpResult, AdapterSpec } from "./types.js";
-import { formatToolResult, formatError } from "./utils.js";
+import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
+import type { ResolvedSpec } from "../spec/types.js";
+import { formatError } from "./utils.js";
+import { truncateLogs, filterHelperLogs, formatStored } from "../utils/truncate.js";
+import { extractImages } from "../utils/images.js";
+import { applyHybridFilter } from "../filters/index.js";
+import { detectAndFormatGrepOutput } from "./format-grep.js";
+import { getSandboxState } from "../sandbox/index.js";
+import { AUTO_INDEX_THRESHOLD, INTENT_THRESHOLD } from "./constants.js";
+
+
+import { DANGEROUS_ENV_KEYS, detectShellEscape, enforceShellRedirects, enforcePythonRedirects, enforceCodeRedirects } from "../utils/security.js";
+// Guards and tracking
+import { getCodeSignature, checkRetryLoop, recordFailure, clearFailure, checkLinesHunting } from "../context/guards.js";
+import { trackMethodUsage, trackSandboxIO } from "../context/tracking.js";
+import { eventTips } from "../context/tips.js";
+import { analyzeExecuteParams, formatTraitWarnings } from "../utils/traits.js";
+import { safeShell, safePython } from "../utils/process.js";
+import { DEFAULT_TIMEOUT } from "./constants.js";
 
 // ============================================================================
-// Shell Constants
+// Safe Environment
 // ============================================================================
-
-const SHELL_PATH = process.platform === 'win32'
-  ? 'C:\\Program Files\\Git\\bin\\sh.exe'
-  : '/bin/sh';
-
-const DENIED_ENV = new Set([
-  'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GITHUB_TOKEN',
-  'NPM_TOKEN', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'DATABASE_URL',
-]);
 
 let cachedSafeEnv: Record<string, string> | null = null;
 
 function getSafeEnv(): Record<string, string> {
   if (cachedSafeEnv) return cachedSafeEnv;
+  
   const safeEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value && !DENIED_ENV.has(key) && !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('TOKEN') && !key.includes('CREDENTIAL')) {
-      safeEnv[key] = value;
-    }
+    if (!value) continue;
+    if (DANGEROUS_ENV_KEYS.has(key)) continue;
+    if (key.includes('SECRET') || key.includes('PASSWORD')) continue;
+    if (key.includes('TOKEN') || key.includes('CREDENTIAL')) continue;
+    safeEnv[key] = value;
   }
+  
   cachedSafeEnv = safeEnv;
   return safeEnv;
 }
@@ -44,6 +55,18 @@ export interface ExecuteParams {
   python?: string;
   storeAs?: string;
   intent?: string;
+  clear?: boolean;
+  delete?: string;
+}
+
+/** Result from shell/python execution (data, not formatted) */
+interface ShellResult {
+  output: string;
+  lines: number;
+  exitCode: number;
+  varName: string;
+  truncated: boolean;
+  errorMsg?: string;  // Filtered error message if exitCode !== 0
 }
 
 // ============================================================================
@@ -55,14 +78,15 @@ async function executeCode(
   code: string,
   storeAs?: string
 ): Promise<McpResult> {
-  // Build variables from stored state
-  // PersistentState.getAllPrefixed() returns { $name: value } format
+  // Enforce redirects to MCX tools
+  const blocked = enforceCodeRedirects(code);
+  if (blocked) return blocked;
+
+  // Build variables from PersistentState
+  const state = getSandboxState();
   let variables: Record<string, unknown> = {};
   try {
-    const stored = ctx.variables.stored as any;
-    if (stored && typeof stored.getAllPrefixed === 'function') {
-      variables = { ...stored.getAllPrefixed() };
-    }
+    variables = { ...state.getAllPrefixed() };
   } catch {
     // Ignore errors getting variables
   }
@@ -73,44 +97,72 @@ async function executeCode(
   }
 
   try {
-    // Prepend file helpers so grep(), lines(), etc. are available
+    // Include helpers for data processing (pick, keys, values, paths, tree)
+    // File-specific helpers (grep, lines, around, block, outline) also available
+    // but require variables with .lines property (from mcx_file storeAs)
     const helpers = ctx.fileHelpersCode || '';
     const fullCode = helpers + code;
     
     // Sandbox expects { adapters, variables, env } structure
     const result = await ctx.sandbox.execute(fullCode, {
-      adapters: {},
+      adapters: ctx.adapterContext || {},
       variables,
       env: {},
     });
-    const value = result.value;
 
-    // Store result via PersistentState.set() if available
-    ctx.variables.lastResult = value;
-    if (storeAs) {
-      if (typeof stored.set === 'function') {
-        stored.set(storeAs, value);
-      }
+    // Check for sandbox errors
+    if (!result.success) {
+      const err = result.error;
+      const logs = result.logs?.length ? truncateLogs(filterHelperLogs(result.logs)) : [];
+      const logsSection = logs.length ? `\n\n[Logs]\n${logs.join('\n')}` : '';
+      return formatError(`${err?.name || 'Error'}: ${err?.message || 'Unknown error'}${logsSection}`);
     }
 
-    // Format output
-    const output = formatValue(value);
-    const storedMsg = storeAs ? `\n\nStored as $${storeAs}` : "";
+    // Extract images from result
+    const { value, images } = extractImages(result.value);
 
-    return formatToolResult(output + storedMsg);
+    // Track I/O from sandbox execution
+    trackSandboxIO(result.tracking);
+
+    // Store result in PersistentState (without images - they're extracted)
+    ctx.variables.lastResult = value;
+    if (storeAs) {
+      state.set(storeAs, value);
+    }
+
+    // Format confirmation (value stays in $result, not in context)
+    const varName = storeAs || 'result';
+    const logs = result.logs?.length ? truncateLogs(filterHelperLogs(result.logs)) : [];
+    const valueStr = formatValue(value);
+    const lines = valueStr.split('\n').length;
+    
+    // Include logs for debugging, but not the full value
+    const logsSection = logs.length ? `\n[Logs]\n${logs.join('\n')}` : '';
+    const text = formatStored(varName, { lines }) + logsSection;
+    
+    // Return with images if present
+    if (images.length > 0) {
+      return {
+        content: [
+          { type: "text" as const, text },
+          ...images.map(img => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }))
+        ]
+      };
+    }
+    return text;
   } catch (err) {
     return formatError(`Execution failed: ${String(err)}`);
   }
 }
 
+// NO truncation here - wrapper handles it centrally
 function formatValue(value: unknown): string {
   if (value === undefined) return "(undefined)";
   if (value === null) return "(null)";
   if (typeof value === "string") return value;
 
   try {
-    const json = JSON.stringify(value, null, 2);
-    return json.length > 5000 ? json.slice(0, 5000) + "\n... [truncated]" : json;
+    return JSON.stringify(value, null, 2);
   } catch {
     return String(value);
   }
@@ -124,32 +176,48 @@ async function executeShell(
   ctx: ToolContext,
   command: string,
   storeAs?: string
-): Promise<McpResult> {
+): Promise<ShellResult | McpResult> {
   const cmd = command.trim();
   if (!cmd) return formatError("Empty command");
 
-  const proc = Bun.spawn([SHELL_PATH, '-c', cmd], {
+  const blocked = enforceShellRedirects(cmd);
+  if (blocked) return blocked;
+
+  const spawnResult = await safeShell(cmd, {
     cwd: process.cwd(),
     env: getSafeEnv(),
-    stdout: 'pipe',
-    stderr: 'pipe',
+    timeout: DEFAULT_TIMEOUT,
   });
 
-  const exitCode = await proc.exited;
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
+  if (spawnResult.timedOut) {
+    return formatError(`Command timed out after ${DEFAULT_TIMEOUT}ms`);
+  }
 
-  const result = { exitCode, stdout: stdout.trim(), stderr: stderr.trim(), command: cmd };
+  const result = {
+    exitCode: spawnResult.exitCode,
+    stdout: spawnResult.stdout.trim(),
+    stderr: spawnResult.stderr.trim(),
+    command: cmd,
+  };
 
-  // Store result
-  const stored = ctx.variables.stored as any;
-  stored.set?.('result', result);
-  if (storeAs) stored.set?.(storeAs, result);
+  // Store in variables
+  const shellState = getSandboxState();
+  shellState.set('result', result);
+  if (storeAs) shellState.set(storeAs, result);
 
-  // Format output
-  const status = exitCode === 0 ? '✓' : `✗ Exit ${exitCode}`;
-  const output = stdout.trim() || stderr.trim() || '(no output)';
-  return formatToolResult(`${status}\n${output}`);
+  const varName = storeAs || 'result';
+  const output = result.stdout || result.stderr || '';
+  const lines = output.split('\n').filter(Boolean).length;
+
+  // Prepare error message if failed
+  let errorMsg: string | undefined;
+  if (spawnResult.exitCode !== 0) {
+    const rawErr = result.stderr || result.stdout || '(no output)';
+    const filtered = applyHybridFilter(cmd, rawErr) ?? rawErr;
+    errorMsg = filtered.slice(0, 500);
+  }
+
+  return { output, lines, exitCode: spawnResult.exitCode, varName, truncated: spawnResult.truncated, errorMsg };
 }
 
 // ============================================================================
@@ -160,33 +228,50 @@ async function executePython(
   ctx: ToolContext,
   code: string,
   storeAs?: string
-): Promise<McpResult> {
+): Promise<ShellResult | McpResult> {
   const pythonCode = code.trim();
   if (!pythonCode) return formatError("Empty Python code");
 
-  const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
-  const proc = Bun.spawn([pythonPath, '-c', pythonCode], {
+  const escape = detectShellEscape(pythonCode, 'python');
+  if (escape.detected) return formatError(escape.suggestion);
+
+  const blocked = enforcePythonRedirects(pythonCode);
+  if (blocked) return blocked;
+
+  const spawnResult = await safePython(pythonCode, {
     cwd: process.cwd(),
     env: getSafeEnv(),
-    stdout: 'pipe',
-    stderr: 'pipe',
+    timeout: DEFAULT_TIMEOUT,
   });
 
-  const exitCode = await proc.exited;
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
+  if (spawnResult.timedOut) {
+    return formatError(`Python execution timed out after ${DEFAULT_TIMEOUT}ms`);
+  }
 
-  const result = { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  const result = {
+    exitCode: spawnResult.exitCode,
+    stdout: spawnResult.stdout.trim(),
+    stderr: spawnResult.stderr.trim(),
+  };
 
-  // Store result
-  const stored = ctx.variables.stored as any;
-  stored.set?.('result', result);
-  if (storeAs) stored.set?.(storeAs, result);
+  // Store in variables
+  const shellState = getSandboxState();
+  shellState.set('result', result);
+  if (storeAs) shellState.set(storeAs, result);
 
-  // Format output
-  const status = exitCode === 0 ? '✓ Python' : `✗ Exit ${exitCode}`;
-  const output = stdout.trim() || stderr.trim() || '(no output)';
-  return formatToolResult(`${status}\n${output}`);
+  const varName = storeAs || 'result';
+  const output = result.stdout || result.stderr || '';
+  const lines = output.split('\n').filter(Boolean).length;
+
+  // Prepare error message if failed
+  let errorMsg: string | undefined;
+  if (spawnResult.exitCode !== 0) {
+    const rawErr = result.stderr || result.stdout || '(no output)';
+    const filtered = applyHybridFilter('python', rawErr) ?? rawErr;
+    errorMsg = filtered.slice(0, 500);
+  }
+
+  return { output, lines, exitCode: spawnResult.exitCode, varName, truncated: spawnResult.truncated, errorMsg };
 }
 
 // ============================================================================
@@ -198,13 +283,11 @@ function handleLargeOutput(
   output: string,
   intent: string
 ): McpResult {
-  const sourceId = ctx.contentStore.index(output, intent, { contentType: "text" });
+  const sourceId = ctx.contentStore.index(output, intent, { contentType: "plaintext" });
   const chunks = ctx.contentStore.getChunkCount(sourceId);
 
-  return formatToolResult(
-    `Output indexed: ${intent} (${chunks} chunks)\n` +
-    `→ mcx_search({ queries: [...] }) to search results`
-  );
+  return `Output indexed: ${intent} (${chunks} chunks)\n` +
+    `→ mcx_search({ queries: [...] }) to search results`;
 }
 
 // ============================================================================
@@ -215,7 +298,17 @@ async function handleExecute(
   ctx: ToolContext,
   params: ExecuteParams
 ): Promise<McpResult> {
-  const { code, shell, python, storeAs, intent } = params;
+  const { code, shell, python, storeAs, intent, clear, delete: deleteVar } = params;
+
+  // Variable management (no code/shell/python needed)
+  if (clear) {
+    getSandboxState().clear();
+    return "✓ All variables cleared";
+  }
+  if (deleteVar) {
+    const deleted = getSandboxState().delete(deleteVar);
+    return deleted ? `✓ Deleted ${deleteVar}` : formatError(`Variable ${deleteVar} not found`);
+  }
 
   // Validate: exactly one mode
   const modes = [code, shell, python].filter(Boolean);
@@ -232,33 +325,97 @@ async function handleExecute(
     return formatError("Specify only one of: code, shell, or python");
   }
 
-  // Execute appropriate mode
-  let result: McpResult;
+  // Trait analysis - single entry point for all modes
+  const traits = analyzeExecuteParams(params);
+  const traitWarning = traits ? formatTraitWarnings(traits) : '';
 
+
+  // Guards: check retry loop and lines hunting (code mode only)
+  let retryWarning = "";
+  let sig = "";
   if (code) {
-    result = await executeCode(ctx, code, storeAs);
-  } else if (shell) {
-    result = await executeShell(ctx, shell, storeAs);
-  } else {
-    result = await executePython(ctx, python!, storeAs);
-  }
+    sig = getCodeSignature(code);
+    const warning = checkRetryLoop(sig);
+    if (warning) retryWarning = warning;
 
-  // Handle large output indexing
-  if (intent && !result.isError) {
-    const text = result.content?.[0];
-    if (text?.type === "text" && text.text.length > 5000) {
-      return handleLargeOutput(ctx, text.text, intent);
+    // Check lines hunting
+    const linesMatch = code.match(/lines\(\$(\w+),\s*(\d+),\s*(\d+)\)/);
+    if (linesMatch) {
+      const [, varName, s, e] = linesMatch;
+      const check = checkLinesHunting(varName, parseInt(s), parseInt(e));
+      if (check.blocked) return formatError(check.tip!);
+      if (check.tip) retryWarning += "\n" + check.tip;
     }
   }
 
-  return result;
-}
+  const allWarnings = [traitWarning, retryWarning].filter(Boolean).join('\n\n');
 
+  // Execute appropriate mode
+  if (code) {
+    // Code mode: returns McpResult directly
+    const result = await executeCode(ctx, code, storeAs);
+    
+    // Track success/failure
+    if (sig) {
+      if (result.isError) {
+        const errText = result.content?.[0]?.type === "text" ? result.content[0].text : "Unknown error";
+        recordFailure(sig, errText.slice(0, 200));
+      } else {
+        clearFailure(sig);
+        trackMethodUsage(code, ctx.adapterContext);
+      }
+    }
+    
+    // Append warnings if any
+    if (allWarnings && result.content?.[0]?.type === "text") {
+      result.content[0].text = allWarnings + "\n\n" + result.content[0].text;
+    }
+    return result;
+  }
+
+  // Shell/Python mode: returns ShellResult or McpResult (validation error)
+  const execResult = shell 
+    ? await executeShell(ctx, shell, storeAs)
+    : await executePython(ctx, python!, storeAs);
+  
+  // Validation error → return directly
+  if ('isError' in execResult || 'content' in execResult) {
+    return execResult as McpResult;
+  }
+
+  // ShellResult → decide indexing + format
+  const { output, lines, exitCode, varName, truncated, errorMsg } = execResult;
+  const truncateWarning = truncated ? '\n⚠️ Output truncated (100MB limit)' : '';
+
+  // Error: return filtered message
+  if (exitCode !== 0) {
+    const prefix = shell ? '✗ Exit' : '✗ Python Exit';
+    return `${prefix} ${exitCode}\n${errorMsg}${truncateWarning}\n\n✓ Stored ${varName}`;
+  }
+
+  // Intent search for large output
+  if (intent && output.length > INTENT_THRESHOLD) {
+    return handleLargeOutput(ctx, output, intent);
+  }
+
+  const warning = allWarnings ? allWarnings + '\n\n' : '';
+  
+  // Small output → apply filters and show directly
+  if (output.length <= INTENT_THRESHOLD) {
+    const filtered = applyHybridFilter(shell || 'python', output, [detectAndFormatGrepOutput]);
+    return warning + filtered + truncateWarning;
+  }
+  
+  // Large output → index and show label
+  const label = `exec:${varName}`;
+  ctx.contentStore.index(output, label, { contentType: "plaintext" });
+  return warning + `Indexed ${lines} lines as "${label}"\n→ mcx_search({ queries: [...], source: "${label}" })` + truncateWarning;
+}
 // ============================================================================
 // Adapter Summary for Description
 // ============================================================================
 
-function buildAdapterSummary(spec: AdapterSpec | null): string {
+function buildAdapterSummary(spec: ResolvedSpec | null): string {
   if (!spec?.adapters?.length) return "No adapters loaded";
 
   const byDomain = new Map<string, string[]>();
@@ -277,7 +434,7 @@ function buildAdapterSummary(spec: AdapterSpec | null): string {
 // Tool Definition
 // ============================================================================
 
-export function createExecuteTool(spec: AdapterSpec | null): ToolDefinition<ExecuteParams> {
+export function createExecuteTool(spec: ResolvedSpec | null): ToolDefinition<ExecuteParams> {
   const adapterSummary = buildAdapterSummary(spec);
 
   return {
@@ -297,17 +454,19 @@ ${adapterSummary}
 
 Use mcx_search({ adapter: "name" }) for method details.
 
-### Built-in Helpers
-- pick(arr, ['id', 'name']) - Extract fields
-- first(arr, 5) - First N items
-- count(arr, 'field') - Count by field
-- sum(arr, 'field') - Sum numeric field
+### Data Helpers (for adapters/JSON)
+- pick(obj, ['key1', 'key2']) - Extract fields
+- keys(obj) - Get object keys
+- values(obj) - Get object values
+- paths(obj) - List all paths in object
+- tree(obj, depth) - Visual tree of structure
 
-### File Helpers (require mcx_file storeAs first!)
-WRONG: mcx_execute({ code: "grep($file, 'pattern')" }) ← $file undefined
-RIGHT: mcx_file({ path, storeAs: "f" }) THEN mcx_execute({ code: "grep($f, 'pattern')" })
-
-Available after storeAs: grep($var, pattern), lines($var, start, end), around($var, line, ctx), block($var, line), outline($var)
+### File Helpers (require mcx_file storeAs variable)
+- grep($var, 'pattern') - Search content
+- lines($var, start, end) - Get line range
+- around($var, line, ctx) - Context around line
+- block($var, line) - Code block containing line
+- outline($var) - Functions/classes overview
 
 ### Variables
 - Results auto-stored as $result
@@ -336,6 +495,13 @@ Run Python code with proper timeout.
         python: { type: "string", description: "Python code to execute" },
         storeAs: { type: "string", description: "Store result as variable" },
         intent: { type: "string", description: "Auto-index large output" },
+        clear: { type: "boolean", description: "Clear all variables" },
+        delete: { type: "string", description: "Delete specific variable (e.g., 'result' deletes $result)" },
+        // Truncation params with defaults (from bd0245e)
+        truncate: { type: "boolean", default: true, description: "Truncate large results" },
+        maxItems: { type: "number", minimum: 1, maximum: 1000, default: 10, description: "Max array items" },
+        maxStringLength: { type: "number", minimum: 10, maximum: 10000, default: 500, description: "Max string length" },
+        timeout: { type: "number", minimum: 1000, maximum: 300000, default: 30000, description: "Timeout in ms" },
       },
     },
     handler: handleExecute,

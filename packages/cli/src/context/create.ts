@@ -31,7 +31,7 @@
   // File Helpers Code
   // ============================================================================
 
-  const FILE_HELPERS_CODE = `
+  export const FILE_HELPERS_CODE = `
   const isNumbered = (lines) => lines.length > 0 && /^\\d+:\\s/.test(lines[0]);
   const around = (stored, line, ctx = 10) => {
     const start = Math.max(0, line - ctx - 1);
@@ -106,6 +106,9 @@
     return '{\\n' + lines.join(',\\n') + '\\n' + spaces + '}';
   };
   `;
+
+  // Line count for filtering helper logs
+  export const FILE_HELPERS_LINE_COUNT = FILE_HELPERS_CODE.split('\n').length;
 
   // ============================================================================
   // FFF Module Cache

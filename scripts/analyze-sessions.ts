@@ -187,7 +187,7 @@ function analyzeSession(filePath: string): SessionData {
               // Track bash commands
               if (toolName === 'Bash' && input.command) {
                 const cmd = input.command as string;
-                const firstWord = cmd.trim().split(/\s+/)[0]?.replace(/^rtk\s+/, '');
+                const firstWord = cmd.trim().split(/\s+/)[0];
                 if (BASH_TO_MCX[firstWord]) call.bashCmd = firstWord;
               }
 

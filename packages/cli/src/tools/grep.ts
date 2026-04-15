@@ -5,12 +5,16 @@
  * NOT for finding files by name - use mcx_find instead.
  */
 
-import { resolve } from "node:path";
+import { resolve, isAbsolute } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatToolResult, formatError } from "./utils.js";
+import { formatError } from "./utils.js";
+import { formatStored } from "../utils/truncate.js";
+import { getSandboxState } from "../sandbox/index.js";
 import { formatGrepMCX, type GrepMatch } from "./format-grep.js";
 import { trackToolUsage, updateProximityContext, getProximityScore } from "../context/tracking.js";
+import { eventTips } from "../context/tips.js";
 import { initializeFinder, getFinderForPath } from "../context/create.js";
+import { GREP_PAGE_SIZE } from "./constants.js";
 
 // ============================================================================
 // Types
@@ -21,6 +25,7 @@ export interface GrepParams {
   pattern?: string;  // Alias for query
   path?: string;     // Directory to search
   context?: number;  // Lines of context
+  mode?: "plain" | "regex" | "fuzzy";  // Search mode (default: plain)
 }
 
 // ============================================================================
@@ -31,6 +36,28 @@ interface ParsedQuery {
   filePattern: string | null;  // e.g., "*.ts"
   searchTerm: string;          // The actual search term
   pathPrefix: string | null;   // e.g., "src/"
+}
+
+/** Detect if pattern uses regex syntax */
+function needsRegexMode(pattern: string): boolean {
+  return /[|()[\]{}^$+?\\]/.test(pattern);
+}
+
+/** Map fff grep results to GrepMatch[] */
+function mapGrepItems(items: Array<{ relativePath: string; lineNumber: number; lineContent: string }>): GrepMatch[] {
+  return items.map(m => ({
+    relativePath: m.relativePath,
+    lineNumber: m.lineNumber,
+    lineContent: m.lineContent,
+  }));
+}
+
+/** Build fff query string */
+function buildFffQuery(parsed: ParsedQuery): string {
+  let query = parsed.searchTerm;
+  if (parsed.filePattern) query = `${parsed.filePattern} ${query}`;
+  if (parsed.pathPrefix) query = `${parsed.pathPrefix} ${query}`;
+  return query;
 }
 
 function parseGrepQuery(query: string): ParsedQuery {
@@ -62,6 +89,35 @@ function parseGrepQuery(query: string): ParsedQuery {
   };
 }
 
+/** Process grep results and return formatted output */
+function processGrepResults(
+  ctx: ToolContext,
+  items: GrepMatch[],
+  searchTerm: string,
+  totalMatched: number,
+  totalFiles: number,
+  prefix: string = ""
+): string {
+  const matchedFiles = [...new Set(items.map(i => i.relativePath))];
+  
+  // Build proximity scores
+  const proxScores = new Map<string, number>();
+  for (const f of matchedFiles) proxScores.set(f, getProximityScore(f));
+  
+  // Store results
+  const state = getSandboxState();
+  state.set("grep", { pattern: searchTerm, items, files: matchedFiles });
+  
+  // Format and index
+  const formatted = formatGrepMCX(items, totalMatched, totalFiles, { pattern: searchTerm, proxScores });
+  ctx.contentStore.index(formatted.output, `grep:${searchTerm}`, { contentType: "plaintext" });
+  
+  // Return confirmation
+  const fileList = matchedFiles.slice(0, 5).join(", ");
+  const more = matchedFiles.length > 5 ? ` +${matchedFiles.length - 5} more` : "";
+  return `${prefix}✓ Found ${totalMatched} matches in ${matchedFiles.length} files\nFiles: ${fileList}${more}\nStored $grep`;
+}
+
 // ============================================================================
 // Handler
 // ============================================================================
@@ -86,36 +142,36 @@ async function handleGrep(
     );
   }
 
+  // Path is required
+  if (!params.path) {
+    return formatError(
+      "Missing path parameter",
+      `Example: mcx_grep({ query: "${parsed.searchTerm}", path: "src/" })`
+    );
+  }
+
+  // Require absolute path
+  if (!isAbsolute(params.path)) {
+    return formatError(`Absolute path required. Got: "${params.path}"`);
+  }
+
   // Get finder for search path
-  const searchPath = params.path ? resolve(params.path) : ctx.basePath;
+  const searchPath = resolve(params.path);
 
   try {
     const finder = await getFinderForPath(ctx, searchPath);
-
-    // Build FFF query
-    let fffQuery = parsed.searchTerm;
-    if (parsed.filePattern) {
-      fffQuery = `${parsed.filePattern} ${fffQuery}`;
-    }
-    if (parsed.pathPrefix) {
-      fffQuery = `${parsed.pathPrefix} ${fffQuery}`;
-    }
-
-    // Execute search
+    const fffQuery = buildFffQuery(parsed);
+    const autoMode = params.mode || (needsRegexMode(parsed.searchTerm) ? "regex" : "plain");
+    
     const results = finder.grep(fffQuery, {
-        pageSize: 200,
-        glob: parsed.filePattern || undefined,
-      });
+      pageSize: GREP_PAGE_SIZE,
+      glob: parsed.filePattern || undefined,
+      mode: autoMode,
+    });
 
-    if (!results.ok) {
-      return formatError(`Search failed: ${results.error}`);
-    }
+    if (!results.ok) return formatError(`Search failed: ${results.error}`);
 
-    const items: GrepMatch[] = results.value.items.map(m => ({
-        relativePath: m.relativePath,
-        lineNumber: m.lineNumber,
-        lineContent: m.lineContent,
-      }));
+    const items = mapGrepItems(results.value.items);
 
     // Track usage
     trackToolUsage("mcx_grep");
@@ -124,35 +180,18 @@ async function handleGrep(
     const matchedFiles = [...new Set(items.map(i => i.relativePath))];
     updateProximityContext(matchedFiles.slice(0, 10), [parsed.searchTerm]);
 
-    // No matches
-    if (items.length === 0) {
-      return formatToolResult(
-        `No matches for "${parsed.searchTerm}" in ${results.value.totalFilesSearched} files.`,
-        "\n→ Next: mcx_find (try different file pattern)"
-      );
-    }
-
-    // Build proximity scores for sorting
-    const proxScores = new Map<string, number>();
-    for (const file of matchedFiles) {
-      proxScores.set(file, getProximityScore(file));
-    }
-
-    // Format output
-    const formatted = formatGrepMCX(
-       items,
-       results.value.totalMatched,
-       results.value.totalFilesSearched,
-      {
-        pattern: parsed.searchTerm,
-        proxScores,
+    // No matches - retry with fuzzy if not already fuzzy
+    if (items.length === 0 && autoMode !== "fuzzy" && !params.mode) {
+      const fuzzy = finder.grep(fffQuery, { pageSize: GREP_PAGE_SIZE, glob: parsed.filePattern || undefined, mode: "fuzzy" });
+      if (fuzzy.ok && fuzzy.value.items.length > 0) {
+        return processGrepResults(ctx, mapGrepItems(fuzzy.value.items), parsed.searchTerm, 
+          fuzzy.value.totalMatched, fuzzy.value.totalFilesSearched, "(fuzzy) ");
       }
-    );
+      return eventTips.grepNoMatches(parsed.searchTerm, results.value.totalFilesSearched);
+    }
 
-    return formatToolResult(
-      formatted.output,
-      "\n→ Next: mcx_file (read full file context)"
-    );
+    return processGrepResults(ctx, items, parsed.searchTerm, 
+      results.value.totalMatched, results.value.totalFilesSearched);
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -193,8 +232,23 @@ Query syntax:
       },
       context: {
         type: "number",
-        description: "Lines of context to show around matches",
-        default: 0,
+        minimum: 0,
+        maximum: 50,
+        default: 3,
+        description: "Lines of context",
+      },
+      limit: {
+        type: "number",
+        minimum: 1,
+        maximum: 500,
+        default: 50,
+        description: "Max matches",
+      },
+      mode: {
+        type: "string",
+        enum: ["plain", "regex", "fuzzy"],
+        default: "plain",
+        description: "Search mode: plain (literal), regex (OR with |), fuzzy (typo-tolerant)",
       },
     },
   },

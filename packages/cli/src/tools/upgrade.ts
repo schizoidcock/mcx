@@ -5,7 +5,7 @@
  */
 
 import type { ToolDefinition, McpResult } from "./types.js";
-import { formatToolResult } from "./utils.js";
+
 
 // ============================================================================
 // Types
@@ -32,7 +32,7 @@ async function handleUpgrade(): Promise<McpResult> {
     "Then restart your MCP session.",
   ];
 
-  return formatToolResult(output.join("\n"));
+  return output.join("\n");
 }
 
 // ============================================================================
