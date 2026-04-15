@@ -4,7 +4,7 @@
  */
 import * as path from "path";
 import { parse as parseYAML } from "yaml";
-import { getAdaptersDir } from "../utils/paths";
+import { getAdaptersDir, normalizePath } from "../utils/paths";
 
 // ============================================================================
 // Types (exported for use by CLI and TUI)
@@ -322,7 +322,7 @@ export function detectSDKFromMarkdown(content: string): DetectedSDK | null {
 }
 
 function extractCategory(filePath: string): string {
-  const parts = filePath.replace(/\\/g, "/").split("/");
+  const parts = normalizePath(filePath).split("/");
   // Get immediate parent directory (the folder containing the file)
   const parent = parts[parts.length - 2];
   if (parent && !parent.includes(".")) {

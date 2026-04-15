@@ -77,7 +77,7 @@ export class ContentStore {
 
     const sourceId = source.id;
     const contentType = options.contentType ?? 'markdown';
-    const chunks = chunkContent(content, contentType, sourceLabel);
+    const chunks = chunkContent(content, contentType);
 
     // Batch insert chunks
     const insertChunk = this.db.prepare(
@@ -181,7 +181,7 @@ export class ContentStore {
 
       return rows.map(row => ({
         title: row.title,
-        content: extractSnippet(row.snippet, query),
+        snippet: extractSnippet(row.snippet, query),
         score: -row.score, // BM25 returns negative scores
         sourceId: row.source_id,
         sourceLabel: row.source_label,

@@ -42,3 +42,6 @@ examples/
 # CLI prototypes (experimental)
 packages/mcx-zig/
 packages/mcx-rust/
+
+# Project instructions
+CLAUDE.md

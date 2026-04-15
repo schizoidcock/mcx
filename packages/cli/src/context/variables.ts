@@ -13,6 +13,13 @@ const state: SessionVariables = {
   lastResult: undefined,
 };
 
+/**
+ * Get the singleton state for use by create.ts
+ */
+export function getState(): SessionVariables {
+  return state;
+}
+
 // ============================================================================
 // Variable Access
 // ============================================================================

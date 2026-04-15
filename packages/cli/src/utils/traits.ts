@@ -236,7 +236,10 @@ export function preprocess(code: string, language: string): string {
     .replace(/\/\/\s*@mcx-ignore[^\n]*\n[^\n]*/g, '') // @mcx-ignore on own line → skip that line + next line
     .replace(/[^\n]*\/\/\s*@mcx-ignore[^\n]*/g, '') // inline @mcx-ignore → skip that line
     .replace(/\/\*[\s\S]*?\*\//g, '') // Block comments
-    .replace(/\/\/[^\n]*/g, ''); // Line comments
+    .replace(/\/\/[^\n]*/g, '') // Line comments
+    .replace(/`[^`]*`/g, '""') // Template literals → empty string
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""') // Double-quoted strings → empty
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''"); // Single-quoted strings → empty
 }
 
 // ─── Pattern Matching Helpers ─────────────────────────────────────────────────
@@ -421,4 +424,22 @@ export function formatTraitWarnings(analysis: TraitAnalysis): string {
   }
 
   return lines.join('\n');
+}
+
+
+/**
+ * Analyze execute params to detect mode and return trait analysis.
+ * Single entry point for all execution modes (shell, python, JS).
+ */
+export function analyzeExecuteParams(params: Record<string, unknown>): TraitAnalysis | null {
+  if (params.shell && typeof params.shell === 'string') {
+    return analyzeShellTraits(params.shell);
+  }
+  if (params.python && typeof params.python === 'string') {
+    return analyzeCodeTraits(params.python, 'python');
+  }
+  if (params.code && typeof params.code === 'string') {
+    return analyzeCodeTraits(params.code, 'javascript');
+  }
+  return null;
 }

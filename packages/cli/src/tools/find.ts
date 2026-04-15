@@ -5,11 +5,19 @@
  * Use mcx_grep for content search.
  */
 
-import { resolve } from "node:path";
+import { resolve, isAbsolute, dirname, basename, relative } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatToolResult, formatError, compactPath } from "./utils.js";
-import { trackToolUsage, updateProximityContext } from "../context/tracking.js";
+import { formatError } from "./utils.js";
+import { compactPath, normalizePath } from "../utils/paths.js";
+import { trackToolUsage, updateProximityContext, getProximityScore } from "../context/tracking.js";
 import { initializeFinder, getFinderForPath } from "../context/create.js";
+import { 
+  IMPORT_REGEX, 
+  RESOLVE_EXTENSIONS, 
+  SOURCE_GLOB, 
+  SOURCE_EXT_REGEX, 
+  RELATED_PAGE_SIZE 
+} from "./constants.js";
 
 // ============================================================================
 // Types
@@ -46,14 +54,33 @@ async function handleFind(
     );
   }
 
-  // Get finder for search path
-  const searchPath = params.path ? resolve(params.path) : ctx.basePath;
+  // Require absolute path if provided
+  if (params.path && !isAbsolute(params.path)) {
+    return formatError(`Absolute path required. Got: "${params.path}"`);
+  }
+
+  // Handle path in query (e.g., "D:/project/tasks/*.md" → path=D:/project/tasks, query=*.md)
+  let searchPath = params.path ? resolve(params.path) : ctx.basePath;
+  let searchQuery = query;
+  const lastSlash = query.lastIndexOf("/");
+  if (lastSlash > 0) {
+    const pathPart = query.slice(0, lastSlash);
+    // Require absolute path in query (reject "tasks/" but allow "*.ts", "src/*.ts" globs)
+    if (!isAbsolute(pathPart) && !pathPart.includes("*") && !pathPart.includes("?")) {
+      return formatError(
+        `Absolute path required. Got: "${pathPart}"`,
+        `Use full path: mcx_find({ query: "/absolute/path/${query}" })`
+      );
+    }
+    searchPath = resolve(searchPath, pathPart);
+    searchQuery = query.slice(lastSlash + 1);
+  }
 
   try {
     const finder = await getFinderForPath(ctx, searchPath);
 
     // Execute search
-    const results = finder.fileSearch(query, { pageSize: limit * 2 });
+    const results = finder.fileSearch(searchQuery, { pageSize: limit * 2 });
 
     if (!results.ok) {
       return formatError(`Search failed: ${results.error}`);
@@ -72,14 +99,18 @@ async function handleFind(
 
     // No matches
     if (files.length === 0) {
-      return formatToolResult(
-        `No files matching "${query}"`,
-        "\n→ Try: broader pattern or different path"
-      );
+      return `No files matching "${query}"\n→ Try: broader pattern or different path`;
     }
 
+    // Sort by proximity score (recently accessed files rank higher)
+    const scored = files.map(f => ({
+      file: f,
+      score: getProximityScore(f.relativePath)
+    }));
+    scored.sort((a, b) => b.score - a.score);
+
     // Format output
-    const toShow = files.slice(0, limit);
+    const toShow = scored.slice(0, limit).map(s => s.file);
     const hidden = files.length - toShow.length;
 
     const lines: string[] = [];
@@ -100,10 +131,7 @@ async function handleFind(
       lines.push(line);
     }
 
-    return formatToolResult(
-      lines.join("\n"),
-      `\n→ Next: mcx_file({ path: "${toShow[0]?.relativePath}" })`
-    );
+    return lines.join("\n");
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -112,83 +140,126 @@ async function handleFind(
 }
 
 // ============================================================================
-// Related Files
+// Related Files - Helpers
 // ============================================================================
 
-async function handleFindRelated(
-  ctx: ToolContext,
-  targetFile: string
-): Promise<McpResult> {
-  try {
-    const finder = await initializeFinder(ctx);
-
-    // Find the file first
-    const fileResult = finder.fileSearch(targetFile, { pageSize: 1 });
-    if (!fileResult.ok || fileResult.value.items.length === 0) {
-      return formatError(`File not found: ${targetFile}`);
-    }
-
-    const file = fileResult.value.items[0];
-
-    // Get related files (imports, importers, siblings)
-    const related = finder.findRelated(file.relativePath);
-
-    if (!related.ok) {
-      return formatError(`Could not find related files: ${related.error}`);
-    }
-
-    const { imports, importers, siblings } = related.value;
-
-    // Track usage
-    trackToolUsage("mcx_find", targetFile);
-
-    // Format output
-    const lines: string[] = [];
-    lines.push(`Related files for: ${file.relativePath}`);
-    lines.push("");
-
-    if (imports.length > 0) {
-      lines.push(`Imports (${imports.length}):`);
-      for (const imp of imports.slice(0, 10)) {
-        lines.push(`  → ${imp}`);
-      }
-      if (imports.length > 10) {
-        lines.push(`  ... +${imports.length - 10} more`);
-      }
-      lines.push("");
-    }
-
-    if (importers.length > 0) {
-      lines.push(`Imported by (${importers.length}):`);
-      for (const imp of importers.slice(0, 10)) {
-        lines.push(`  ← ${imp}`);
-      }
-      if (importers.length > 10) {
-        lines.push(`  ... +${importers.length - 10} more`);
-      }
-      lines.push("");
-    }
-
-    if (siblings.length > 0) {
-      lines.push(`Siblings (${siblings.length}):`);
-      for (const sib of siblings.slice(0, 5)) {
-        lines.push(`  - ${sib}`);
-      }
-      if (siblings.length > 5) {
-        lines.push(`  ... +${siblings.length - 5} more`);
-      }
-    }
-
-    if (imports.length === 0 && importers.length === 0 && siblings.length === 0) {
-      lines.push("No related files found.");
-    }
-
-    return formatToolResult(lines.join("\n"));
-
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return formatError(`Find related failed: ${msg}`);
+/** Walk up from startDir until package.json found */
+async function findProjectRoot(startDir: string): Promise<string> {
+  let current = startDir;
+  while (current !== dirname(current)) {
+    if (await Bun.file(resolve(current, "package.json")).exists()) return current;
+    current = dirname(current);
   }
+  return startDir;
+}
+
+/** Extract import paths from file content */
+function extractImports(content: string): string[] {
+  IMPORT_REGEX.lastIndex = 0;
+  const imports: string[] = [];
+  let match;
+  while ((match = IMPORT_REGEX.exec(content)) !== null) {
+    const path = match[1] || match[2];
+    if (path && !path.startsWith("node_modules")) imports.push(path);
+  }
+  return imports;
+}
+
+/** Resolve import path to absolute file path */
+async function resolveImport(fromFile: string, importPath: string): Promise<string | null> {
+  if (!importPath.startsWith(".")) return null;
+  const cleanPath = importPath.replace(/\.js$/, "");
+  const base = resolve(dirname(fromFile), cleanPath);
+  for (const ext of RESOLVE_EXTENSIONS) {
+    const candidate = base + ext;
+    if (await Bun.file(candidate).exists()) return candidate;
+  }
+  return null;
+}
+
+/** Format output section */
+function formatSection(title: string, items: string[], prefix: string, max: number): string[] {
+  if (items.length === 0) return [];
+  const lines = [`${title} (${items.length}):`];
+  for (const item of items.slice(0, max)) lines.push(`  ${prefix} ${item}`);
+  if (items.length > max) lines.push(`  ... +${items.length - max} more`);
+  lines.push("");
+  return lines;
+}
+
+/** Get files that import target */
+async function getImporters(
+  finder: Awaited<ReturnType<typeof getFinderForPath>>,
+  basePath: string,
+  target: string,
+  targetRel: string
+): Promise<string[]> {
+  const targetBase = basename(target).replace(SOURCE_EXT_REGEX, "");
+  const grepResult = finder.grep(`${targetBase}.`, { glob: SOURCE_GLOB, pageSize: RELATED_PAGE_SIZE });
+  if (!grepResult.ok) return [];
+
+  const importers = new Set<string>();
+  for (const item of grepResult.value.items) {
+    const fullPath = resolve(basePath, item.path);
+    const relPath = normalizePath(relative(basePath, fullPath));
+    if (relPath === targetRel || importers.has(relPath)) continue;
+    
+    const content = await Bun.file(fullPath).text().catch(() => "");
+    if (extractImports(content).some(imp => imp.includes(targetBase))) {
+      importers.add(relPath);
+    }
+  }
+  return [...importers];
+}
+
+/** Get sibling files in same directory */
+async function getSiblings(targetDir: string, target: string, basePath: string): Promise<string[]> {
+  const targetNorm = normalizePath(target).toLowerCase();
+  const { readdir } = await import("node:fs/promises");
+  const entries = await readdir(targetDir).catch(() => [] as string[]);
+  
+  return entries
+    .filter(e => SOURCE_EXT_REGEX.test(e))
+    .map(e => resolve(targetDir, e))
+    .filter(p => normalizePath(p).toLowerCase() !== targetNorm)
+    .map(p => normalizePath(relative(basePath, p)));
+}
+
+// ============================================================================
+// Related Files - Handler
+// ============================================================================
+
+async function handleFindRelated(ctx: ToolContext, targetFile: string): Promise<McpResult> {
+  const target = isAbsolute(targetFile) ? targetFile : resolve(process.cwd(), targetFile);
+  if (!await Bun.file(target).exists()) return formatError(`File not found: ${targetFile}`);
+
+  const targetDir = dirname(target);
+  const basePath = await findProjectRoot(targetDir);
+  const finder = await getFinderForPath(ctx, basePath);
+  const targetRel = normalizePath(relative(basePath, target));
+
+  // Get imports
+  const content = await Bun.file(target).text();
+  const resolved = await Promise.all(extractImports(content).map(p => resolveImport(target, p)));
+  const imports = resolved.filter(Boolean).map(p => normalizePath(relative(basePath, p!)));
+
+  // Get importers and siblings
+  const importers = await getImporters(finder, basePath, target, targetRel);
+  const siblings = await getSiblings(targetDir, target, basePath);
+
+  trackToolUsage("mcx_find", targetFile);
+
+  // Format output
+  const lines = [`Related files for: ${targetRel}`, ""];
+  lines.push(...formatSection("Imports", imports, "→", 10));
+  lines.push(...formatSection("Imported by", importers, "←", 10));
+  lines.push(...formatSection("Siblings", siblings, "-", 5));
+
+  if (imports.length === 0 && importers.length === 0 && siblings.length === 0) {
+    lines.push("No related files found.");
+  }
+
+  return lines.join("\n");
 }
 
 // ============================================================================
@@ -232,8 +303,9 @@ Related files mode:
       },
       limit: {
         type: "number",
-        description: "Maximum number of results",
-        default: 20,
+        minimum: 1,
+        maximum: 200,
+        default: 20, description: "Maximum results",
       },
     },
   },

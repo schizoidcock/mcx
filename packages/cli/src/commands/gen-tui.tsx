@@ -20,6 +20,7 @@ import {
   type SourceAnalysis,
   type DetectedAuth,
 } from "./gen-core";
+import { normalizePath } from "../utils/paths";
 
 // ============================================================================
 // Helpers
@@ -28,7 +29,7 @@ import {
 function getRelativeImportPath(configPath: string, adapterPath: string): string {
   const configDir = path.dirname(configPath);
   let relative = path.relative(configDir, adapterPath);
-  relative = relative.replace(/\\/g, "/");
+  relative = normalizePath(relative);
   relative = relative.replace(/\.ts$/, "");
   if (!relative.startsWith(".")) {
     relative = "./" + relative;

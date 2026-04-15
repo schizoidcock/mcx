@@ -21,7 +21,7 @@ import {
   type DetectedAuth,
   type FilterOptions,
 } from "./gen-core";
-import { getConfigPath, getMcxHomeDir } from "../utils/paths";
+import { getConfigPath, getMcxHomeDir, normalizePath } from "../utils/paths";
 
 // ============================================================================
 // Security: Path Validation
@@ -445,7 +445,7 @@ async function promptImportAdapter(adapterName: string, adapterPath: string): Pr
 function getRelativeImportPath(configPath: string, adapterPath: string): string {
   const configDir = path.dirname(configPath);
   let relative = path.relative(configDir, adapterPath);
-  relative = relative.replace(/\\/g, "/");
+  relative = normalizePath(relative);
   relative = relative.replace(/\.ts$/, "");
   if (!relative.startsWith(".")) {
     relative = "./" + relative;

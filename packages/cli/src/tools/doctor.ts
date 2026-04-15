@@ -7,7 +7,7 @@
 
 import { BunWorkerSandbox } from "@papicandela/mcx-core";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatToolResult } from "./utils.js";
+
 
 // ============================================================================
 // Types
@@ -134,7 +134,7 @@ async function handleDoctor(
     `${passCount}/${checks.length} checks passed`,
   ];
 
-  return formatToolResult(output.join("\n"));
+  return output.join("\n");
 }
 
 // ============================================================================

@@ -71,6 +71,13 @@ export function htmlToMarkdown(html: string): string {
 }
 
 /** Extract main content from HTML page */
+
+
+/** Extract title from HTML page */
+export function extractHtmlTitle(html: string): string | null {
+  const match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  return match ? match[1].trim() : null;
+}
 export function extractMainContent(html: string): string {
   // Try to find main content area
   const mainMatch = html.match(/<(main|article)[^>]*>([\s\S]*?)<\/\1>/i);

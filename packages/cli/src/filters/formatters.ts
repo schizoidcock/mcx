@@ -12,7 +12,7 @@
  * - GitHub CLI output
  */
 
-import { compactPath } from "../../utils/paths.js";
+import { compactPath } from "../utils/paths.js";
 
 // ANSI escape code regex
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;

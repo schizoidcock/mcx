@@ -6,7 +6,8 @@
  */
 
 import type { ToolContext, ToolDefinition, McpResult, BackgroundTask } from "./types.js";
-import { formatToolResult, formatError } from "./utils.js";
+import { formatError } from "./utils.js";
+import { getSandboxState } from "../sandbox/index.js";
 
 // ============================================================================
 // Types
@@ -102,7 +103,7 @@ async function handleSpawn(
     (error) => failTask(task, String(error))
   );
   
-  return formatToolResult(`Spawned task: ${taskId}\n→ mcx_tasks({ id: "${taskId}" }) to check status`);
+  return `Spawned task: ${taskId}\n→ mcx_tasks({ id: "${taskId}" }) to check status`;
 }
 
 function handleCheckById(
@@ -122,7 +123,7 @@ function handleCheckById(
   if (task.error) lines.push(`Error: ${task.error}`);
   if (task.logs.length) lines.push(`Logs:\n${task.logs.join("\n")}`);
   
-  return formatToolResult(lines.join("\n"));
+  return lines.join("\n");
 }
 
 function handleList(
@@ -136,7 +137,7 @@ function handleList(
   }
   
   if (filtered.length === 0) {
-    return formatToolResult(`No ${statusFilter === "all" ? "" : statusFilter + " "}tasks`);
+    return `No ${statusFilter === "all" ? "" : statusFilter + " "}tasks`;
   }
   
   const lines = filtered.map((t) => {
@@ -144,7 +145,7 @@ function handleList(
     return `${icon} ${t.id} (${t.status}, ${formatDuration(t)})`;
   });
   
-  return formatToolResult(lines.join("\n"));
+  return lines.join("\n");
 }
 
 async function runCommand(
@@ -170,11 +171,12 @@ async function handleCommands(
   const results = await Promise.all(
     commands.map((c) => runCommand(ctx, c.label, c.command))
   );
-  return formatToolResult(results.join("\n"));
+  return results.join("\n");
 }
 
 function storeResult(ctx: ToolContext, name: string, value: unknown): void {
-  ctx.variables.stored.set(name, { value, timestamp: Date.now(), source: "mcx_tasks" });
+  
+  getSandboxState().set(name, value);
 }
 
 async function runOperation(
@@ -203,7 +205,7 @@ async function handleOperations(
   for (const op of operations) {
     results.push(await runOperation(ctx, op.code, op.storeAs));
   }
-  return formatToolResult(results.join("\n"));
+  return results.join("\n");
 }
 
 // ============================================================================
@@ -260,6 +262,7 @@ export const mcxTasks: ToolDefinition<TasksParams> = {
       status: {
         type: "string",
         enum: ["all", "running", "completed", "failed"],
+        default: "all",
         description: "Filter tasks by status",
       },
       commands: {
@@ -286,6 +289,7 @@ export const mcxTasks: ToolDefinition<TasksParams> = {
         },
         description: "Code operations to run sequentially",
       },
+      timeout: { type: "number", minimum: 1000, maximum: 300000, default: 30000, description: "Task timeout in ms" },
     },
   },
   handler: handleTasks,

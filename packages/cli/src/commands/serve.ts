@@ -20,12 +20,10 @@
 import * as path from "node:path";
 import { join, basename, extname, isAbsolute, resolve } from "node:path";
 
-// Hoisted regex for import extraction (avoids recreation per call)
-const IMPORT_REGEX = /(?:import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
-const RESOLVE_EXTENSIONS = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"];
+// IMPORT_REGEX and RESOLVE_EXTENSIONS imported from tools/constants.js
 import { existsSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
-import { applyHybridFilter } from "./filters.js";
+import { applyHybridFilter } from "../filters/index.js";
 import { registerExtractedTools } from "../tools/register.js";
 import type { ToolContext } from "../tools/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -39,15 +37,44 @@ import { getMcxHomeDir, getAdaptersDir, ensureMcxHomeDir, findProjectRoot, compa
 import { startDaemon, stopDaemon } from "../daemon";
 import { type FileFinder, isExcludedPath } from "../utils/fff";
 import { coerceJsonArray } from "../utils/zod";
-import { isDangerousEnvKey, isBlockedUrl, detectShellEscape } from "../utils/security";
+import { isDangerousEnvKey, isBlockedUrl, detectShellEscape, enforceShellRedirects, enforcePythonRedirects, blockedResponse } from "../utils/security";
 import { analyzeCodeTraits, analyzeShellTraits, formatTraitWarnings } from "../utils/traits";
 import { logger } from "../utils/logger";
+import { extractImages, type McxImageContent } from "../utils/images";
+import { 
+  CHARACTER_LIMIT, 
+  MAX_LOGS, 
+  GREP_MAX_LINE_WIDTH, 
+  GREP_MAX_PER_FILE,
+  INTENT_THRESHOLD,
+  FULL_FILE_WARNING_BYTES,
+  FULL_FILE_CODE,
+  FILE_INDEX_THRESHOLD,
+  AUTO_INDEX_THRESHOLD,
+  IMPORT_REGEX,
+  RESOLVE_EXTENSIONS,
+  MAP_TTL_MS,
+  MAP_MAX_ENTRIES,
+  MAX_PARAMS_FULL,
+  MAX_PARAMS_TRUNCATED,
+  MAX_DESC_LENGTH,
+  MAX_BACKGROUND_TASKS,
+  MAX_RESPONSE_BODY,
+} from "../tools/constants.js";
+import { truncateLogs, summarizeResult, enforceCharacterLimit, sanitizeForJson, formatFileResult } from "../utils/truncate.js";
 import { getContentStore, searchWithFallback, getDistinctiveTerms, batchSearch, htmlToMarkdown, isHtml } from "../search";
 import { getSandboxState } from "../sandbox";
+import { createToolContext, FILE_HELPERS_CODE } from "../context/create.js";
 import { loadSpecsFromAdapters } from "../spec";
 import { mcxStats } from "../tools/stats.js";
 import { mcxTasks } from "../tools/tasks.js";
 import { mcxWatch } from "../tools/watch.js";
+import { safeStringify } from "../tools/utils.js";
+import { cleanLine } from "../utils/truncate.js";
+import { cleanupGuards } from "../context/guards.js";
+import { getFileStoreTime } from "../tools/edit.js";
+import { getFileEditTime } from "../tools/write.js";
+import { formatGrepMCX, type GrepMatch, type FormatGrepOptions } from "../tools/format-grep.js";
 import { mcxDoctor } from "../tools/doctor.js";
 import { mcxUpgrade } from "../tools/upgrade.js";
 import { mcxFind } from "../tools/find.js";
@@ -203,51 +230,13 @@ interface MCXConfig {
 // Result Summarization (per Anthropic's code execution article)
 // ============================================================================
 
-/** Maximum characters in a single response (MCP best practice) */
-const CHARACTER_LIMIT = 25000;
-/** Threshold for auto-indexing large outputs when intent is specified */
-const INTENT_THRESHOLD = 5000;
-/** Threshold for warning about full-file returns in mcx_file */
-const FULL_FILE_WARNING_BYTES = 5000;
-/** Code patterns that return entire file content (anti-pattern) */
-const FULL_FILE_CODE = new Set(['$file', '$file.text', '$file.lines']);
-/** Threshold for auto-indexing file content in mcx_file (10KB) */
-const FILE_INDEX_THRESHOLD = 10_000;
-/** Threshold for auto-indexing large outputs without intent (50KB) */
-const AUTO_INDEX_THRESHOLD = 50_000;
-/** Hard cap on shell/process output to prevent OOM (100MB) */
-const HARD_CAP_BYTES = 100 * 1024 * 1024;
+// Constants imported from tools/constants.js
 /** Cross-platform shell path */
 const SHELL_PATH = process.platform === 'win32' 
   ? 'C:\\Program Files\\Git\\bin\\sh.exe' 
   : '/bin/sh';
 
-/**
- * Kill process and all its children (tree kill).
- * On Windows, proc.kill() doesn't kill child processes, leaving zombies.
- */
-function killTree(proc: { pid: number; kill: () => void }): void {
-  try {
-    if (process.platform === 'win32') {
-      // taskkill /T kills entire process tree, /F forces termination
-      Bun.spawnSync(['taskkill', '/T', '/F', '/PID', String(proc.pid)], { 
-        stdout: 'ignore', 
-        stderr: 'ignore' 
-      });
-    } else {
-      // On Unix, kill process group (negative PID)
-      try {
-        process.kill(-proc.pid, 'SIGKILL');
-      } catch {
-        // Fallback to regular kill if process group kill fails
-        proc.kill();
-      }
-    }
-  } catch {
-    // Last resort fallback - simple kill, no recursion
-    proc.kill();
-  }
-}
+// killTree removed - now in utils/process.ts
 
 /** Dangerous env vars to filter from shell execution */
 const DENIED_ENV = new Set([
@@ -291,31 +280,16 @@ function getSafeEnv(): Record<string, string> {
   cachedSafeEnv = safeEnv;
   return safeEnv;
 }
-/** Search throttling: normal results up to this many calls */
-const THROTTLE_AFTER = 3;
-/** Search throttling: block after this many calls */
-const BLOCK_AFTER = 8;
-/** Search throttling window in ms */
-const THROTTLE_WINDOW_MS = 60_000;
+// Throttling constants imported from tools/constants.js
+
 /** File access tracking for progressive tips (Optimization #2+#3) */
 const fileAccessLog = new Map<string, { count: number; firstAccess: number }>();
-/** Track when files were stored with storeAs (for stale line number detection) */
-const fileStoreTime = new Map<string, number>();
-/** Track stored file variable names for enforcement (Optimization #13) */
-const storedFileVars = new Map<string, string>();
-/** Track when files were edited (for stale line number detection) */
-const fileEditTime = new Map<string, number>();
 
-/** Track execution failures for retry loop detection (Pattern D) */
-const executeFailures = new Map<string, { count: number; lastTime: number; lastError: string }>();
+
+
 
 /** Grep call tracking for progressive tips (Optimization #9) */
 const grepCallLog = { count: 0, firstCall: 0 };
-
-/** TTL for Map cleanup (30 minutes) */
-const MAP_TTL_MS = 30 * 60 * 1000;
-/** Max entries per Map to prevent unbounded growth */
-const MAP_MAX_ENTRIES = 500;
 
 /** Cleanup stale Map entries (called periodically) */
 function cleanupStaleMaps(): void {
@@ -326,26 +300,10 @@ function cleanupStaleMaps(): void {
     if (now - val.firstAccess > MAP_TTL_MS) fileAccessLog.delete(key);
   }
   
-  // Clean fileStoreTime, storedFileVars, and fileEditTime
-  for (const [key, time] of fileStoreTime) {
-    if (now - time > MAP_TTL_MS) {
-      fileStoreTime.delete(key);
-      storedFileVars.delete(key); // Clean variable name when store time expires
-    }
-  }
-  for (const [key, time] of fileEditTime) {
-    if (now - time > MAP_TTL_MS) fileEditTime.delete(key);
-  }
+
   
-  // Clean executeFailures
-  for (const [key, val] of executeFailures) {
-    if (now - val.lastTime > MAP_TTL_MS) executeFailures.delete(key);
-  }
-  
-  // Clean linesCallTracker
-  for (const [key, val] of linesCallTracker) {
-    if (now - val.timestamp > LINES_HUNT_WINDOW_MS) linesCallTracker.delete(key);
-  }
+  // Cleanup guards state (executeFailures, linesCallTracker)
+  cleanupGuards(now);
   
   // Cap sizes if still too large (LRU-ish: delete oldest)
   if (fileAccessLog.size > MAP_MAX_ENTRIES) {
@@ -359,10 +317,7 @@ function cleanupStaleMaps(): void {
 // Run cleanup every 5 minutes
 setInterval(cleanupStaleMaps, 5 * 60 * 1000);
 
-/** Get signature for code (first 100 chars normalized) */
-function getCodeSignature(code: string): string {
-  return code.replace(/\s+/g, ' ').trim().slice(0, 100);
-}
+
 
 /** Create a blocked/error MCP response */
 const blockedResponse = (msg: string) => ({ 
@@ -370,12 +325,7 @@ const blockedResponse = (msg: string) => ({
   isError: true as const 
 });
 
-/** Sanitize string for JSON serialization (remove lone surrogates) */
-const sanitizeForJson = (str: string): string => {
-  // Remove lone surrogates (U+D800-U+DFFF) that would break JSON
-  // These can appear when UTF-16 strings are improperly handled
-  return str.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
-};
+// sanitizeForJson imported from utils/truncate
 
 /** Workflow tracking for inefficiency detection (Optimization #5) */
 const sessionWorkflow = {
@@ -383,904 +333,22 @@ const sessionWorkflow = {
   maxHistory: 10,
 };
 
-/** Track consecutive lines() calls per variable for hunting detection */
-const linesCallTracker = new Map<string, { count: number; lastRange: [number, number]; timestamp: number }>();
-const LINES_HUNT_THRESHOLD = 3; // Block on 3rd consecutive call
-const LINES_HUNT_WINDOW_MS = 60_000; // Reset after 60s
-
-/** Detect inefficient usage patterns and return suggestion */
-function detectInefficiency(tool: string, file?: string): string | null {
-  const recent = sessionWorkflow.lastTools.slice(-5);
-  if (recent.length < 2) return null;
-
-  // Pattern: Edit → Read same file (no need to re-read after edit)
-  // BUT: if file was edited after storeAs, user DOES need to re-read for line mode
-  const last = recent[recent.length - 1];
-  const storeTime = file ? fileStoreTime.get(file) : undefined;
-  const editTime = file ? fileEditTime.get(file) : undefined;
-  const needsReloadForLineMode = storeTime && editTime && editTime > storeTime;
-
-  if (tool === 'mcx_file' && file && last?.tool === 'mcx_edit' && last?.file === file) {
-    // Don't warn if user needs to reload for line mode to work
-    if (!needsReloadForLineMode) {
-      return `💡 Edit was successful. No need to re-read "${file}" to verify.`;
-    }
-  }
-
-  // Pattern: Read → Edit → Read same file
-  if (tool === 'mcx_file' && file && recent.length >= 2) {
-    const prev = recent[recent.length - 2];
-    if (last?.tool === 'mcx_edit' && last?.file === file && 
-        prev?.tool === 'mcx_file' && prev?.file === file) {
-      // Don't warn if user needs to reload for line mode to work
-      if (!needsReloadForLineMode) {
-        return `💡 You just edited "${file}". The edit succeeded - no need to re-read.`;
-      }
-    }
-  }
-
-  // Pattern: Multiple greps - now handled by progressive tips in mcx_grep handler (Optimization #9)
-  // Pattern: Same file read - now ENFORCED in mcx_file handler (Optimization #13)
-
-  // Pattern H: Detect edit→build/test→edit cycle (suggest batching edits before running build)
-  // Only triggers when mcx_execute (build/lint/test) is run between edits, NOT for mcx_file reads
-  if (tool === 'mcx_edit' && file && recent.length >= 2) {
-    const prevEditIdx = recent.findLastIndex(t => t.tool === 'mcx_edit' && t.file === file);
-    
-    if (prevEditIdx >= 0 && prevEditIdx < recent.length - 1) {
-      // Only check for mcx_execute (build/test commands), not mcx_file (legitimate reloads)
-      const betweenTools = recent.slice(prevEditIdx + 1).map(t => t.tool);
-      const hasBuildOrTest = betweenTools.includes('mcx_execute');
-      if (hasBuildOrTest) {
-        return `💡 Edit→build→edit cycle detected. Batch all edits first, then run build/test once at the end.`;
-      }
-    }
-  }
-
-  // Pattern: 5+ unique files read without processing (suggest mcx_tasks batch or storeAs)
-  if (tool === 'mcx_file') {
-    const recentFileReads = sessionWorkflow.lastTools.filter(t => 
-      t.tool === 'mcx_file' && t.file && Date.now() - t.timestamp < 120000 // last 2 min
-    );
-    const uniqueFiles = new Set(recentFileReads.map(t => t.file));
-    if (uniqueFiles.size >= 5) {
-      const hasExecute = sessionWorkflow.lastTools.some(t => 
-        t.tool === 'mcx_execute' && Date.now() - t.timestamp < 120000
-      );
-      if (!hasExecute) {
-        return `⚠️ Reading ${uniqueFiles.size} files without processing.\n` +
-               `Consider: mcx_tasks({ commands: [...] }) or process each file with code.`;
-      }
-    }
-  }
-
-  return null;
-}
-
-/** Track tool usage for workflow detection */
-function trackToolUsage(tool: string, file?: string): void {
-  sessionWorkflow.lastTools.push({ tool, file, timestamp: Date.now() });
-  if (sessionWorkflow.lastTools.length > sessionWorkflow.maxHistory) {
-    sessionWorkflow.lastTools.shift();
-  }
-}
-
-/** Max params to show in full (above this, truncate) */
-const MAX_PARAMS_FULL = 10;
-/** Max params to show when truncating */
-const MAX_PARAMS_TRUNCATED = 8;
-/** Max description length before truncating */
-const MAX_DESC_LENGTH = 80;
-/** Max log lines to show */
-const MAX_LOGS = 20;
-
-/** Tool pair suggestions - maps tool to complementary tools */
-const TOOL_PAIRS: Record<string, { tool: string; hint: string }[]> = {
-  mcx_find: [
-    { tool: "mcx_grep", hint: "search content in found files" },
-    { tool: "mcx_file", hint: "process a found file" },
-  ],
-  mcx_grep: [
-    { tool: "mcx_file", hint: "process matched file" },
-    { tool: "mcx_find", hint: "find imports/exports via related param" },
-  ],
-  mcx_file: [
-    { tool: "mcx_find", hint: "find related: mcx_find({ related: file })" },
-    { tool: "mcx_edit", hint: "edit the file" },
-  ],
-  mcx_edit: [
-    { tool: "mcx_find", hint: "check related files via related param" },
-  ],
-  mcx_write: [
-    { tool: "mcx_find", hint: "find importers via related param" },
-  ],
-  mcx_tasks: [
-    { tool: "mcx_find", hint: "find dependencies via related param" },
-  ],
-  mcx_fetch: [
-    { tool: "mcx_search", hint: "search indexed content" },
-  ],
-  mcx_execute: [
-    { tool: "mcx_search", hint: "search results or find methods" },
-  ],
-  mcx_search: [
-    { tool: "mcx_execute", hint: "call discovered method" },
-  ],
-};
-
-/** Pre-computed tool suggestions (memoized at load time) */
-const TOOL_SUGGESTIONS: Record<string, string> = Object.fromEntries(
-  Object.entries(TOOL_PAIRS).map(([tool, pairs]) => [
-    tool,
-    `\n→ Next: ${pairs.map(p => `${p.tool} (${p.hint})`).join(", ")}`
-  ])
-);
-
-/** Get tool suggestion line (memoized) */
-function suggestNextTool(toolName: string): string {
-  return TOOL_SUGGESTIONS[toolName] || "";
-}
-
-/** Escape FTS5 special characters in query */
-function escapeFts5Query(query: string): string {
-  return query.replace(/[.:"'()]/g, ' ').trim();
-}
-
-/** Format batch search results for output, returns total match count */
-function formatSearchResults(
-  batchResults: Record<string, { title: string; snippet: string }[]>,
-  output: string[]
-): number {
-  let totalMatches = 0;
-  for (const [query, results] of Object.entries(batchResults)) {
-    totalMatches += results.length;
-    output.push(`\n## ${query}\n`);
-    if (results.length === 0) {
-      output.push('(no matches)');
-    } else {
-      const sliced = results.slice(0, 3);
-      for (let i = 0; i < sliced.length; i++) {
-        output.push(`  - ${sliced[i].title}`);
-      }
-
-    }
-  }
-  return totalMatches;
-}
-
-/** Last accessed directory for proximity reranking */
-let lastAccessedDir: string | null = null;
-
-/** Update last accessed directory from a file path */
-function updateProximityContext(filePath: string): void {
-  const normalized = filePath.replace(/\\/g, "/");
-  const lastSlash = normalized.lastIndexOf("/");
-  lastAccessedDir = lastSlash > 0 ? normalized.slice(0, lastSlash) : null;
-}
-
-/** Calculate proximity score (0-1) based on shared path prefix */
-function getProximityScore(filePath: string): number {
-  if (!lastAccessedDir) return 0;
-  const normalized = filePath.replace(/\\/g, "/");
-  const fileDir = normalized.slice(0, normalized.lastIndexOf("/"));
-  if (fileDir === lastAccessedDir) return 1; // Same directory
-  // Check shared prefix depth
-  const contextParts = lastAccessedDir.split("/");
-  const fileParts = fileDir.split("/");
-  let shared = 0;
-  for (let i = 0; i < Math.min(contextParts.length, fileParts.length); i++) {
-    if (contextParts[i] === fileParts[i]) shared++;
-    else break;
-  }
-  return shared / Math.max(contextParts.length, fileParts.length);
-}
-
-/** Truncate logs array with "... +N more" message */
-function truncateLogs(logs: string[]): string[] {
-  if (logs.length <= MAX_LOGS) return logs;
-  return [...logs.slice(0, MAX_LOGS), `... +${logs.length - MAX_LOGS} more`];
-}
-
-// ============================================================================
-// Grep Output Formatting
-// ============================================================================
-
-/** Max line width for grep output */
-const GREP_MAX_LINE_WIDTH = 100;
-/** Max matches to show per file */
-const GREP_MAX_PER_FILE = 5;
 
 
-/**
- * Truncate a line with window centered around match.
- * Pattern: 1/3 context before, 2/3 after the match.
- */
-function cleanLine(line: string, maxLen = GREP_MAX_LINE_WIDTH, pattern?: string): string {
-  const trimmed = line.trim();
-  if (trimmed.length <= maxLen) return trimmed;
-  
-  // If no pattern or pattern not found, simple center truncation
-  if (!pattern) {
-    // Account for "..." on both sides (6 chars total)
-    const contentLen = maxLen - 6;
-    const halfLen = Math.floor(contentLen / 2);
-    return trimmed.slice(0, halfLen) + '...' + trimmed.slice(-halfLen);
-  }
-  
-  // Find pattern position (case-insensitive)
-  const lowerLine = trimmed.toLowerCase();
-  const lowerPattern = pattern.toLowerCase();
-  const matchIdx = lowerLine.indexOf(lowerPattern);
-  
-  if (matchIdx === -1) {
-    // Pattern not found, simple center truncation
-    const contentLen = maxLen - 6;
-    const halfLen = Math.floor(contentLen / 2);
-    return trimmed.slice(0, halfLen) + '...' + trimmed.slice(-halfLen);
-  }
-  
-  // Center window around match: 1/3 before, 2/3 after
-  // Account for potential "..." on both sides (6 chars reserved)
-  const availableLen = maxLen - 6;
-  const patternLen = Math.min(pattern.length, availableLen);
-  const remaining = availableLen - patternLen;
-  const beforeWindow = Math.floor(remaining / 3);
-  const afterWindow = remaining - beforeWindow;
-  
-  let start = Math.max(0, matchIdx - beforeWindow);
-  let end = Math.min(trimmed.length, matchIdx + pattern.length + afterWindow);
-  
-  // Determine if we need prefix/suffix
-  const needsPrefix = start > 0;
-  const needsSuffix = end < trimmed.length;
-  
-  // If we don't need one side's ellipsis, give that space to content
-  if (!needsPrefix && needsSuffix) {
-    // No prefix needed, extend end
-    end = Math.min(trimmed.length, maxLen - 3);
-  } else if (needsPrefix && !needsSuffix) {
-    // No suffix needed, extend start
-    start = Math.max(0, trimmed.length - (maxLen - 3));
-  }
-  
-  const prefix = needsPrefix ? '...' : '';
-  const suffix = needsSuffix ? '...' : '';
-  
-  return prefix + trimmed.slice(start, end) + suffix;
-}
-
-/**
- * Format grep results with file grouping, smart truncation, and +N hidden counts.
- */
-interface GrepMatch {
-  relativePath: string;
-  lineNumber: number;
-  lineContent: string;
-}
-
-interface FormatGrepOptions {
-  maxPerFile?: number;
-  maxLineWidth?: number;
-  pattern?: string;
-  proxScores?: Map<string, number> | null;
-}
-
-function formatGrepMCX(
-  items: GrepMatch[],
-  totalMatched: number,
-  totalFilesSearched: number,
-  options: FormatGrepOptions = {}
-): { output: string; hiddenMatches: number; hiddenFiles: number } {
-  const {
-    maxPerFile = GREP_MAX_PER_FILE,
-    maxLineWidth = GREP_MAX_LINE_WIDTH,
-    pattern,
-    proxScores,
-  } = options;
-
-  // Group by file
-  const byFile = new Map<string, GrepMatch[]>();
-  for (const item of items) {
-    const existing = byFile.get(item.relativePath) || [];
-    existing.push(item);
-    byFile.set(item.relativePath, existing);
-  }
-
-  // Sort files by proximity if available
-  const sortedFiles = proxScores
-    ? [...byFile.entries()].sort((a, b) => (proxScores.get(b[0]) || 0) - (proxScores.get(a[0]) || 0))
-    : [...byFile.entries()];
-
-  const lines: string[] = [];
-  let hiddenMatches = 0;
-
-  // Format each file
-  for (const [file, matches] of sortedFiles) {
-    const prox = proxScores && (proxScores.get(file) || 0) > 0.5 ? ' ★' : '';
-    const displayPath = compactPath(file);
-    
-    // Show count if more matches than we'll display
-    const fileHidden = matches.length > maxPerFile ? matches.length - maxPerFile : 0;
-    hiddenMatches += fileHidden;
-    
-    const countSuffix = fileHidden > 0 ? ` (+${fileHidden})` : '';
-    lines.push(`${displayPath}${prox}${countSuffix}:`);
-    
-    // Show limited matches with smart line truncation
-    for (const m of matches.slice(0, maxPerFile)) {
-      const cleanedLine = cleanLine(m.lineContent, maxLineWidth, pattern);
-      lines.push(`  ${m.lineNumber}: ${cleanedLine}`);
-    }
-  }
-
-  // Calculate total hidden (matches not shown at all due to items limit)
-  const shownMatches = items.length;
-  const totalHidden = totalMatched - shownMatches + hiddenMatches;
-
-  // Header with counts
-  const header = totalHidden > 0
-    ? `${totalMatched} matches in ${totalFilesSearched} files (showing ${shownMatches - hiddenMatches}, +${totalHidden} hidden):`
-    : `${totalMatched} matches in ${totalFilesSearched} files:`;
-
-  return {
-    output: [header, '', ...lines].join('\n'),
-    hiddenMatches: totalHidden,
-    hiddenFiles: 0,
-  };
-}
-
-/**
- * Detect if output looks like grep/ripgrep output and format it.
- * Returns formatted output if detected, null otherwise.
- * 
- * Grep output patterns:
- * - file:line:content (grep -n, rg)
- * - file:line-content (grep -n with context)
- * - file-line-content (some grep variants)
- */
-function detectAndFormatGrepOutput(output: string): string | null {
-  // Normalize CRLF to LF and split
-  const lines = output.replace(/\r\n/g, '\n').trim().split('\n');
-  if (lines.length < 2) return null;
-  
-  // Pattern: file:linenum:content or file:linenum-content
-  // Handle Windows paths (D:/path) by finding :NUMBER: or :NUMBER- pattern
-  const grepPattern = /^(.+):(\d+)([:=-])(.*)$/;
-  
-  // Check if at least 60% of lines match grep pattern
-  let matches = 0;
-  const parsed: GrepMatch[] = [];
-  
-  for (const line of lines) {
-    const match = line.match(grepPattern);
-    if (match) {
-      matches++;
-      parsed.push({
-        relativePath: match[1],
-        lineNumber: parseInt(match[2], 10),
-        lineContent: match[4],
-      });
-    }
-  }
-  
-  const matchRatio = matches / lines.length;
-  if (matchRatio < 0.6 || parsed.length < 3) {
-    return null; // Not grep-like output
-  }
-  
-  // Extract search pattern from command if visible in output (heuristic)
-  // Look for commonly matched terms
-  const allContent = parsed.map(p => p.lineContent).join(' ');
-  
-  // Format using existing function
-  const totalMatched = parsed.length;
-  const { output: formatted, hiddenMatches } = formatGrepMCX(
-    parsed,
-    totalMatched,
-    new Set(parsed.map(p => p.relativePath)).size,
-    { maxPerFile: GREP_MAX_PER_FILE, maxLineWidth: GREP_MAX_LINE_WIDTH }
-  );
-  
-  return formatted;
-}
-
-// ============================================================================
-// Native Image Support
-// ============================================================================
-
-/** Marker interface for native MCP images - adapters return this for efficient image handling */
-interface McxImageContent {
-  __mcx_image__: true;
-  mimeType: string;
-  data: string; // base64
-}
-
-/** Check if a value is an MCX image marker */
-function isMcxImage(value: unknown): value is McxImageContent {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as McxImageContent).__mcx_image__ === true &&
-    typeof (value as McxImageContent).mimeType === "string" &&
-    typeof (value as McxImageContent).data === "string"
-  );
-}
-
-/** MCP image content type */
-type ImageContent = { type: "image"; mimeType: string; data: string };
-
-/** Check if value is image metadata (placeholder after extraction) */
-function isImageMetadata(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && (value as Record<string, unknown>).__image__ === true;
-}
-
-/** Extract images from result, returning remaining value and extracted images */
-function extractImages(value: unknown): { value: unknown; images: ImageContent[] } {
-  // Early return for primitives (most common case)
-  if (value === null || typeof value !== "object") {
-    return { value, images: [] };
-  }
-
-  // Direct image - replace with metadata so agent knows image was captured
-  if (isMcxImage(value)) {
-    return {
-      value: { __image__: true, mimeType: value.mimeType, size: value.data.length },
-      images: [{ type: "image", mimeType: value.mimeType, data: value.data }],
-    };
-  }
-
-  // Array - fast path if no images
-  if (Array.isArray(value)) {
-    if (!value.some(isMcxImage)) {
-      return { value, images: [] };
-    }
-    const images: ImageContent[] = [];
-    const nonImages: unknown[] = [];
-    for (const item of value) {
-      if (isMcxImage(item)) {
-        images.push({ type: "image", mimeType: item.mimeType, data: item.data });
-      } else {
-        nonImages.push(item);
-      }
-    }
-    return { value: nonImages, images };
-  }
-
-  // Object - fast path if no image properties
-  const obj = value as Record<string, unknown>;
-  let hasImage = false;
-  for (const val of Object.values(obj)) {
-    if (isMcxImage(val)) { hasImage = true; break; }
-  }
-  if (!hasImage) {
-    return { value, images: [] };
-  }
-
-  // Extract images from object properties
-  const images: ImageContent[] = [];
-  const result: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(obj)) {
-    if (isMcxImage(val)) {
-      images.push({ type: "image", mimeType: val.mimeType, data: val.data });
-      // Omit the image property entirely instead of sentinel
-    } else {
-      result[key] = val;
-    }
-  }
-  return { value: result, images };
-}
-
-/**
- * Safe JSON.stringify that handles BigInt and circular references
- */
-function safeStringify(value: unknown, indent: number = 2): string {
-  const seen = new WeakSet();
-  return JSON.stringify(value, (key, val) => {
-    // Handle BigInt
-    if (typeof val === "bigint") {
-      return val.toString() + "n";
-    }
-    // Handle circular references
-    if (typeof val === "object" && val !== null) {
-      if (seen.has(val)) {
-        return "[Circular]";
-      }
-      seen.add(val);
-    }
-    return val;
-  }, indent);
-}
-
-/**
- * Format mcx_file result compactly (Optimization #10).
- * - Array of strings → numbered lines (detects offset from slice())
- * - Long string → truncate long lines
- * - Other types → JSON
- */
-function formatFileResult(result: unknown, code: string): string {
-  const MAX_LINE_WIDTH = 120;
-  
-  // Array of strings (lines) → format with numbers
-  if (Array.isArray(result) && result.length > 0 && result.every(r => typeof r === 'string')) {
-    // Check if lines are already numbered (format "N: content")
-    const firstLine = result[0] as string;
-    const alreadyNumbered = /^\d+:\s/.test(firstLine);
-    
-    if (alreadyNumbered) {
-      // Lines already numbered - just truncate long ones
-      return result
-        .map((line: string) => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line)
-        .join('\n');
-    }
-    
-    // Lines NOT numbered - detect offset from slice() and add numbers
-    // Patterns: .slice(N), .slice(N,M), lines.slice(N)
-    const sliceMatch = code.match(/\.slice\s*\(\s*(\d+)/);
-    const offset = sliceMatch ? parseInt(sliceMatch[1], 10) : 0;
-    
-    return result
-      .map((line: string, i: number) => {
-        const numbered = `${offset + i + 1}: ${line}`;
-        return numbered.length > MAX_LINE_WIDTH ? numbered.slice(0, MAX_LINE_WIDTH - 3) + '...' : numbered;
-      })
-      .join('\n');
-  }
-  
-  // String → check for grep-like output first, then truncate lines
-  if (typeof result === 'string') {
-    const normalized = result.replace(/\r\n/g, '\n');
-    
-    // Detect and format grep-like output (file:line:content pattern)
-    const grepFormatted = detectAndFormatGrepOutput(normalized);
-    if (grepFormatted) {
-      return grepFormatted;
-    }
-    
-    // Not grep-like, apply standard line truncation
-    return normalized
-      .split('\n')
-      .map(line => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line)
-      .join('\n');
-  }
-  
-  // Other types: JSON
-  return safeStringify(result);
-}
-
-/**
- * Format tool result for readable output (Optimization #11b).
- * - String → return directly with line truncation
- * - Array of strings → join with newlines
- * - Object/Array → compact JSON
- */
-function formatToolResult(value: unknown, maxWidth: number = 120): string {
-  // Null/undefined
-  if (value === null || value === undefined) {
-    return String(value);
-  }
-  
-  // String → normalize CRLF, sanitize surrogates, truncate long lines
-  if (typeof value === 'string') {
-    return sanitizeForJson(value)
-      .replace(/\r\n/g, '\n')  // Normalize Windows line endings
-      .split('\n')
-      .map(line => line.length > maxWidth ? line.slice(0, maxWidth - 3) + '...' : line)
-      .join('\n');
-  }
-  
-  // Array of strings → join with newlines
-  if (Array.isArray(value) && value.length > 0 && value.every(v => typeof v === 'string')) {
-    return (value as string[])
-      .map(line => {
-        const clean = typeof line === 'string' ? line.replace(/\r/g, '') : String(line);
-        return clean.length > maxWidth ? clean.slice(0, maxWidth - 3) + '...' : clean;
-      })
-      .join('\n');
-  }
-  
-  // Object/Array → compact JSON (indent=2 for readability but not excessive)
-  return safeStringify(value, 2);
-}
-
-/**
- * Extract a smart snippet with window around the match (Smart Snippets feature)
- * Instead of truncating from start, finds the match and extracts context around it.
- */
-function extractSnippet(text: string, query: string, windowSize: number = 300): string {
-  const lower = text.toLowerCase();
-  // Split query into words and find first match
-  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-  
-  let matchIdx = -1;
-  let matchedWord = query;
-  
-  // Find first matching word
-  for (const word of queryWords) {
-    const idx = lower.indexOf(word);
-    if (idx !== -1 && (matchIdx === -1 || idx < matchIdx)) {
-      matchIdx = idx;
-      matchedWord = word;
-    }
-  }
-  
-  // Fallback to simple query match
-  if (matchIdx === -1) {
-    matchIdx = lower.indexOf(query.toLowerCase());
-  }
-  
-  // No match found - return from start
-  if (matchIdx === -1) {
-    return text.length <= windowSize 
-      ? text 
-      : text.slice(0, windowSize) + '...';
-  }
-  
-  // Calculate window around match
-  const halfWindow = Math.floor(windowSize / 2);
-  const start = Math.max(0, matchIdx - halfWindow);
-  const end = Math.min(text.length, matchIdx + matchedWord.length + halfWindow);
-  
-  // Extract and add ellipsis if truncated
-  const prefix = start > 0 ? '...' : '';
-  const suffix = end < text.length ? '...' : '';
-  
-  const snippet = text.slice(start, end).trim().replace(/\n{2,}/g, '\n\n').replace(/[ \t]+/g, ' ');
-  return prefix + snippet + suffix;
-}
 
 
-/**
- * Format intent search results in compact format
- * Returns ~73% fewer tokens than verbose format
- */
-function formatIntentResultsCompact(
-  results: Array<{ title: string; snippet: string }>,
-  intent: string,
-  totalSections: number,
-  totalLines: number,
-  totalKB: string,
-  sourceLabel: string,
-  terms: string[]
-): string {
-  const lines: string[] = [];
-  
-  lines.push(`Indexed ${totalSections} sections as "${sourceLabel}" (${totalLines} lines, ${totalKB}KB)`);
-  lines.push(`${results.length} matched "${intent}":`);
-  lines.push('');
-  
-  // Compact: title only (first line often duplicates title)
-  for (const r of results) {
-    lines.push(`  - ${r.title}`);
-  }
-  
-  if (terms.length > 0) {
-    lines.push('');
-    lines.push(`Terms: ${terms.slice(0, 10).join(', ')}`);
-  }
-  
-  lines.push('');
-  lines.push(`→ mcx_search({ query: "..." }) for full content`);
-  
-  return lines.join('\n');
-}
 
 
-/**
- * Enforce character limit on text output and sanitize for JSON
- */
-function enforceCharacterLimit(text: string, limit: number = CHARACTER_LIMIT): { text: string; truncated: boolean } {
-  // Sanitize first to remove lone surrogates that break JSON
-  const sanitized = sanitizeForJson(text);
-  if (sanitized.length <= limit) {
-    return { text: sanitized, truncated: false };
-  }
-  const truncatedText = sanitized.slice(0, limit) + `\n\n... [Response truncated at ${limit} chars, original was ${sanitized.length}]`;
-  return { text: truncatedText, truncated: true };
-}
+// MAX_PARAMS_*, MAX_DESC_LENGTH imported from tools/constants.js
 
-/** Threshold for raw data warning */
-const RAW_DATA_THRESHOLD = 10000;
 
-/**
- * Detect if result looks like unfiltered raw data that should be processed
- * Returns warning message if raw data detected, null otherwise
- */
-function detectRawData(value: unknown, serializedLength: number): string | null {
-  if (serializedLength < RAW_DATA_THRESHOLD) return null;
-  
-  // Array with many objects (likely API response)
-  if (Array.isArray(value) && value.length > 20) {
-    const firstItem = value[0];
-    if (firstItem && typeof firstItem === 'object') {
-      const keys = Object.keys(firstItem);
-      
-      // Detect common patterns and suggest contextual templates
-      const hasId = keys.some(k => k.toLowerCase().includes('id'));
-      const hasName = keys.some(k => k.toLowerCase().includes('name') || k.toLowerCase().includes('title'));
-      const hasStatus = keys.some(k => k.toLowerCase().includes('status') || k.toLowerCase().includes('state'));
-      const hasDate = keys.some(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('created') || k.toLowerCase().includes('updated'));
-      const hasAmount = keys.some(k => k.toLowerCase().includes('amount') || k.toLowerCase().includes('price') || k.toLowerCase().includes('total'));
-      
-      const suggestions: string[] = [];
-      
-      // Build contextual suggestions based on detected fields
-      if (hasId && hasName) {
-        suggestions.push(`pick($result, ['${keys.find(k => k.toLowerCase().includes('id'))}', '${keys.find(k => k.toLowerCase().includes('name') || k.toLowerCase().includes('title'))}'])`);
-      }
-      if (hasStatus) {
-        const statusKey = keys.find(k => k.toLowerCase().includes('status') || k.toLowerCase().includes('state'));
-        suggestions.push(`count($result, '${statusKey}')`);
-      }
-      if (hasAmount) {
-        const amountKey = keys.find(k => k.toLowerCase().includes('amount') || k.toLowerCase().includes('price') || k.toLowerCase().includes('total'));
-        suggestions.push(`sum($result, '${amountKey}')`);
-      }
-      if (hasDate) {
-        suggestions.push(`first($result.sort((a,b) => new Date(b.${keys.find(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('created'))}) - new Date(a.${keys.find(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('created'))})), 10)`);
-      }
-      
-      if (suggestions.length === 0) {
-        suggestions.push(`pick($result, ['${keys.slice(0, 2).join("', '")}'])`);
-        suggestions.push('first($result, 10)');
-      }
-      
-      return `⚠️ Large array (${value.length} items, ${Math.round(serializedLength/1024)}KB). Try:\n` +
-             suggestions.slice(0, 3).map(s => `   • ${s}`).join('\n');
-    }
-  }
-  
-  // Large object with many keys
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const keys = Object.keys(value);
-    if (keys.length > 20) {
-      return `⚠️ Large object (${keys.length} keys, ${Math.round(serializedLength/1024)}KB). Try:\n` +
-             `   • $result.${keys[0]} — access specific key\n` +
-             `   • pick($result, ['${keys.slice(0, 3).join("', '")}'])`;
-    }
-  }
-  
-  return null;
-}
+
+
+
 
 /**
  * Check brace balance in code content
- * Returns 0 if balanced, positive if too many opening, negative if too many closing
- * 
- * Ignores braces inside:
- * - Strings: "...", '...', `...`
- * - Regex: /.../ (heuristic: / after operator or at line start)
- * - Comments: // and block comments
- */
-function checkBraceBalance(content: string): number {
-  let balance = 0;
-  let inString = false;
-  let stringChar = '';
-  let inRegex = false;
-  let inLineComment = false;
-  let inBlockComment = false;
-  let escaped = false;
-  
-  for (let i = 0; i < content.length; i++) {
-    const char = content[i];
-    const next = content[i + 1];
-    
-    // Handle newlines - reset line comment
-    if (char === '\n') {
-      inLineComment = false;
-      continue;
-    }
-    
-    // Skip line comments
-    if (inLineComment) continue;
-    
-    // Handle block comments
-    if (inBlockComment) {
-      if (char === '*' && next === '/') {
-        inBlockComment = false;
-        i++; // skip /
-      }
-      continue;
-    }
-    
-    // Detect comment start
-    if (char === '/' && next === '/') {
-      inLineComment = true;
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      inBlockComment = true;
-      i++; // skip *
-      continue;
-    }
-    
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    
-    if (char === '\\') {
-      escaped = true;
-      continue;
-    }
-    
-    // Handle strings
-    if (inString) {
-      if (char === stringChar) {
-        inString = false;
-      }
-      continue;
-    }
-    
-    // Handle regex
-    if (inRegex) {
-      if (char === '/') {
-        inRegex = false;
-      }
-      continue;
-    }
-    
-    if (char === '"' || char === "'" || char === '`') {
-      inString = true;
-      stringChar = char;
-      continue;
-    }
-    
-    // Detect regex start (heuristic: / after operator, paren, or at line start)
-    if (char === '/') {
-      const prevNonSpace = content.slice(0, i).trimEnd().slice(-1);
-      if (!prevNonSpace || /[=(:,;\[{!&|?]/.test(prevNonSpace)) {
-        inRegex = true;
-        continue;
-      }
-    }
-    
-    if (char === '{') balance++;
-    if (char === '}') balance--;
-  }
-  
-  return balance;
-}
 
-/** Enforce shell command redirects to MCX tools. Returns error response or null. */
-function enforceShellRedirects(cmd: string): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
-  // File operations → mcx_file
-  // Match path: has extension (.ts), or path separator (/), or starts with ./
-  const fileMatch = cmd.match(/\b(cat|head|tail|sed|awk|wc)\b.*?(["']?)([^\s|>"']*[\.\/\\][^\s|>"']+)\2/);
-  if (fileMatch) {
-    const filePath = fileMatch[3];
-    const varName = filePath.split(/[\/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'f';
-    return blockedResponse(`Must use mcx_file for file operations\n💡 mcx_file({ path: "${filePath}", storeAs: "${varName}" }), then grep($${varName}, 'pattern')`);
-  }
-  
-  // grep/rg → mcx_grep
-  if (/\b(grep|rg)\s+/.test(cmd)) {
-    return blockedResponse(`Must use mcx_grep instead\n💡 mcx_grep({ pattern: "...", path: "..." })`);
-  }
-  
-  // find → mcx_find
-  const findMatch = cmd.match(/\bfind\s+["']?([^\s|>"']*)/);
-  if (findMatch) {
-    return blockedResponse(`Must use mcx_find instead\n💡 mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
-  }
-  
-  // curl/wget → mcx_fetch
-  const curlMatch = cmd.match(/\b(curl|wget)\s+.*?(https?:\/\/[^\s"']+)/);
-  if (curlMatch) {
-    const url = curlMatch[2];
-    return blockedResponse(`Must use mcx_fetch instead\n💡 mcx_fetch({ url: "${url}" })`);
-  }
-  
-  return null;
-}
-
-/** Enforce Python code redirects to MCX tools. Returns error response or null. */
-function enforcePythonRedirects(code: string): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
-  // File reading operations → mcx_file
-  if (/\b(open\s*\(|with\s+open|Path\s*\(|pd\.read_\w+|pandas\.read_\w+)/.test(code)) {
-    return blockedResponse(`Must use mcx_file for file reading\n💡 mcx_file({ path: "...", language: "python", code: "..." })`);
-  }
-  return null;
-}
 
 /**
  * Find duplicate lines within new content being added.
@@ -1314,104 +382,20 @@ function findDuplicatesInNewString(newString: string): string[] {
   return duplicates;
 }
 
-interface TruncateOptions {
-  enabled: boolean;
-  maxItems: number;
-  maxStringLength: number;
-}
+// TruncateOptions imported from utils/truncate
 
 /** Format "Stored as $name" message consistently */
 function formatStoredAs(name: string | undefined, suffix = ''): string {
   return name ? `Stored as $${name}${suffix}` : '';
 }
 
-/** Generate rich metadata about a stored value */
-function getValueMetadata(value: unknown): { type: string; count?: number; keys?: string[]; sample?: unknown } {
-  if (value === null) return { type: 'null' };
-  if (value === undefined) return { type: 'undefined' };
 
-  const type = Array.isArray(value) ? 'array' : typeof value;
 
-  if (Array.isArray(value)) {
-    const sample = value.length > 0 ? value[0] : undefined;
-    const sampleKeys = sample && typeof sample === 'object' && sample !== null
-      ? Object.keys(sample).slice(0, 10)
-      : undefined;
-    return { type: 'array', count: value.length, keys: sampleKeys, sample: sampleKeys ? undefined : sample };
-  }
+// SummarizedResult imported from utils/truncate
 
-  if (type === 'object' && value !== null) {
-    const keys = Object.keys(value as object).slice(0, 20);
-    return { type: 'object', count: keys.length, keys };
-  }
+// summarizeResult imported from utils/truncate
 
-  return { type };
-}
-
-/** Format metadata as readable string */
-function formatMetadata(meta: ReturnType<typeof getValueMetadata>): string {
-  if (meta.type === 'array') {
-    const keysStr = meta.keys ? ` [${meta.keys.join(', ')}]` : '';
-    return `array(${meta.count})${keysStr}`;
-  }
-  if (meta.type === 'object') {
-    return `object{${meta.keys?.join(', ')}}`;
-  }
-  return meta.type;
-}
-
-interface SummarizedResult {
-  value: unknown;
-  truncated: boolean;
-  originalSize?: string;
-  rawBytes: number;  // Size before truncation for token tracking
-}
-
-function summarizeResult(value: unknown, opts: TruncateOptions): SummarizedResult {
-  // Calculate raw size before any truncation
-  const rawBytes = JSON.stringify(value).length;
-  
-  if (!opts.enabled) {
-    return { value, truncated: false, rawBytes };
-  }
-
-  if (value === undefined || value === null) {
-    return { value, truncated: false, rawBytes };
-  }
-
-  // Create a shared seen set for circular reference detection
-  const seen = new WeakSet<object>();
-
-  if (Array.isArray(value)) {
-    if (value.length > opts.maxItems) {
-      return {
-        value: value.slice(0, opts.maxItems).map(v => summarizeObject(v, opts, 0, seen)),
-        truncated: true,
-        originalSize: `${value.length} items, showing first ${opts.maxItems}`,
-        rawBytes,
-      };
-    }
-    return { value: value.map(v => summarizeObject(v, opts, 0, seen)), truncated: false, rawBytes };
-  }
-
-  if (typeof value === "object") {
-    return { value: summarizeObject(value, opts, 0, seen), truncated: false, rawBytes };
-  }
-
-  if (typeof value === "string" && value.length > opts.maxStringLength) {
-    return {
-      value: `${value.slice(0, opts.maxStringLength)}... [${value.length} chars]`,
-      truncated: true,
-      originalSize: `${value.length} chars`,
-      rawBytes,
-    };
-  }
-
-  return { value, truncated: false, rawBytes };
-}
-
-/** Max recursion depth to prevent stack overflow on deeply nested objects */
-const MAX_SUMMARIZE_DEPTH = 10;
+// MAX_SUMMARIZE_DEPTH in utils/truncate
 
 /** Map MCX parameter types to TypeScript types */
 function mapMcxType(type: string | undefined): string {
@@ -1468,47 +452,7 @@ function getExampleValue(paramName: string, paramType: string, schemaExample?: u
   }
 }
 
-function summarizeObject(obj: unknown, opts: TruncateOptions, depth: number = 0, seen: WeakSet<object> = new WeakSet()): unknown {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj !== "object") {
-    if (typeof obj === "string" && obj.length > opts.maxStringLength) {
-      return `${obj.slice(0, opts.maxStringLength)}... [${obj.length} chars]`;
-    }
-    return obj;
-  }
-
-  // Guard against circular references
-  if (seen.has(obj as object)) {
-    return "[Circular]";
-  }
-  seen.add(obj as object);
-
-  // Guard against deep nesting
-  if (depth >= MAX_SUMMARIZE_DEPTH) {
-    return "[Max depth exceeded]";
-  }
-
-  if (Array.isArray(obj)) {
-    if (obj.length > opts.maxItems) {
-      return [...obj.slice(0, opts.maxItems).map(v => summarizeObject(v, opts, depth + 1, seen)), `... +${obj.length - opts.maxItems} more`];
-    }
-    return obj.map(v => summarizeObject(v, opts, depth + 1, seen));
-  }
-
-  const result: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
-    if (Array.isArray(val) && val.length > opts.maxItems) {
-      result[key] = [...val.slice(0, opts.maxItems).map(v => summarizeObject(v, opts, depth + 1, seen)), `... +${val.length - opts.maxItems} more`];
-    } else if (typeof val === "string" && val.length > opts.maxStringLength) {
-      result[key] = `${val.slice(0, opts.maxStringLength)}... [${val.length} chars]`;
-    } else if (typeof val === "object" && val !== null) {
-      result[key] = summarizeObject(val, opts, depth + 1, seen);
-    } else {
-      result[key] = val;
-    }
-  }
-  return result;
-}
+// summarizeObject is internal to utils/truncate
 
 // ============================================================================
 // Config & Skills Loading (using Bun native APIs)
@@ -1601,40 +545,73 @@ function toCamelCase(str: string): string {
 /** Cache of fully loaded adapters (loaded on first use) */
 const loadedAdapters = new Map<string, Adapter>();
 
+// Types for lazy adapter metadata
+type ParamDef = { type: string; description?: string; required?: boolean };
+type MethodMeta = { name: string; description?: string; params?: Record<string, ParamDef> };
+
+/** Parse single param: { type: "string", required?: bool, description?: "..." } */
+function parseParam(block: string): ParamDef {
+  const type = block.match(/type:\s*["'](\w+)["']/)?.[1] || "string";
+  const required = /required:\s*true/.test(block);
+  const desc = block.match(/description:\s*["']([^"']+)["']/)?.[1];
+  return { type, required, description: desc };
+}
+
+/** Parse parameters block - handles nested braces */
+function parseParamsBlock(content: string, start: number): Record<string, ParamDef> | undefined {
+  const params: Record<string, ParamDef> = {};
+  let depth = 0, blockStart = -1, paramName = "";
+  
+  for (let i = start; i < content.length; i++) {
+    const char = content[i];
+    
+    if (char === "{") { depth++; if (depth === 2) blockStart = i; continue; }
+    if (char === "}") {
+      depth--;
+      if (depth === 1 && blockStart > 0) { params[paramName] = parseParam(content.slice(blockStart, i + 1)); blockStart = -1; }
+      if (depth === 0) break;
+      continue;
+    }
+    if (depth !== 1) continue;
+    
+    const nameMatch = content.slice(i).match(/^(\w+)\s*:/);
+    if (nameMatch) { paramName = nameMatch[1]; i += nameMatch[0].length - 1; }
+  }
+  return Object.keys(params).length > 0 ? params : undefined;
+}
+
+/** Extract method metadata from tools block */
+function extractMethods(content: string): MethodMeta[] {
+  const methods: MethodMeta[] = [];
+  const toolsMatch = content.match(/tools:\s*\{/);
+  if (!toolsMatch) return methods;
+  
+  // Find each method: name: { description: "...", ... }
+  const methodRegex = /(\w+):\s*\{\s*description:\s*["']([^"']+)["']/g;
+  for (const m of content.matchAll(methodRegex)) {
+    const paramsIdx = content.indexOf("parameters:", m.index!);
+    const nextMethod = content.indexOf("\n    }", m.index! + 1);
+    const hasParams = paramsIdx > 0 && paramsIdx < nextMethod;
+    const params = hasParams ? parseParamsBlock(content, paramsIdx + 11) : undefined;
+    methods.push({ name: m[1], description: m[2], params });
+  }
+  return methods;
+}
+
 /**
  * Extract adapter metadata without fully loading the module.
- * Reads the file and parses basic info using regex (fast).
  */
-async function extractAdapterMetadata(filePath: string): Promise<{ name: string; description?: string; domain?: string; methods: string[] } | null> {
+async function extractAdapterMetadata(filePath: string): Promise<{ name: string; description?: string; domain?: string; methods: MethodMeta[] } | null> {
   try {
     const content = await Bun.file(filePath).text();
 
-    // Extract name from defineAdapter({ name: '...' })
     const nameMatch = content.match(/name:\s*['"]([^'"]+)['"]/);
     if (!nameMatch) return null;
 
-    const name = nameMatch[1];
-
-    // Extract description
     const descMatch = content.match(/description:\s*['"]([^'"]+)['"]/);
-    const description = descMatch?.[1];
-
-    // Extract domain if present
     const domainMatch = content.match(/domain:\s*['"]([^'"]+)['"]/);
-    const domain = domainMatch?.[1];
-
-    // Extract method names from tools: { methodName: { ... } }
-    const methods: string[] = [];
-    const toolsMatch = content.match(/tools:\s*\{([\s\S]*?)\n\s*\}/);
-    if (toolsMatch) {
-      // Match method definitions: methodName: { or 'method-name': {
-      const methodMatches = toolsMatch[1].matchAll(/^\s+['"]?([a-zA-Z_][a-zA-Z0-9_]*(?:-[a-zA-Z0-9_]+)*)['"]?\s*:\s*\{/gm);
-      for (const match of methodMatches) {
-        methods.push(match[1]);
-      }
-    }
-
-    return { name, description, domain, methods };
+    const methods = extractMethods(content);
+    return { name: nameMatch[1], description: descMatch?.[1], domain: domainMatch?.[1], methods };
   } catch {
     return null;
   }
@@ -1643,12 +620,13 @@ async function extractAdapterMetadata(filePath: string): Promise<{ name: string;
 /**
  * Create a lazy adapter stub that loads the full adapter on first method call.
  */
-function createLazyAdapter(metadata: { name: string; description?: string; domain?: string; methods: string[] }, filePath: string): Adapter {
+function createLazyAdapter(metadata: { name: string; description?: string; domain?: string; methods: MethodMeta[] }, filePath: string): Adapter {
   const lazyTools: Record<string, AdapterMethod> = {};
 
-  for (const methodName of metadata.methods) {
-    lazyTools[methodName] = {
-      description: `[Lazy] Method from ${metadata.name}`,
+  for (const method of metadata.methods) {
+    lazyTools[method.name] = {
+      description: method.description || `[Lazy] Method from ${metadata.name}`,
+      parameters: method.params,
       execute: async (params: unknown) => {
         // Load full adapter on first call
         let fullAdapter = loadedAdapters.get(metadata.name);
@@ -1661,11 +639,11 @@ function createLazyAdapter(metadata: { name: string; description?: string; domai
           }
         }
 
-        if (!fullAdapter?.tools[methodName]) {
-          throw new Error(`Method ${methodName} not found in ${metadata.name}`);
+        if (!fullAdapter?.tools[method.name]) {
+          throw new Error(`Method ${method.name} not found in ${metadata.name}`);
         }
 
-        return fullAdapter.tools[methodName].execute(params);
+        return fullAdapter.tools[method.name].execute(params);
       },
     };
   }
@@ -1723,36 +701,7 @@ async function loadAdaptersFromDir(): Promise<Adapter[]> {
 }
 
 /**
- * Levenshtein distance for fuzzy parameter name matching
- */
-function levenshtein(a: string, b: string): number {
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
-  const matrix: number[][] = [];
-  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
-  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      matrix[i][j] = b[i - 1] === a[j - 1]
-        ? matrix[i - 1][j - 1]
-        : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
-    }
-  }
-  return matrix[b.length][a.length];
-}
 
-/**
- * Find similar parameter names using fuzzy matching
- */
-function findSimilarParams(name: string, validParams: string[], maxDist = 3): string[] {
-  const normalized = name.toLowerCase().replace(/[-_]/g, '');
-  return validParams
-    .map(p => ({ param: p, dist: levenshtein(normalized, p.toLowerCase().replace(/[-_]/g, '')) }))
-    .filter(x => x.dist <= maxDist && x.dist > 0)
-    .sort((a, b) => a.dist - b.dist)
-    .slice(0, 2)
-    .map(x => x.param);
-}
 
 /**
  * Generate a readable signature from parameter definitions
@@ -1931,9 +880,13 @@ async function createMcxServer(fffSearchPath?: string) {
   // Merge adapters: config adapters take precedence over lazy adapters (by name)
   const configNames = new Set(configAdapters.map(a => a.name));
   const filteredLazyAdapters = lazyAdapters.filter(a => !configNames.has(a.name));
+  const skippedCount = lazyAdapters.length - filteredLazyAdapters.length;
   const adapters = [...configAdapters, ...filteredLazyAdapters];
 
-  console.error(pc.dim(`Loaded ${configAdapters.length} config + ${filteredLazyAdapters.length} lazy adapter(s), ${skills.size} skill(s)`));
+  // Clear message about what loaded
+  const parts = [`${configAdapters.length} config`, `${filteredLazyAdapters.length} lazy`];
+  if (skippedCount > 0) parts.push(`${skippedCount} skipped (in config)`);
+  console.error(pc.dim(`Loaded ${parts.join(' + ')} adapter(s), ${skills.size} skill(s)`));
   return createMcxServerCore(config, adapters, skills, fffSearchPath);
 }
 
@@ -1960,139 +913,7 @@ async function createMcxServerCore(
     allowAsync: true,
   });
 
-  // File helpers code to prepend to user code (functions can't be passed via postMessage)
-  const FILE_HELPERS_CODE = `
-const isNumbered = (lines) => lines.length > 0 && /^\\d+:\\s/.test(lines[0]);
-const around = (stored, line, ctx = 10) => {
-  const start = Math.max(0, line - ctx - 1);
-  const end = Math.min(stored.lines.length, line + ctx);
-  const slice = stored.lines.slice(start, end);
-  if (isNumbered(stored.lines)) return slice.join('\\n');
-  return slice.map((l, i) => (start + i + 1) + ':\\t' + l).join('\\n');
-};
-const lines = (stored, start, end) => {
-  const slice = stored.lines.slice(start - 1, end);
-  if (isNumbered(stored.lines)) return slice.join('\\n');
-  return slice.map((l, i) => (start + i) + ':\\t' + l).join('\\n');
-};
-const block = (stored, line) => {
-  const lns = stored.lines;
-  let blockStart = line - 1, blockEnd = line - 1, braceCount = 0;
-  for (let i = line - 1; i >= 0; i--) {
-    if (lns[i].includes('{')) braceCount++;
-    if (lns[i].includes('}')) braceCount--;
-    if (braceCount > 0 || /^(\\d+:\\s*)?(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/.test(lns[i])) {
-      blockStart = i; break;
-    }
-  }
-  braceCount = 0;
-  for (let i = blockStart; i < lns.length; i++) {
-    for (const ch of lns[i]) { if (ch === '{') braceCount++; if (ch === '}') braceCount--; }
-    blockEnd = i;
-    if (braceCount <= 0 && i > blockStart) break;
-  }
-  const slice = lns.slice(blockStart, blockEnd + 1);
-  if (isNumbered(lns)) return slice.join('\\n');
-  return slice.map((l, i) => (blockStart + i + 1) + ':\\t' + l).join('\\n');
-};
-const grep = (stored, pattern) => {
-  const re = new RegExp(pattern, 'gi');
-  const matches = stored.lines.map((l, i) => [l, i]).filter(([l]) => re.test(l));
-  if (matches.length === 0) return "No matches for '" + pattern + "'";
-  if (isNumbered(stored.lines)) return matches.map(([l]) => l).join('\\n');
-  return matches.map(([l, i]) => (i + 1) + ':\\t' + l).join('\\n');
-};
-const outline = (stored) => {
-  const pat = isNumbered(stored.lines) 
-    ? /^\\d+:\\s*(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/
-    : /^(export\\s+)?(async\\s+)?(function|class|const|interface|type)\\s+\\w+/;
-  const matches = stored.lines.map((l, i) => [l, i]).filter(([l]) => pat.test(l));
-  if (isNumbered(stored.lines)) return matches.map(([l]) => l).join('\\n');
-  return matches.map(([l, i]) => (i + 1) + ':\\t' + l).join('\\n');
-};
-const head = (stored, n = 20) => {
-  const slice = stored.lines.slice(0, n);
-  if (isNumbered(stored.lines)) return slice.join('\\n');
-  return slice.map((l, i) => (i + 1) + ':\\t' + l).join('\\n');
-};
-const tail = (stored, n = 20) => {
-  const total = stored.lines.length;
-  const start = Math.max(0, total - n);
-  const slice = stored.lines.slice(start);
-  if (isNumbered(stored.lines)) return slice.join('\\n');
-  return slice.map((l, i) => (start + i + 1) + ':\\t' + l).join('\\n');
-};
-const grepContext = (stored, pattern, ctx = 5) => {
-  const re = new RegExp(pattern, 'gi');
-  const lns = stored.lines;
-  const matchIndices = lns.map((l, i) => re.test(l) ? i : -1).filter(i => i >= 0);
-  if (matchIndices.length === 0) return 'No matches';
-  const ranges = [];
-  for (const idx of matchIndices) {
-    const start = Math.max(0, idx - ctx);
-    const end = Math.min(lns.length - 1, idx + ctx);
-    if (ranges.length > 0 && ranges[ranges.length - 1].end >= start - 1) {
-      ranges[ranges.length - 1].end = end;
-    } else {
-      ranges.push({ start, end, match: idx });
-    }
-  }
-  const output = [];
-  for (const r of ranges) {
-    const slice = lns.slice(r.start, r.end + 1);
-    if (isNumbered(lns)) {
-      output.push(slice.join('\\n'));
-    } else {
-      output.push(slice.map((l, i) => (r.start + i + 1) + ':\\t' + l).join('\\n'));
-    }
-  }
-  return output.join('\\n---\\n');
-};
-// JSON helpers (for parsed objects with __raw)
-const keys = (obj) => Object.keys(obj).filter(k => k !== '__raw');
-const values = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => k !== '__raw'));
-const pick = (obj, ks) => Object.fromEntries(ks.map(k => [k, obj[k]]));
-const paths = (obj, prefix = '', _depth = 0) => {
-  if (_depth > 5) return [];
-  const result = [];
-  for (const [k, v] of Object.entries(obj)) {
-    if (k === '__raw') continue;
-    const path = prefix ? prefix + '.' + k : k;
-    result.push(path);
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      result.push(...paths(v, path, _depth + 1));
-    }
-  }
-  if (_depth > 0) return result;
-  return result.slice(0, 50).join('\\n') + (result.length > 50 ? '\\n... +' + (result.length - 50) : '');
-};
-const tree = (obj, depth = 2, indent = '') => {
-  if (obj === null) return indent + 'null';
-  if (obj === undefined) return indent + 'undefined';
-  const type = typeof obj;
-  if (type === 'string') return indent + 'string (' + obj.length + ' chars)' + (obj.length <= 50 ? ': "' + obj + '"' : '');
-  if (type === 'number' || type === 'boolean') return indent + type + ': ' + obj;
-  if (Array.isArray(obj)) {
-    let out = indent + 'array (' + obj.length + ' items)';
-    if (depth > 0 && obj.length > 0) {
-      const sample = obj.slice(0, 3);
-      sample.forEach((item, i) => { out += '\\n' + tree(item, depth - 1, indent + '  [' + i + '] '); });
-      if (obj.length > 3) out += '\\n' + indent + '  ... +' + (obj.length - 3) + ' more';
-    }
-    return out;
-  }
-  if (type === 'object') {
-    const entries = Object.entries(obj).filter(([k]) => k !== '__raw');
-    let out = indent + 'object (' + entries.length + ' keys)';
-    if (depth > 0) {
-      entries.slice(0, 10).forEach(([k, v]) => { out += '\\n' + tree(v, depth - 1, indent + '  ' + k + ': ').replace(indent + '  ' + k + ': ' + indent, indent + '  ' + k + ': '); });
-      if (entries.length > 10) out += '\\n' + indent + '  ... +' + (entries.length - 10) + ' more keys';
-    }
-    return out;
-  }
-  return indent + type;
-};
-`;
+
   const FILE_HELPERS_LINE_COUNT = FILE_HELPERS_CODE.split('\n').length;
   
   // Filter out lint warnings from prepended helpers (lines in helper code, not user code)
@@ -2118,25 +939,7 @@ const tree = (obj, depth = 2, indent = '') => {
   // Cache spec for mcx_search Mode 1 (adapters don't change after startup)
   const cachedSpec = loadSpecsFromAdapters(adapters);
 
-  // Search throttling state
-  let searchCallCount = 0;
-  let searchWindowStart = Date.now();
-
-  function checkAndConsumeThrottle(): { calls: number; blocked: boolean; reducedLimit: boolean } {
-    const now = Date.now();
-    if (now - searchWindowStart > THROTTLE_WINDOW_MS) {
-      searchCallCount = 0;
-      searchWindowStart = now;
-    }
-    searchCallCount++;
-    return {
-      calls: searchCallCount,
-      blocked: searchCallCount > BLOCK_AFTER,
-      reducedLimit: searchCallCount > THROTTLE_AFTER,
-    };
-  }
-
-  // Execution counter (instance-scoped like searchCallCount)
+  // Execution counter
   let executionCounter = 0;
 
   // I/O tracking (FS reads + network)
@@ -2216,41 +1019,12 @@ const tree = (obj, depth = 2, indent = '') => {
     return `exec_${executionCounter}`;
   }
 
-  // Method frecency tracker - counts adapter.method usage for search ranking
-  const methodUsage = new Map<string, number>();
-  const METHOD_USAGE_CAP = 500; // Prevent unbounded growth in long sessions
-  const METHOD_PATTERN = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
-  const adapterNamesCache = new Set(Object.keys(adapterContext || {}));
-  let fileFinder: FileFinder | null = null; // Forward declaration for trackMethodUsage
+  let fileFinder: FileFinder | null = null;
   
   // Multi-project watching: Map of project path -> FileFinder instance
   const watchedProjects = new Map<string, FileFinder>();
 
-  function trackMethodUsage(code: string): void {
-    METHOD_PATTERN.lastIndex = 0; // Reset regex state
-    let match;
-    while ((match = METHOD_PATTERN.exec(code)) !== null) {
-      const [, adapterName, methodName] = match;
-      if (adapterNamesCache.has(adapterName)) {
-        const key = `${adapterName}.${methodName}`;
-        methodUsage.set(key, (methodUsage.get(key) || 0) + 1);
-        // Persist to FFF frecency DB for cross-session tracking
-        if (fileFinder) {
-          try { fileFinder.trackQuery(key); } catch { /* ignore */ }
-        }
-        // Evict least-used entry if over cap
-        if (methodUsage.size > METHOD_USAGE_CAP) {
-          let minKey = '', minVal = Infinity;
-          for (const [k, v] of methodUsage) { if (v < minVal) { minKey = k; minVal = v; } }
-          if (minKey) methodUsage.delete(minKey);
-        }
-      }
-    }
-  }
 
-  function getMethodFrecency(adapterName: string, methodName: string): number {
-    return methodUsage.get(`${adapterName}.${methodName}`) || 0;
-  }
 
   // Background task registry
   interface BackgroundTask {
@@ -2263,9 +1037,9 @@ const tree = (obj, depth = 2, indent = '') => {
     error?: string;
     logs: string[];
   }
-  const backgroundTasks = new Map<string, BackgroundTask>();
+  let backgroundTasks: Map<string, BackgroundTask>;
   let taskIdCounter = 0;
-  const MAX_BACKGROUND_TASKS = 20;
+  // MAX_BACKGROUND_TASKS imported from tools/constants.js
 
   /** Format task duration consistently */
   function formatTaskDuration(task: BackgroundTask, compact = false): string {
@@ -2476,18 +1250,15 @@ const tree = (obj, depth = 2, indent = '') => {
   }) as typeof server.registerTool;
 
   // Register all extracted tools via centralized registration
-  const toolContext: ToolContext = {
-    contentStore: getContentStore(),
-    sandbox,
-    finder: null, // Lazy initialized via withFinder
-    spec: cachedSpec,
-    variables: { stored: getSandboxState(), lastResult: undefined },
-    workflow: { lastTools: [], proximityContext: { recentFiles: [], recentPatterns: [] } },
-    watchedProjects: new Map(),
-    backgroundTasks,
+  const toolContext = await createToolContext({
     basePath: fffBasePath,
-    fileHelpersCode: FILE_HELPERS_CODE,
-  };
+    spec: cachedSpec,
+    sandbox,
+    cleanupOnStart: false, // Already cleaned up above
+    adapterContext,
+  });
+  // Use backgroundTasks from toolContext (ONE source of truth)
+  backgroundTasks = toolContext.backgroundTasks;
   
   registerExtractedTools({
     server,
@@ -2512,7 +1283,6 @@ const tree = (obj, depth = 2, indent = '') => {
 // ============================================================================
 
 async function runStdio(fffSearchPath?: string) {
-  console.error(pc.dim(`[MCX] cwd: ${process.cwd()}`));
 
   // Load global ~/.mcx/.env
   await loadEnvFile();
@@ -2554,7 +1324,6 @@ async function runStdio(fffSearchPath?: string) {
 }
 
 async function runHttp(port: number, fffSearchPath?: string) {
-  console.error(pc.dim(`[MCX] cwd: ${process.cwd()}`));
 
   // Load global ~/.mcx/.env
   await loadEnvFile();
@@ -2602,7 +1371,7 @@ async function runHttp(port: number, fffSearchPath?: string) {
           // SECURITY: Maximum response body size (defense-in-depth)
           // Tool handlers already enforce CHARACTER_LIMIT, but this prevents
           // unbounded memory growth in edge cases
-          const MAX_RESPONSE_BODY = 100000; // 100KB
+          // MAX_RESPONSE_BODY imported from tools/constants.js
 
           // Per-request response mock (stateless JSON response mode)
           const mockRes = {
@@ -2668,9 +1437,6 @@ export interface ServeOptions {
 }
 
 export async function serveCommand(options: ServeOptions = {}): Promise<void> {
-  // Save original cwd BEFORE any changes - this is where FFF should search
-  const originalCwd = process.cwd();
-  
   // If cwd is explicitly provided, use it (backward compatible)
   if (options.cwd) {
     // Check if it's a project-local config
@@ -2683,17 +1449,15 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
       console.error(pc.dim(`[MCX] Using cwd: ${options.cwd}`));
     }
   } else {
-    // Default: use global ~/.mcx/ directory for config/adapters
-    // but keep original cwd for FFF file search
+    // Default: use global ~/.mcx/ directory for config, adapters, and FFF
     const mcxHome = ensureMcxHomeDir();
     console.error(pc.dim(`[MCX] Config from: ${mcxHome}`));
-    console.error(pc.dim(`[MCX] FFF search in: ${originalCwd}`));
     process.chdir(mcxHome);
   }
 
   if (options.transport === "http") {
-    await runHttp(options.port || 3100, originalCwd);
+    await runHttp(options.port || 3100);
   } else {
-    await runStdio(originalCwd);
+    await runStdio();
   }
 }
