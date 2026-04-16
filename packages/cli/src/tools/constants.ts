@@ -114,6 +114,9 @@ export const MAP_TTL_MS = 30 * 60 * 1000;
 /** Max entries in tracking maps */
 export const MAP_MAX_ENTRIES = 500;
 
+/** Run cleanup every N tool calls */
+export const CLEANUP_INTERVAL = 50;
+
 // ============================================================================
 // Adapter Method Display
 // ============================================================================
@@ -133,6 +136,9 @@ export const MAX_DESC_LENGTH = 80;
 
 /** Max concurrent background tasks */
 export const MAX_BACKGROUND_TASKS = 20;
+
+/** Background task TTL in milliseconds (30 min) */
+export const TASK_TTL_MS = 30 * 60 * 1000;
 
 /** Max response body size for fetch (100KB) */
 export const MAX_RESPONSE_BODY = 100_000;

@@ -5,7 +5,7 @@
  * This is the ONLY tool for file operations. Shell/Python file ops redirect here.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, basename, resolve } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { normalizePath } from "../utils/paths.js";
@@ -14,8 +14,8 @@ import { FILE_HELPERS_CODE } from "../context/create.js";
 import { formatFileResult, formatStored } from "../utils/truncate.js";
 import { updateProximityContext, trackFsBytes } from "../context/tracking.js";
 import { errorTips, eventTips } from "../context/tips.js";
-import { getSandboxState } from "../sandbox/index.js";
-import { getEditTime } from "./edit.js";
+import { getVariable, setFileVariable, getAllPrefixed, getFileVarByPath, getPathByFileVar, clearFileVariables } from "../context/variables.js";
+import { getStoredAt, getEditedAt, recordStore } from "../context/files.js";
 import { FILE_INDEX_THRESHOLD } from "./constants.js";
 
 // ============================================================================
@@ -24,19 +24,47 @@ import { FILE_INDEX_THRESHOLD } from "./constants.js";
 
 export interface FileParams {
   path?: string;     // Optional if variable already exists
-  storeAs: string;   // Required - variable name
+  storeAs?: string;  // Required unless clear: true
   code?: string;     // Optional JS code with helpers
+  clear?: boolean;   // Clear all file variables
 }
 
 // ============================================================================
 // Main Handler
 // ============================================================================
 
+/**
+ * Check if file needs reload (stale detection).
+ * Checks both MCX internal edits and external filesystem changes.
+ */
+async function isFileStale(path: string): Promise<boolean> {
+  const storeTime = getStoredAt(path);
+  if (!storeTime) return false;
+  
+  // Check MCX internal edits
+  const editTime = getEditedAt(path);
+  if (editTime && editTime > storeTime) return true;
+  
+  // Check external edits via filesystem mtime
+  try {
+    const fileStat = await stat(path);
+    return fileStat.mtimeMs > storeTime;
+  } catch {
+    return false;
+  }
+}
+
 async function handleFile(
   ctx: ToolContext,
   params: FileParams
 ): Promise<McpResult> {
-  const { path: pathInput, storeAs, code } = params;
+  const { path: pathInput, storeAs, code, clear } = params;
+  
+  // Clear file variables
+  if (clear) {
+    const cleared = clearFileVariables();
+    return `✓ Cleared ${cleared} file variable${cleared !== 1 ? 's' : ''}`;
+  }
   
   // Normalize path: backslash → forward slash (Windows compatibility)
   const path = pathInput ? normalizePath(pathInput) : undefined;
@@ -51,17 +79,10 @@ async function handleFile(
     );
   }
 
-  const state = getSandboxState();
-  const existingValue = state.get(storeAs);
-  const existingPath = state.getPathForVar(storeAs);
-  
-  // Check if variable exists and if it's stale
-  let needsReload = false;
-  if (existingPath) {
-    const storeTime = state.getFileStoreTime(existingPath);
-    const editTime = getEditTime(existingPath);
-    needsReload = !!(storeTime && editTime && editTime > storeTime);
-  }
+  const existingVar = getVariable(storeAs);
+  const existingValue = existingVar?.value;
+  const existingPath = getPathByFileVar(storeAs);
+  const needsReload = existingPath ? await isFileStale(existingPath) : false;
 
   // Mode 1: Use existing variable (no path, not stale)
   if (!pathInput && existingValue && !needsReload) {
@@ -110,7 +131,7 @@ async function handleFile(
   }
 
   // Check if same file already stored under different name
-  const existingVarForPath = state.getFileVar(resolvedPath);
+  const existingVarForPath = getFileVarByPath(resolvedPath);
   if (existingVarForPath && existingVarForPath !== storeAs) {
     return formatError(
       `File already stored as $${existingVarForPath}\n` +
@@ -122,8 +143,8 @@ async function handleFile(
   updateProximityContext([resolvedPath], []);
   trackFsBytes(content.length);
   const parsed = parseFileContent(content, resolvedPath);
-  state.set(storeAs, parsed);
-  state.setFileVar(resolvedPath, storeAs);
+  setFileVariable(storeAs, parsed, resolvedPath);
+  recordStore(resolvedPath);
 
   // Auto-index large files (label uses path for useful search filtering)
   let indexMsg = '';
@@ -162,14 +183,14 @@ async function executeCode(
   code: string,
   varName: string
 ): Promise<McpResult> {
-  const variables = getSandboxState().getAllPrefixed();
+  const variables = getAllPrefixed();
   
   // Helpers are available directly (grep, lines, around, block, outline)
   const fullCode = FILE_HELPERS_CODE + "\nreturn (" + code + ")";
   
   try {
     const result = await ctx.sandbox.execute(fullCode, {
-      adapters: ctx.adapterContext || {},
+      adapters: ctx.adapterContext,
       variables,
       env: {},
     });
@@ -219,8 +240,8 @@ Note: Shell/Python file operations in mcx_execute redirect here.`,
       path: { type: "string", description: "Absolute path (required for new files, optional if variable exists)" },
       storeAs: { type: "string", description: "Variable name (e.g., 'x' → $x)" },
       code: { type: "string", description: "JS code with helpers (grep, lines, etc.)" },
+      clear: { type: "boolean", description: "Clear all file variables" },
     },
-    required: ["storeAs"],
   },
   handler: handleFile,
 };

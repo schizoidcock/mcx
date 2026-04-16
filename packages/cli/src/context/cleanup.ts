@@ -1,21 +1,21 @@
 /**
  * Periodic Cleanup Coordinator
  * 
- * Calls cleanup functions from all modules that have growing Maps.
+ * Calls cleanup functions from all modules that have growing data.
  * Called from register.ts every N tool calls.
  * 
- * ONE source of truth: sandbox/state.ts owns time Maps
+ * Sources of truth:
+ * - context/files.ts → file tracking
+ * - context/variables.ts → session variables
+ * - context/state.ts → background tasks
+ * - context/store.ts → FTS5 content index
  */
 
 import { cleanup as cleanupFiles } from "./files.js";
-import { getSandboxState } from "../sandbox/index.js";
-
-// ============================================================================
-// Config
-// ============================================================================
-
-const CLEANUP_INTERVAL = 50;  // Every N tool calls
-const MAX_AGE_MS = 30 * 60 * 1000;  // 30 minutes
+import { compressStale } from "./variables.js";
+import { cleanupOldTasks, type BackgroundTask } from "./state.js";
+import { cleanupStaleContent } from "./store.js";
+import { CLEANUP_INTERVAL, MAP_TTL_MS } from "../tools/constants.js";
 
 // ============================================================================
 // State
@@ -29,27 +29,32 @@ let callCount = 0;
 
 /**
  * Run periodic cleanup if needed.
- * Returns number of entries removed, or 0 if cleanup wasn't triggered.
+ * Pass backgroundTasks to also clean stale tasks.
  */
-export function runPeriodicCleanup(): number {
+export function runPeriodicCleanup(backgroundTasks?: Map<string, BackgroundTask>): number {
   callCount++;
   if (callCount < CLEANUP_INTERVAL) return 0;
   
-  callCount = 0;  // Reset counter
+  callCount = 0;
   
-  // Run all cleanups (ONE source of truth: state owns time Maps)
-  const filesRemoved = cleanupFiles(MAX_AGE_MS);
-  const timeRemoved = getSandboxState().cleanupTimeMaps(MAX_AGE_MS);
+  const filesRemoved = cleanupFiles(MAP_TTL_MS);
+  const varsCompressed = compressStale(MAP_TTL_MS).length;
+  const tasksRemoved = backgroundTasks ? cleanupOldTasks(backgroundTasks, MAP_TTL_MS) : 0;
+  const contentRemoved = cleanupStaleContent(MAP_TTL_MS);
   
-  return filesRemoved + timeRemoved;
+  return filesRemoved + varsCompressed + tasksRemoved + contentRemoved;
 }
 
 /**
  * Force cleanup regardless of interval (for testing/shutdown)
  */
-export function forceCleanup(): number {
+export function forceCleanup(backgroundTasks?: Map<string, BackgroundTask>): number {
   callCount = 0;
-  return cleanupFiles(MAX_AGE_MS) + getSandboxState().cleanupTimeMaps(MAX_AGE_MS);
+  const filesRemoved = cleanupFiles(MAP_TTL_MS);
+  const varsCompressed = compressStale(MAP_TTL_MS).length;
+  const tasksRemoved = backgroundTasks ? cleanupOldTasks(backgroundTasks, MAP_TTL_MS) : 0;
+  const contentRemoved = cleanupStaleContent(MAP_TTL_MS);
+  return filesRemoved + varsCompressed + tasksRemoved + contentRemoved;
 }
 
 /**

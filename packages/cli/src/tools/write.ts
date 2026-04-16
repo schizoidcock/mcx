@@ -8,6 +8,7 @@
 import { basename, isAbsolute, join } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatError } from "./utils.js";
+import { recordEdit } from "../context/files.js";
 
 // ============================================================================
 // Types
@@ -17,17 +18,6 @@ export interface WriteParams {
   file_path?: string;
   path?: string;
   content: string;
-}
-
-// ============================================================================
-// State
-// ============================================================================
-
-/** Track file edit timestamps for stale detection */
-const fileEditTime = new Map<string, number>();
-
-export function getFileEditTime(path: string): number | undefined {
-  return fileEditTime.get(path);
 }
 
 // ============================================================================
@@ -59,8 +49,8 @@ async function handleWrite(
     // Write file
     await Bun.write(resolvedPath, content);
     
-    // Track edit timestamp for stale line number detection
-    fileEditTime.set(resolvedPath, Date.now());
+    // Track edit timestamp for stale detection (context/files.ts owns this)
+    recordEdit(resolvedPath);
     
     // Format result
     const lineCount = content.split("\n").length;

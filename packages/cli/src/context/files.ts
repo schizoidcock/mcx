@@ -13,7 +13,7 @@ interface FileState {
 }
 
 // ============================================================================
-// State (single Map, not two)
+// State
 // ============================================================================
 
 const state = new Map<string, FileState>();
@@ -36,7 +36,7 @@ export function updateFile(path: string, action: 'store' | 'edit' | 'access'): v
 }
 
 /**
- * Record file store (alias for clarity)
+ * Record file store timestamp.
  */
 export function recordStore(path: string): void {
   updateFile(path, 'store');
@@ -97,6 +97,13 @@ export function hasStored(path: string): boolean {
   return state.get(path)?.storedAt !== undefined;
 }
 
+/**
+ * Clear file tracking for a path (metadata only).
+ */
+export function clearFileTracking(path: string): void {
+  state.delete(path);
+}
+
 // ============================================================================
 // Maintenance
 // ============================================================================
@@ -111,6 +118,7 @@ export function cleanup(maxAgeMs = 30 * 60 * 1000): number {
   for (const [path, s] of state) {
     const lastTouch = Math.max(s.storedAt || 0, s.editedAt || 0);
     if (now - lastTouch > maxAgeMs) {
+      if (s.varName) pathByVar.delete(s.varName);
       state.delete(path);
       removed++;
     }
@@ -120,7 +128,7 @@ export function cleanup(maxAgeMs = 30 * 60 * 1000): number {
 }
 
 /**
- * Clear all state (for testing)
+ * Clear all file metadata.
  */
 export function clear(): void {
   state.clear();

@@ -9,7 +9,7 @@ import { resolve, isAbsolute } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatError } from "./utils.js";
 import { formatStored } from "../utils/truncate.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { setVariable } from "../context/variables.js";
 import { formatGrepMCX, type GrepMatch } from "./format-grep.js";
 import { trackToolUsage, updateProximityContext, getProximityScore } from "../context/tracking.js";
 import { eventTips } from "../context/tips.js";
@@ -105,8 +105,7 @@ function processGrepResults(
   for (const f of matchedFiles) proxScores.set(f, getProximityScore(f));
   
   // Store results
-  const state = getSandboxState();
-  state.set("grep", { pattern: searchTerm, items, files: matchedFiles });
+  setVariable("grep", { pattern: searchTerm, items, files: matchedFiles }, "search");
   
   // Format and index
   const formatted = formatGrepMCX(items, totalMatched, totalFiles, { pattern: searchTerm, proxScores });

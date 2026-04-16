@@ -7,7 +7,8 @@
 
 import type { ToolContext, ToolDefinition, McpResult, BackgroundTask } from "./types.js";
 import { formatError } from "./utils.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { setVariable } from "../context/variables.js";
+import { cleanupOldTasks } from "../context/state.js";
 
 // ============================================================================
 // Types
@@ -25,8 +26,6 @@ export interface TasksParams {
   // Operations mode (code)
   operations?: Array<{ code: string; storeAs?: string }>;
 }
-
-const MAX_TASKS = 20;
 
 // ============================================================================
 // Task Lifecycle (short, focused functions)
@@ -62,19 +61,6 @@ function failTask(task: BackgroundTask, error: string): void {
 function formatDuration(task: BackgroundTask): string {
   const elapsed = (task.completedAt || Date.now()) - task.startedAt;
   return `${(elapsed / 1000).toFixed(1)}s`;
-}
-
-function cleanupOldTasks(tasks: Map<string, BackgroundTask>): void {
-  if (tasks.size <= MAX_TASKS) return;
-  
-  const completed = [...tasks.entries()]
-    .filter(([, t]) => t.status !== "running")
-    .sort((a, b) => (a[1].completedAt || 0) - (b[1].completedAt || 0));
-  
-  while (tasks.size > MAX_TASKS && completed.length > 0) {
-    const [id] = completed.shift()!;
-    tasks.delete(id);
-  }
 }
 
 // ============================================================================
@@ -174,9 +160,8 @@ async function handleCommands(
   return results.join("\n");
 }
 
-function storeResult(ctx: ToolContext, name: string, value: unknown): void {
-  
-  getSandboxState().set(name, value);
+function storeResult(_ctx: ToolContext, name: string, value: unknown): void {
+  setVariable(name, value);
 }
 
 async function runOperation(

@@ -11,8 +11,7 @@ import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatError } from "./utils.js";
 import { normalizePath } from "../utils/paths.js";
 import { trackToolUsage, suggestNextTool } from "../context/tracking.js";
-import { getFileEditTime } from "./write.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { getStoredAt, getEditedAt, recordEdit } from "../context/files.js";
 import { checkBraceBalance } from "../utils/syntax.js";
 
 // ============================================================================
@@ -29,24 +28,6 @@ export interface EditParams {
   replace_all?: boolean;
 }
 
-// ============================================================================
-// State Accessors (delegate to PersistentState - ONE source of truth)
-// ============================================================================
-
-export function setFileStoreTime(path: string, _time: number): void {
-  // Note: time param ignored - state.setFileVar() sets timestamp internally
-  // This is kept for API compatibility but callers should use state directly
-}
-
-export function getFileStoreTime(path: string): number | undefined {
-  return getSandboxState().getFileStoreTime(path);
-}
-
-
-
-export function getEditTime(path: string): number | undefined {
-  return getSandboxState().getEditTime(path);
-}
 // ============================================================================
 // Handler
 // ============================================================================
@@ -81,12 +62,10 @@ async function handleEdit(ctx: ToolContext, params: EditParams): Promise<McpResu
     let editEndLine = lines.length;
 
     if (start !== undefined && end !== undefined) {
-      const state = getSandboxState();
-      const storeTime = state.getFileStoreTime(resolvedPath);
-      const editTime = state.getEditTime(resolvedPath);
-      const writeTime = getFileEditTime(resolvedPath);
+      const storeTime = getStoredAt(resolvedPath);
+      const editTime = getEditedAt(resolvedPath);
 
-      if (storeTime && (editTime && editTime > storeTime) || (writeTime && writeTime > (storeTime || 0))) {
+      if (storeTime && editTime && editTime > storeTime) {
         return formatError(`File may have changed since last read. Re-read with mcx_file({ storeAs }) before editing.`);
       }
 
@@ -150,7 +129,7 @@ async function handleEdit(ctx: ToolContext, params: EditParams): Promise<McpResu
     // }
 
     await Bun.write(resolvedPath, newContent);
-    getSandboxState().setEditTime(resolvedPath);
+    recordEdit(resolvedPath);
     trackToolUsage("mcx_edit", resolvedPath);
 
     const fileName = normalizePath(resolvedPath);

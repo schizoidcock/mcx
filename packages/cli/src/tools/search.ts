@@ -10,7 +10,7 @@ import type { ResolvedSpec, ToolSpec, ParameterSpec } from "../spec/types.js";
 import type { ContentStore } from "../search/store.js";
 import { formatError } from "./utils.js";
 import { getMethodFrecency } from "../context/tracking.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { setVariable } from "../context/variables.js";
 import { checkSearchThrottle } from "../context/guards.js";
 import { MAX_PARAMS_FULL, MAX_PARAMS_TRUNCATED, MAX_DESC_LENGTH } from "./constants.js";
 
@@ -53,7 +53,7 @@ async function handleSpecSearch(
     
     // Store if requested
     if (storeAs) {
-      getSandboxState().set(storeAs, value);
+      setVariable(storeAs, value);
     }
     
     // Format output
@@ -107,7 +107,7 @@ function handleContentSearch(
     matches: ctx.contentStore.search(query, { limit, sourceIds }),
   }));
   
-  if (storeAs) getSandboxState().set(storeAs, results);
+  if (storeAs) setVariable(storeAs, results, "search");
   
   return formatContentResults(results);
 }

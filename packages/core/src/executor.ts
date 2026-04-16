@@ -353,6 +353,7 @@ export class MCXExecutor {
       adapterMethods[name] = {};
       // Support both new (tools: Record) and legacy (methods: Map) adapters
       const tools = adapter.tools ?? (adapter as unknown as { methods: Map<string, { execute: (...args: unknown[]) => unknown }> }).methods;
+      if (!tools) continue;
       if (tools instanceof Map) {
         // Legacy adapter with methods: Map
         for (const [methodName, method] of tools) {

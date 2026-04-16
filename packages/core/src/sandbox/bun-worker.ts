@@ -218,8 +218,8 @@ export class BunWorkerSandbox implements ISandbox {
     return new Promise((resolve) => {
       // Build adapter method names for the worker
       const adapterMethods: Record<string, string[]> = {};
-      for (const [name, methods] of Object.entries(context.adapters)) {
-        adapterMethods[name] = Object.keys(methods);
+      for (const [name, methods] of Object.entries(context.adapters || {})) {
+        adapterMethods[name] = Object.keys(methods as object);
       }
 
       // Worker code - runs in isolated context

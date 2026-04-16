@@ -11,7 +11,7 @@ import { truncateLogs, filterHelperLogs, formatStored } from "../utils/truncate.
 import { extractImages } from "../utils/images.js";
 import { applyHybridFilter } from "../filters/index.js";
 import { detectAndFormatGrepOutput } from "./format-grep.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { getAllPrefixed, setVariable, deleteVariable, clearVariables, setLastResult } from "../context/variables.js";
 import { AUTO_INDEX_THRESHOLD, INTENT_THRESHOLD } from "./constants.js";
 
 
@@ -82,11 +82,10 @@ async function executeCode(
   const blocked = enforceCodeRedirects(code);
   if (blocked) return blocked;
 
-  // Build variables from PersistentState
-  const state = getSandboxState();
+  // Build variables from session state
   let variables: Record<string, unknown> = {};
   try {
-    variables = { ...state.getAllPrefixed() };
+    variables = { ...getAllPrefixed() };
   } catch {
     // Ignore errors getting variables
   }
@@ -105,7 +104,7 @@ async function executeCode(
     
     // Sandbox expects { adapters, variables, env } structure
     const result = await ctx.sandbox.execute(fullCode, {
-      adapters: ctx.adapterContext || {},
+      adapters: ctx.adapterContext,
       variables,
       env: {},
     });
@@ -124,10 +123,10 @@ async function executeCode(
     // Track I/O from sandbox execution
     trackSandboxIO(result.tracking);
 
-    // Store result in PersistentState (without images - they're extracted)
-    ctx.variables.lastResult = value;
+    // Store result in session variables (without images - they're extracted)
+    setLastResult(value);
     if (storeAs) {
-      state.set(storeAs, value);
+      setVariable(storeAs, value);
     }
 
     // Format confirmation (value stays in $result, not in context)
@@ -200,10 +199,9 @@ async function executeShell(
     command: cmd,
   };
 
-  // Store in variables
-  const shellState = getSandboxState();
-  shellState.set('result', result);
-  if (storeAs) shellState.set(storeAs, result);
+  // Store in session variables
+  setLastResult(result);
+  if (storeAs) setVariable(storeAs, result);
 
   const varName = storeAs || 'result';
   const output = result.stdout || result.stderr || '';
@@ -254,10 +252,9 @@ async function executePython(
     stderr: spawnResult.stderr.trim(),
   };
 
-  // Store in variables
-  const shellState = getSandboxState();
-  shellState.set('result', result);
-  if (storeAs) shellState.set(storeAs, result);
+  // Store in session variables
+  setLastResult(result);
+  if (storeAs) setVariable(storeAs, result);
 
   const varName = storeAs || 'result';
   const output = result.stdout || result.stderr || '';
@@ -302,11 +299,11 @@ async function handleExecute(
 
   // Variable management (no code/shell/python needed)
   if (clear) {
-    getSandboxState().clear();
+    clearVariables();
     return "✓ All variables cleared";
   }
   if (deleteVar) {
-    const deleted = getSandboxState().delete(deleteVar);
+    const deleted = deleteVariable(deleteVar);
     return deleted ? `✓ Deleted ${deleteVar}` : formatError(`Variable ${deleteVar} not found`);
   }
 

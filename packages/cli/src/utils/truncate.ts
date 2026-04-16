@@ -155,8 +155,11 @@ export function enforceCharacterLimit(text: string, limit: number = CHARACTER_LI
   const sanitized = sanitizeForJson(text);
   if (sanitized.length <= limit) return sanitized;
 
-  const half = Math.floor((limit - 50) / 2);
-  return sanitized.slice(0, half) + `\n\n... [${sanitized.length - limit} chars truncated] ...\n\n` + sanitized.slice(-half);
+  // 60/40 split: start has more context than end
+  const available = limit - 50;
+  const startLen = Math.floor(available * 0.6);
+  const endLen = available - startLen;
+  return sanitized.slice(0, startLen) + `\n\n... [${sanitized.length - limit} chars truncated] ...\n\n` + sanitized.slice(-endLen);slice(-half);
 }
 
 export function sanitizeForJson(text: string): string {
@@ -203,9 +206,11 @@ export function truncateString(str: string, maxLen: number, matchPos?: number): 
     return (start > 0 ? "..." : "") + str.slice(start, end) + (end < str.length ? "..." : "");
   }
 
+  // 60/40 split: start has more context than end
   const contentLen = maxLen - 6;
-  const halfLen = Math.floor(contentLen / 2);
-  return str.slice(0, halfLen) + "..." + str.slice(-halfLen);
+  const startLen = Math.floor(contentLen * 0.6);
+  const endLen = contentLen - startLen;
+  return str.slice(0, startLen) + "..." + str.slice(-endLen);
 }
 
 export function cleanLine(line: string, maxLen: number = 100, pattern?: string): string {

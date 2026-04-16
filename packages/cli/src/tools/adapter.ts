@@ -8,7 +8,7 @@
 import type { ToolContext, ToolDefinition, McpResult, SkillDef } from "./types.js";
 import type { ResolvedSpec, AdapterSpec } from "../spec/types.js";
 import { formatError } from "./utils.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { setVariable, getAllPrefixed } from "../context/variables.js";
 import { extractImages } from "../utils/images.js";
 
 // ============================================================================
@@ -32,7 +32,7 @@ function formatAdapterSuccess(
   const displayed = truncated ? output.slice(0, 3000) + '\n...' : output;
   
   if (truncated) {
-    getSandboxState().set('_adapterResult', value);
+    setVariable('_adapterResult', value);
   }
   
   const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
@@ -75,7 +75,7 @@ function handleRunSkill(
   }
   
   // Build skill invocation
-  const inputStr = Object.entries(params)
+  const inputStr = Object.entries(params || {})
     .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
     .join(", ");
   
@@ -189,7 +189,7 @@ async function handleCallMethod(
   try {
     const result = await ctx.sandbox.execute(code, {
       adapters: ctx.adapterContext,
-      variables: getSandboxState().getAllPrefixed(),
+      variables: getAllPrefixed(),
       env: {},
     });
     

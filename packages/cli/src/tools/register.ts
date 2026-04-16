@@ -20,7 +20,8 @@ import { summarizeResult } from "../utils/truncate.js";
 import { formatToolResult, formatError } from "./utils.js";
 import { getAccessCount } from "../context/files.js";
 import { coerceArrayParams } from "../utils/zod.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { compressStale } from "../context/variables.js";
+import { getPathByFileVar } from "../context/variables.js";
 import { logger } from "../utils/logger.js";
 import { runPeriodicCleanup } from "../context/cleanup.js";
 import { findSimilarParams } from "../utils/fuzzy.js";
@@ -200,11 +201,11 @@ function registerTool(
       // If variable is indexed in FTS5 → safe to compress (data still searchable)
       const isIndexed = (varName: string) => {
         if (ctx.contentStore.hasSource(`exec:${varName}`)) return true;
-        const path = getSandboxState().getPathForVar(varName);
+        const path = getPathByFileVar(varName);
         return path ? ctx.contentStore.hasSource(`file:${path}`) : false;
       };
-      getSandboxState().compressStale(5 * 60 * 1000, 1000, isIndexed);
-      runPeriodicCleanup();
+      compressStale(5 * 60 * 1000, 1000, isIndexed);
+      runPeriodicCleanup(ctx.backgroundTasks);
 
       // Add tips if available
       const result = addTipsToResult(tool.name, p, filePath, truncatedResult);

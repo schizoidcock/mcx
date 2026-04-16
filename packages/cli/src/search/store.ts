@@ -14,9 +14,32 @@ import { extractSnippet } from './snippets.js';
 // Max vocabulary size to prevent unbounded memory
 const VOCABULARY_CAP = 10_000;
 
+// Type alias to avoid repetition (Linus principle: no duplication)
+type Stmt = ReturnType<Database['prepare']>;
+
 export class ContentStore {
   private db: Database;
   private vocabulary = new Set<string>();
+  
+  // Cached prepared statements (avoid native memory churn)
+  private stmts!: {
+    getSourceByLabel: Stmt;
+    insertSource: Stmt;
+    deleteChunksBySource: Stmt;
+    deleteTrigramBySource: Stmt;
+    deleteSourceById: Stmt;
+    insertChunk: Stmt;
+    insertTrigram: Stmt;
+    insertWord: Stmt;
+    getChunksBySource: Stmt;
+    getVocabulary: Stmt;
+    getChunkCount: Stmt;
+    getChunkCountBySource: Stmt;
+    hasSource: Stmt;
+    getStaleSources: Stmt;
+    touchSource: Stmt;
+    listSources: Stmt;
+  };
 
   constructor(dbPath = ':memory:') {
     this.db = new Database(dbPath);
@@ -57,56 +80,72 @@ export class ContentStore {
         word TEXT PRIMARY KEY
       )
     `);
+
+    // Initialize cached statements (reduces native memory churn)
+    this.stmts = {
+      getSourceByLabel: this.db.prepare('SELECT id FROM sources WHERE label = ?'),
+      insertSource: this.db.prepare('INSERT INTO sources (label) VALUES (?)'),
+      deleteChunksBySource: this.db.prepare('DELETE FROM chunks WHERE source_id = ?'),
+      deleteTrigramBySource: this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?'),
+      deleteSourceById: this.db.prepare('DELETE FROM sources WHERE id = ?'),
+      insertChunk: this.db.prepare('INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)'),
+      insertTrigram: this.db.prepare('INSERT INTO chunks_trigram (title, content, source_id) VALUES (?, ?, ?)'),
+      insertWord: this.db.prepare('INSERT OR IGNORE INTO vocabulary (word) VALUES (?)'),
+      getChunksBySource: this.db.prepare('SELECT title, content FROM chunks WHERE source_id = ?'),
+      getVocabulary: this.db.prepare('SELECT word FROM vocabulary'),
+      getChunkCount: this.db.prepare('SELECT COUNT(*) as count FROM chunks'),
+      getChunkCountBySource: this.db.prepare('SELECT COUNT(*) as count FROM chunks WHERE source_id = ?'),
+      hasSource: this.db.prepare('SELECT 1 FROM sources WHERE label = ?'),
+      getStaleSources: this.db.prepare('SELECT id FROM sources WHERE indexed_at < ?'),
+      touchSource: this.db.prepare('UPDATE sources SET indexed_at = ? WHERE label = ?'),
+      listSources: this.db.prepare(`
+        SELECT s.id, s.label, s.indexed_at, COUNT(c.rowid) as chunk_count
+        FROM sources s
+        LEFT JOIN chunks c ON c.source_id = s.id
+        GROUP BY s.id
+        ORDER BY s.indexed_at DESC
+      `),
+    };
+  }
+
+  /** Add words to vocabulary (max 2 levels, early returns) */
+  private addWordsToVocabulary(content: string): void {
+    if (this.vocabulary.size >= VOCABULARY_CAP) return;
+    const words = content.toLowerCase().match(/\b[a-z_][a-z0-9_]*\b/g) || [];
+    for (const word of words) {
+      if (word.length < 3 || word.length > 30 || this.vocabulary.has(word)) continue;
+      this.vocabulary.add(word);
+      this.stmts.insertWord.run(word);
+      if (this.vocabulary.size >= VOCABULARY_CAP) return;
+    }
   }
 
   /**
    * Index content with chunking and store in FTS5.
    */
   index(content: string, sourceLabel: string, options: IndexOptions = {}): number {
-    // Get or create source
-    let source = this.db.prepare('SELECT id FROM sources WHERE label = ?').get(sourceLabel) as Source | undefined;
+    // Get or create source (using cached statements)
+    let source = this.stmts.getSourceByLabel.get(sourceLabel) as Source | undefined;
 
     if (source) {
       // Clear existing chunks for this source
-      this.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(source.id);
-      this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?').run(source.id);
+      this.stmts.deleteChunksBySource.run(source.id);
+      this.stmts.deleteTrigramBySource.run(source.id);
     } else {
-      this.db.prepare('INSERT INTO sources (label) VALUES (?)').run(sourceLabel);
-      source = this.db.prepare('SELECT id FROM sources WHERE label = ?').get(sourceLabel) as Source;
+      this.stmts.insertSource.run(sourceLabel);
+      source = this.stmts.getSourceByLabel.get(sourceLabel) as Source;
     }
 
     const sourceId = source.id;
     const contentType = options.contentType ?? 'markdown';
     const chunks = chunkContent(content, contentType);
 
-    // Batch insert chunks
-    const insertChunk = this.db.prepare(
-      'INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)'
-    );
-    const insertTrigram = this.db.prepare(
-      'INSERT INTO chunks_trigram (title, content, source_id) VALUES (?, ?, ?)'
-    );
-    const insertWord = this.db.prepare(
-      'INSERT OR IGNORE INTO vocabulary (word) VALUES (?)'
-    );
-
     const tx = this.db.transaction(() => {
       for (const chunk of chunks) {
-        const contentType = chunk.hasCode ? 'code' : 'text';
-        insertChunk.run(chunk.title, chunk.content, sourceId, contentType);
-        insertTrigram.run(chunk.title, chunk.content, sourceId);
-
-        // Build vocabulary (capped to prevent unbounded memory)
-        if (this.vocabulary.size < VOCABULARY_CAP) {
-          const words = chunk.content.toLowerCase().match(/\b[a-z_][a-z0-9_]*\b/g) || [];
-          for (const word of words) {
-            if (word.length >= 3 && word.length <= 30 && !this.vocabulary.has(word)) {
-              this.vocabulary.add(word);
-              insertWord.run(word);
-              if (this.vocabulary.size >= VOCABULARY_CAP) break;
-            }
-          }
-        }
+        const chunkType = chunk.hasCode ? 'code' : 'text';
+        this.stmts.insertChunk.run(chunk.title, chunk.content, sourceId, chunkType);
+        this.stmts.insertTrigram.run(chunk.title, chunk.content, sourceId);
+        this.addWordsToVocabulary(chunk.content);
       }
     });
 
@@ -197,13 +236,7 @@ export class ContentStore {
    * Get all indexed sources with metadata.
    */
   getSources(): Array<{ id: number; label: string; chunkCount: number; indexedAt: number }> {
-    const rows = this.db.prepare(`
-      SELECT s.id, s.label, s.indexed_at, COUNT(c.rowid) as chunk_count
-      FROM sources s
-      LEFT JOIN chunks c ON c.source_id = s.id
-      GROUP BY s.id
-      ORDER BY s.indexed_at DESC
-    `).all() as Array<{ id: number; label: string; indexed_at: number; chunk_count: number }>;
+    const rows = this.stmts.listSources.all() as Array<{ id: number; label: string; indexed_at: number; chunk_count: number }>;
     return rows.map(row => ({
       id: row.id,
       label: row.label,
@@ -216,25 +249,23 @@ export class ContentStore {
    * Get source by label.
    */
   getSourceByLabel(label: string): Source | undefined {
-    return this.db.prepare('SELECT * FROM sources WHERE label = ?').get(label) as Source | undefined;
+    return this.stmts.getSourceByLabel.get(label) as Source | undefined;
   }
 
   /**
    * Get chunks for a source.
    */
   getChunks(sourceId: number): Chunk[] {
-    return this.db.prepare(
-      'SELECT title, content FROM chunks WHERE source_id = ?'
-    ).all(sourceId) as Chunk[];
+    return this.stmts.getChunksBySource.all(sourceId) as Chunk[];
   }
 
   /**
    * Delete a source and its chunks.
    */
   deleteSource(sourceId: number): void {
-    this.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(sourceId);
-    this.db.prepare('DELETE FROM chunks_trigram WHERE source_id = ?').run(sourceId);
-    this.db.prepare('DELETE FROM sources WHERE id = ?').run(sourceId);
+    this.stmts.deleteChunksBySource.run(sourceId);
+    this.stmts.deleteTrigramBySource.run(sourceId);
+    this.stmts.deleteSourceById.run(sourceId);
   }
 
   /**
@@ -245,7 +276,7 @@ export class ContentStore {
       return Array.from(this.vocabulary);
     }
     // Load from DB if not in memory
-    const rows = this.db.prepare('SELECT word FROM vocabulary').all() as Array<{ word: string }>;
+    const rows = this.stmts.getVocabulary.all() as Array<{ word: string }>;
     return rows.map(r => r.word);
   }
 
@@ -253,12 +284,9 @@ export class ContentStore {
    * Get chunk count, optionally for a specific source.
    */
   getChunkCount(sourceId?: number): number {
-    const query = sourceId !== undefined
-      ? 'SELECT COUNT(*) as count FROM chunks WHERE source_id = ?'
-      : 'SELECT COUNT(*) as count FROM chunks';
     const result = sourceId !== undefined
-      ? this.db.prepare(query).get(sourceId) as { count: number }
-      : this.db.prepare(query).get() as { count: number };
+      ? this.stmts.getChunkCountBySource.get(sourceId) as { count: number }
+      : this.stmts.getChunkCount.get() as { count: number };
     return result.count;
   }
 
@@ -267,9 +295,7 @@ export class ContentStore {
    */
   cleanupStale(maxAgeMs: number): number {
     const cutoff = Date.now() - maxAgeMs;
-    const stale = this.db.prepare(
-      'SELECT id FROM sources WHERE indexed_at < ?'
-    ).all(cutoff) as Array<{ id: number }>;
+    const stale = this.stmts.getStaleSources.all(cutoff) as Array<{ id: number }>;
     
     if (stale.length === 0) return 0;
     
@@ -311,7 +337,7 @@ export class ContentStore {
    * Check if a source exists.
    */
   hasSource(label: string): boolean {
-    const result = this.db.prepare('SELECT 1 FROM sources WHERE label = ?').get(label);
+    const result = this.stmts.hasSource.get(label);
     return result !== undefined;
   }
 

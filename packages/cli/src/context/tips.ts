@@ -4,7 +4,7 @@
 
 import type { ToolMeta } from "../tools/meta.js";
 import { getAccessCount, isStale } from "./files.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { getAllVariables, getVariable } from "./variables.js";
 
 // ============================================================================
 // Types
@@ -35,12 +35,12 @@ interface TipRule {
 
 /** Find variables not accessed in last N minutes */
 function getUnusedVars(maxAgeMs = 3 * 60 * 1000): string[] {
-  const state = getSandboxState();
   const now = Date.now();
   const unused: string[] = [];
-  for (const name of Object.keys(state.getAll())) {
-    const meta = state.getMeta(name);
-    if (meta && now - meta.accessedAt > maxAgeMs) {
+  for (const name of Object.keys(getAllVariables())) {
+    const stored = getVariable(name);
+    const accessedAt = stored?.accessedAt || stored?.timestamp || 0;
+    if (now - accessedAt > maxAgeMs) {
       unused.push(name);
     }
   }
@@ -174,7 +174,7 @@ export const errorTips = {
     `💡 Load first: mcx_file({ path: "/abs/path/file", storeAs: "${storeAs}" })`,
 
   useExisting: (varName: string) =>
-    `💡 Use: mcx_file({ storeAs: "${varName}", code: "..." })`,
+    `💡 Use: mcx_file({ storeAs: "${varName}", code: "..." }) to read the content.`,
 
   validParams: (params: string[]) =>
     `💡 Valid: ${params.join(", ")}`,

@@ -7,6 +7,7 @@
  */
 
 import type { SessionWorkflow } from "../tools/types.js";
+import { getVariableSummary } from "./variables.js";
 
 // ============================================================================
 // Constants
@@ -292,12 +293,6 @@ interface ToolStats {
   errors: number;
 }
 
-interface StoredVarMeta {
-  path?: string;
-  size: number;
-  storedAt: number;
-}
-
 const sessionStats = {
   // Token tracking
   byTool: new Map<string, ToolStats>(),
@@ -306,7 +301,7 @@ const sessionStats = {
   totalRaw: 0,
   sessionStart: Date.now(),
 
-  // I/O tracking (consolidated from loose variables)
+  // I/O tracking
   fsBytesRead: 0,
   fsFilesRead: 0,
   networkBytesIn: 0,
@@ -316,9 +311,6 @@ const sessionStats = {
   // Cache tracking
   cacheHits: 0,
   cacheBytesSaved: 0,
-
-  // Variable tracking
-  storedVars: new Map<string, StoredVarMeta>(),
 };
 
 // ============================================================================
@@ -388,31 +380,16 @@ export function trackCacheHit(bytesSaved: number): void {
 }
 
 // ============================================================================
-// Variable Tracking
-// ============================================================================
-
-/** Track stored variable */
-export function trackStoredVar(name: string, size: number, path?: string): void {
-  sessionStats.storedVars.set(name, { path, size, storedAt: Date.now() });
-}
-
-/** Remove tracked variable */
-export function untrackStoredVar(name: string): void {
-  sessionStats.storedVars.delete(name);
-}
-
-// ============================================================================
-// Session Stats Getter (replaces getIOStats)
+// Session Stats Getter
 // ============================================================================
 
 /**
  * Get all session stats. Returns snapshot.
+ * Variable stats come from variables.ts (ONE source of truth).
  */
 export function getSessionStats() {
-  let storedVarsBytes = 0;
-  for (const v of sessionStats.storedVars.values()) {
-    storedVarsBytes += v.size;
-  }
+  const vars = getVariableSummary();
+  const storedVarsBytes = vars.reduce((sum, v) => sum + v.size, 0);
 
   return {
     // Token stats
@@ -432,8 +409,8 @@ export function getSessionStats() {
     cacheHits: sessionStats.cacheHits,
     cacheBytesSaved: sessionStats.cacheBytesSaved,
 
-    // Variable stats
-    storedVarsCount: sessionStats.storedVars.size,
+    // Variable stats (from variables.ts)
+    storedVarsCount: vars.length,
     storedVarsBytes,
   };
 }
@@ -466,7 +443,6 @@ export function resetSessionStats(): void {
   sessionStats.networkRequests = 0;
   sessionStats.cacheHits = 0;
   sessionStats.cacheBytesSaved = 0;
-  sessionStats.storedVars.clear();
 }
 
 /** Reset I/O stats only (backwards compatible) */

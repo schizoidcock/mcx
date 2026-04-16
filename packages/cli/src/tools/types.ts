@@ -42,6 +42,9 @@ export interface StoredVariable {
   path?: string;           // For file variables
   timestamp: number;
   lineCount?: number;      // For file variables
+  accessedAt?: number;     // For compression tracking
+  originalSize?: number;   // For compression tracking
+  compressed?: boolean;    // If variable was compressed
 }
 
 export interface SessionWorkflow {

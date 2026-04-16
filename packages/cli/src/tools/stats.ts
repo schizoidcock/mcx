@@ -6,7 +6,7 @@
 
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatBytes } from "./utils.js";
-import { getSandboxState } from "../sandbox/index.js";
+import { getVariableSummary } from "../context/variables.js";
 import { getRecentTools, getRecentFiles, getTopMethods, getSessionStats } from "../context/tracking.js";
 
 // ============================================================================
@@ -84,20 +84,15 @@ async function handleStats(
   }
 
   // 2. Session Variables
-  const state = getSandboxState();
-  const allVars = state.getAll();
-  const varNames = Object.keys(allVars);
-  output.push(`📝 Variables: ${varNames.length}`);
-  if (varNames.length > 0) {
-    for (const name of varNames.slice(0, 10)) {
-      const val = allVars[name];
-      const size = JSON.stringify(val)?.length || 0;
-      const meta = state.getMeta(name);
-      const compressed = meta?.compressed ? " [compressed]" : "";
-      output.push(`   ${name}: ${formatBytes(size)}${compressed}`);
+  const varSummary = getVariableSummary();
+  output.push(`📝 Variables: ${varSummary.length}`);
+  if (varSummary.length > 0) {
+    for (const v of varSummary.slice(0, 10)) {
+      const compressed = v.compressed ? " [compressed]" : "";
+      output.push(`   ${v.name}: ${formatBytes(v.size)}${compressed}`);
     }
-    if (varNames.length > 10) {
-      output.push(`   ... +${varNames.length - 10} more`);
+    if (varSummary.length > 10) {
+      output.push(`   ... +${varSummary.length - 10} more`);
     }
   }
   output.push("");

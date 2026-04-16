@@ -28,13 +28,13 @@ export { createEmptyContext } from "./types.js";
 export { formatToolResult, formatError } from "./utils.js";
 
 // Tools (extracted from serve.ts)
-export { mcxWrite, getFileEditTime } from "./write.js";
+export { mcxWrite } from "./write.js";
 export { mcxDoctor } from "./doctor.js";
 export { mcxUpgrade } from "./upgrade.js";
 export { mcxWatch } from "./watch.js";
 export { mcxGrep } from "./grep.js";
 export { mcxFind } from "./find.js";
-export { mcxEdit, setFileStoreTime } from "./edit.js";
+export { mcxEdit } from "./edit.js";
 export { mcxFetch } from "./fetch.js";
 export { mcxStats } from "./stats.js";
 export { mcxTasks } from "./tasks.js";

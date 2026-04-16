@@ -9,6 +9,7 @@
   import { BunWorkerSandbox } from "@papicandela/mcx-core";
   import type { ToolContext, AdapterSpec } from "../tools/types.js";
   import { getContentStore, cleanupStaleContent } from "./store.js";
+import { getState as getVariablesState } from "./variables.js";
   import { getMcxHomeDir } from "../utils/paths.js";
   import { join } from "node:path";
 
@@ -25,6 +26,7 @@
       pool?: { enabled?: boolean; maxWorkers?: number; idleTimeout?: number };
     };
     cleanupOnStart?: boolean;
+    adapterContext?: Record<string, Record<string, (params: unknown) => Promise<unknown>>>;
   }
 
   // ============================================================================
@@ -141,11 +143,12 @@
       sandbox,
       finder: null,
       spec: config.spec ?? null,
-      variables: { stored: new Map(), lastResult: undefined },
+      variables: getVariablesState(),
       workflow: { lastTools: [], proximityContext: { recentFiles: [], recentPatterns: [] } },
       watchedProjects: new Map(),
       basePath: config.basePath,
       fileHelpersCode: FILE_HELPERS_CODE,
+      adapterContext: config.adapterContext || {},
     };
   }
 
