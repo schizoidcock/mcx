@@ -45,7 +45,7 @@ import {
 import { createMcxServerCore } from "../server/core.js";
 import { type FileFinder, isExcludedPath } from "../utils/fff";
 import { coerceJsonArray } from "../utils/zod";
-import { isDangerousEnvKey, isBlockedUrl, detectShellEscape, enforceShellRedirects, enforcePythonRedirects, blockedResponse } from "../utils/security";
+import { isDangerousEnvKey, isBlockedUrl, detectShellEscape, blockedResponse } from "../utils/security";
 import { analyzeCodeTraits, analyzeShellTraits, formatTraitWarnings } from "../utils/traits";
 import { logger } from "../utils/logger";
 import { extractImages, type McxImageContent } from "../utils/images";

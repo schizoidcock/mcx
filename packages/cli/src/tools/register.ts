@@ -212,7 +212,7 @@ function registerTool(
       if (typeof result === 'object' && result !== null && 'content' in result) {
           return result;
         }
-        return formatToolResult(String(result ?? ''));
+        return formatToolResult(String(result ?? ''), undefined, `tool:${tool.name}`);
     }
   );
 }

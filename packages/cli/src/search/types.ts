@@ -38,3 +38,10 @@ export interface IndexOptions {
   /** Lines per chunk for plaintext (default: 20) */
   linesPerChunk?: number;
 }
+
+/** Window range for snippet extraction with match count */
+export interface SnippetWindow {
+  start: number;
+  end: number;
+  matches: number;
+}

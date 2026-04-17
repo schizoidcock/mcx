@@ -6,16 +6,17 @@
 
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import type { ResolvedSpec } from "../spec/types.js";
-import { formatError } from "./utils.js";
+import { formatError, indexAndSearch } from "./utils.js";
 import { truncateLogs, filterHelperLogs, formatStored } from "../utils/truncate.js";
 import { extractImages } from "../utils/images.js";
 import { applyHybridFilter } from "../filters/index.js";
 import { detectAndFormatGrepOutput } from "./format-grep.js";
 import { getAllPrefixed, setVariable, deleteVariable, clearVariables, setLastResult } from "../context/variables.js";
-import { AUTO_INDEX_THRESHOLD, INTENT_THRESHOLD } from "./constants.js";
+import { AUTO_INDEX_THRESHOLD, INTENT_THRESHOLD, INTENT_REQUIRED_THRESHOLD } from "./constants.js";
+import { formatSearchSnippets } from "../search/snippets.js";
 
 
-import { DANGEROUS_ENV_KEYS, detectShellEscape, enforceShellRedirects, enforcePythonRedirects, enforceCodeRedirects } from "../utils/security.js";
+import { DANGEROUS_ENV_KEYS, detectShellEscape, enforceRedirects } from "../utils/security.js";
 // Guards and tracking
 import { getCodeSignature, checkRetryLoop, recordFailure, clearFailure, checkLinesHunting } from "../context/guards.js";
 import { trackMethodUsage, trackSandboxIO } from "../context/tracking.js";
@@ -79,7 +80,7 @@ async function executeCode(
   storeAs?: string
 ): Promise<McpResult> {
   // Enforce redirects to MCX tools
-  const blocked = enforceCodeRedirects(code);
+  const blocked = enforceRedirects(code, 'javascript');
   if (blocked) return blocked;
 
   // Build variables from session state
@@ -179,7 +180,7 @@ async function executeShell(
   const cmd = command.trim();
   if (!cmd) return formatError("Empty command");
 
-  const blocked = enforceShellRedirects(cmd);
+  const blocked = enforceRedirects(cmd, 'shell');
   if (blocked) return blocked;
 
   const spawnResult = await safeShell(cmd, {
@@ -233,7 +234,7 @@ async function executePython(
   const escape = detectShellEscape(pythonCode, 'python');
   if (escape.detected) return formatError(escape.suggestion);
 
-  const blocked = enforcePythonRedirects(pythonCode);
+  const blocked = enforceRedirects(pythonCode, 'python');
   if (blocked) return blocked;
 
   const spawnResult = await safePython(pythonCode, {
@@ -278,13 +279,17 @@ async function executePython(
 function handleLargeOutput(
   ctx: ToolContext,
   output: string,
-  intent: string
+  intent: string,
+  varName: string
 ): McpResult {
-  const sourceId = ctx.contentStore.index(output, intent, { contentType: "plaintext" });
-  const chunks = ctx.contentStore.getChunkCount(sourceId);
+  const { results, terms } = indexAndSearch(output, intent, intent, "plaintext");
 
-  return `Output indexed: ${intent} (${chunks} chunks)\n` +
-    `→ mcx_search({ queries: [...] }) to search results`;
+  if (results.length === 0) {
+    const hint = terms.length > 0 ? `\nSearchable: ${terms.join(', ')}` : '';
+    return `✓ Stored ${varName}\nIndexed: ${intent}\nNo matches.${hint}\n→ mcx_search() to explore`;
+  }
+
+  return `✓ Stored ${varName}\n` + formatSearchSnippets(results, intent) + `\n→ mcx_search({ queries: ["${intent}"] }) for more`;
 }
 
 // ============================================================================
@@ -390,9 +395,15 @@ async function handleExecute(
     return `${prefix} ${exitCode}\n${errorMsg}${truncateWarning}\n\n✓ Stored ${varName}`;
   }
 
+  // Require intent for very large output
+  if (!intent && output.length > INTENT_REQUIRED_THRESHOLD) {
+    const sizeKB = Math.round(INTENT_REQUIRED_THRESHOLD / 1024);
+    return formatError(`Output > ${sizeKB}KB requires intent parameter\n→ mcx_execute({ shell: "...", intent: "what you're looking for" })`);
+  }
+
   // Intent search for large output
   if (intent && output.length > INTENT_THRESHOLD) {
-    return handleLargeOutput(ctx, output, intent);
+    return handleLargeOutput(ctx, output, intent, varName);
   }
 
   const warning = allWarnings ? allWarnings + '\n\n' : '';

@@ -13,6 +13,7 @@ import { getMethodFrecency } from "../context/tracking.js";
 import { setVariable } from "../context/variables.js";
 import { checkSearchThrottle } from "../context/guards.js";
 import { MAX_PARAMS_FULL, MAX_PARAMS_TRUNCATED, MAX_DESC_LENGTH } from "./constants.js";
+import { extractSnippet } from "../search/snippets.js";
 
 // ============================================================================
 // Types
@@ -125,7 +126,7 @@ function formatContentResults(
     } else {
       for (const m of matches) {
         const source = m.source ? ` [${m.source}]` : "";
-        lines.push(`- ${(m.snippet || m.text || '').slice(0, 200)}${source}`);
+        lines.push(`- ${extractSnippet(m.snippet || m.text || '', query)}${source}`);
       }
     }
     lines.push("");

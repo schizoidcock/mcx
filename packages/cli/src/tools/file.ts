@@ -9,7 +9,7 @@ import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, basename, resolve } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { normalizePath } from "../utils/paths.js";
-import { formatError } from "./utils.js";
+import { formatError, indexAndSearch } from "./utils.js";
 import { FILE_HELPERS_CODE } from "../context/create.js";
 import { formatFileResult, formatStored } from "../utils/truncate.js";
 import { updateProximityContext, trackFsBytes } from "../context/tracking.js";
@@ -17,6 +17,7 @@ import { errorTips, eventTips } from "../context/tips.js";
 import { getVariable, setFileVariable, getAllPrefixed, getFileVarByPath, getPathByFileVar, clearFileVariables } from "../context/variables.js";
 import { getStoredAt, getEditedAt, recordStore } from "../context/files.js";
 import { FILE_INDEX_THRESHOLD } from "./constants.js";
+import { formatSearchSnippets } from "../search/snippets.js";
 
 // ============================================================================
 // Types
@@ -27,6 +28,7 @@ export interface FileParams {
   storeAs?: string;  // Required unless clear: true
   code?: string;     // Optional JS code with helpers
   clear?: boolean;   // Clear all file variables
+  intent?: string;   // Auto-search after indexing large files
 }
 
 // ============================================================================
@@ -58,7 +60,7 @@ async function handleFile(
   ctx: ToolContext,
   params: FileParams
 ): Promise<McpResult> {
-  const { path: pathInput, storeAs, code, clear } = params;
+  const { path: pathInput, storeAs, code, clear, intent } = params;
   
   // Clear file variables
   if (clear) {
@@ -133,8 +135,15 @@ async function handleFile(
   // Check if same file already stored under different name
   const existingVarForPath = getFileVarByPath(resolvedPath);
   if (existingVarForPath && existingVarForPath !== storeAs) {
+    // Check stale first - more actionable error
+    if (await isFileStale(resolvedPath)) {
+      return formatError(
+        `${existingVarForPath} is stale (file was edited)\n` +
+        `💡 Reload: mcx_file({ path: "${path}", storeAs: "${existingVarForPath}" })`
+      );
+    }
     return formatError(
-      `File already stored as $${existingVarForPath}\n` +
+      `File already stored as ${existingVarForPath}\n` +
       errorTips.useExisting(existingVarForPath)
     );
   }
@@ -146,19 +155,30 @@ async function handleFile(
   setFileVariable(storeAs, parsed, resolvedPath);
   recordStore(resolvedPath);
 
-  // Auto-index large files (label uses path for useful search filtering)
-  let indexMsg = '';
+  // Auto-index large files
   if (content.length > FILE_INDEX_THRESHOLD) {
     const label = `file:${resolvedPath}`;
-    ctx.contentStore.index(content, label, { contentType: "code" });
-    indexMsg = '\n' + eventTips.autoIndex(label, content.length);
+
+    // No intent → just index and show message
+    if (!intent) {
+      ctx.contentStore.index(content, label, { contentType: "code" });
+      const indexMsg = '\n' + eventTips.autoIndex(label, content.length);
+      if (!code) return formatStored(storeAs, { lines: parsed.lines.length }) + indexMsg;
+      return executeCode(ctx, code, storeAs);
+    }
+
+    // With intent → search automatically
+    const { results, terms } = indexAndSearch(content, label, intent, "code");
+    if (results.length === 0) {
+      const hint = terms.length > 0 ? `\nSearchable: ${terms.join(', ')}` : '';
+      return formatStored(storeAs, { lines: parsed.lines.length }) +
+        `\nIndexed: ${label}\nNo matches.${hint}\n→ mcx_search() to explore`;
+    }
+    return formatStored(storeAs, { lines: parsed.lines.length }) + '\n' + formatSearchSnippets(results, intent);
   }
 
-  // Return result
-  if (!code) {
-    return formatStored(storeAs, { lines: parsed.lines.length }) + indexMsg;
-  }
-
+  // Small file → return directly
+  if (!code) return formatStored(storeAs, { lines: parsed.lines.length });
   return executeCode(ctx, code, storeAs);
 }
 
@@ -241,6 +261,7 @@ Note: Shell/Python file operations in mcx_execute redirect here.`,
       storeAs: { type: "string", description: "Variable name (e.g., 'x' → $x)" },
       code: { type: "string", description: "JS code with helpers (grep, lines, etc.)" },
       clear: { type: "boolean", description: "Clear all file variables" },
+      intent: { type: "string", description: "Auto-search after indexing large files" },
     },
   },
   handler: handleFile,

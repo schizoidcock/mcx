@@ -6,23 +6,36 @@
  */
 
 import type { McpResult } from "./types.js";
+import type { SearchResult } from "../search/types.js";
+import { getContentStore } from "../context/store.js";
 import { enforceCharacterLimit, sanitizeForJson } from "../utils/truncate.js";
+import { FORMAT_INDEX_THRESHOLD } from "./constants.js";
 
 // ============================================================================
 // Result Formatting
 // ============================================================================
 
+// Index large output and return preview (avoids truncation)
+function indexLargeOutput(text: string, label: string): string {
+  const store = getContentStore();
+  store.index(text, label, { contentType: "plaintext" });
+  const lines = text.split('\n').length;
+  return `Indexed ${lines} lines as "${label}"\n\n${text.slice(0, 800)}...\n\n→ mcx_search({ queries: [...], source: "${label}" })`;
+}
+
 /**
  * Create a successful text result.
+ * Large outputs are indexed instead of truncated.
  */
-export function formatToolResult(text: string, suggestion?: string): McpResult {
+export function formatToolResult(text: string, suggestion?: string, label?: string): McpResult {
   const sanitized = sanitizeForJson(text);
-  const limited = enforceCharacterLimit(sanitized);
-  const content = suggestion ? limited + suggestion : limited;
-  return {
-    content: [{ type: "text" as const, text: content }],
-    toolResult: limited,
-  };
+  
+  const output = sanitized.length > FORMAT_INDEX_THRESHOLD
+    ? indexLargeOutput(sanitized, label || `output:${Date.now()}`)
+    : enforceCharacterLimit(sanitized);
+  
+  const content = suggestion ? output + suggestion : output;
+  return { content: [{ type: "text" as const, text: content }], toolResult: output };
 }
 
 /**
@@ -167,4 +180,31 @@ export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60000).toFixed(1)}m`;
+}
+
+// ============================================================================
+// Index & Search Workflow
+// ============================================================================
+
+export interface IndexSearchResult {
+  sourceId: number;
+  results: SearchResult[];
+  terms: string[];
+}
+
+/**
+ * Index content and search with intent.
+ * Returns results or distinctive terms if no matches.
+ */
+export function indexAndSearch(
+  content: string,
+  label: string,
+  intent: string,
+  contentType: "plaintext" | "code"
+): IndexSearchResult {
+  const store = getContentStore();
+  const sourceId = store.index(content, label, { contentType });
+  const results = store.search(intent, { limit: 5, sourceId });
+  const terms = results.length === 0 ? store.getDistinctiveTerms(sourceId, 8) : [];
+  return { sourceId, results, terms };
 }

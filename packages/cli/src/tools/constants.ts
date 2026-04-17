@@ -18,6 +18,11 @@ export const INTENT_THRESHOLD = 5_000;
 /** Auto-index files larger than this (bytes) */
 export const FILE_INDEX_THRESHOLD = 10_000;
 
+/** Require intent param for outputs larger than this (bytes) */
+export const INTENT_REQUIRED_THRESHOLD = 100_000;
+
+/** Auto-index large outputs instead of truncating (bytes) */
+export const FORMAT_INDEX_THRESHOLD = 20_000;
 // ============================================================================
 // Character Limits
 // ============================================================================
@@ -40,6 +45,27 @@ export const MAX_LINE_WIDTH = 120;
 /** Max log entries to show */
 export const MAX_LOGS = 20;
 
+// ============================================================================
+// Snippet Extraction
+// ============================================================================
+
+/** Window size for snippet extraction (chars before/after match) */
+export const SNIPPET_WINDOW = 300;
+
+/** Max snippets to extract for multi-word queries */
+export const MAX_SNIPPETS = 3;
+
+/** Min term length to consider in snippet extraction */
+export const MIN_TERM_LENGTH = 2;
+
+/** Snippet length for intent-based search results */
+export const INTENT_SNIPPET_LENGTH = 150;
+
+/** Merge snippet windows if gap is smaller than this (chars) */
+export const SNIPPET_MERGE_GAP = 50;
+
+/** Max size of merged snippet window (chars) */
+export const SNIPPET_MAX_MERGED = 800;
 // ============================================================================
 // Warnings
 // ============================================================================

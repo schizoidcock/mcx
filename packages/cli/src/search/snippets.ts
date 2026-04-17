@@ -1,39 +1,35 @@
-const DEFAULT_WINDOW = 300;
+import { SNIPPET_WINDOW, MAX_SNIPPETS, MIN_TERM_LENGTH, INTENT_SNIPPET_LENGTH, SNIPPET_MERGE_GAP, SNIPPET_MAX_MERGED } from "../tools/constants.js";
+import type { SearchResult, SnippetWindow } from "./types.js";
 
 /**
  * Extract a snippet around a search match.
- * Returns ±300 chars around the match position.
+ * FTS5 snippets come pre-centered with ** markers (stemming-aware).
+ * Falls back to indexOf for content without markers.
  */
 export function extractSnippet(
   content: string,
   query: string,
-  windowSize = DEFAULT_WINDOW
+  windowSize = SNIPPET_WINDOW
 ): string {
-  const lowerContent = content.toLowerCase();
-  const lowerQuery = query.toLowerCase();
+  // FTS5 snippet already centered with ** markers - use directly
+  if (content.includes('**')) {
+    return content.replace(/\s+/g, ' ').trim();
+  }
 
-  // Find match position
-  const matchIndex = lowerContent.indexOf(lowerQuery);
+  // Fallback: center manually with indexOf
+  const matchIndex = content.toLowerCase().indexOf(query.toLowerCase());
   if (matchIndex === -1) {
-    // No exact match, return start of content
     return content.slice(0, windowSize * 2) + (content.length > windowSize * 2 ? '...' : '');
   }
 
-  // Calculate window bounds
   const start = Math.max(0, matchIndex - windowSize);
   const end = Math.min(content.length, matchIndex + query.length + windowSize);
-
-  // Extract and clean up
   let snippet = content.slice(start, end);
 
-  // Add ellipsis if truncated
   if (start > 0) snippet = '...' + snippet;
-  if (end < content.length) snippet = snippet + '...';
+  if (end < content.length) snippet += '...';
 
-  // Clean up whitespace
-  snippet = snippet.replace(/\s+/g, ' ').trim();
-
-  return snippet;
+  return snippet.replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -44,7 +40,7 @@ export function highlightSnippet(
   snippet: string,
   query: string
 ): string {
-  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
+  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length >= MIN_TERM_LENGTH);
   let result = snippet;
 
   for (const term of terms) {
@@ -62,50 +58,104 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Helper: find all positions of a term in content
+function findTermPositions(content: string, term: string): number[] {
+  const lower = content.toLowerCase();
+  const positions: number[] = [];
+  let start = 0;
+
+  while (start < content.length) {
+    const idx = lower.indexOf(term, start);
+    if (idx === -1) break;
+    positions.push(idx);
+    start = idx + term.length;
+  }
+
+  return positions;
+}
+
+// Merge close windows to preserve context between nearby matches
+function mergeWindows(windows: SnippetWindow[]): SnippetWindow[] {
+  if (windows.length === 0) return [];
+  
+  const sorted = [...windows].sort((a, b) => a.start - b.start);
+  const merged: SnippetWindow[] = [{ ...sorted[0] }];
+  
+  for (let i = 1; i < sorted.length; i++) {
+    const w = sorted[i];
+    const last = merged[merged.length - 1];
+    const gapTooLarge = w.start - last.end >= SNIPPET_MERGE_GAP;
+    const wouldBeTooLong = w.end - last.start >= SNIPPET_MAX_MERGED;
+    
+    if (gapTooLarge || wouldBeTooLong) {
+      merged.push({ ...w });
+      continue;
+    }
+    
+    last.end = w.end;
+    last.matches += w.matches;
+  }
+  
+  return merged;
+}
+
+// Helper: create snippet from range with ellipsis
+function createSnippet(content: string, start: number, end: number): string {
+  let snippet = content.slice(start, end);
+  if (start > 0) snippet = '...' + snippet;
+  if (end < content.length) snippet = snippet + '...';
+  return snippet.replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Extract multiple snippets for multi-word queries.
- * Returns one snippet per significant match location.
+ * Merges nearby matches to preserve context.
  */
 export function extractMultipleSnippets(
   content: string,
   query: string,
-  maxSnippets = 3,
-  windowSize = DEFAULT_WINDOW
+  maxSnippets = MAX_SNIPPETS,
+  windowSize = SNIPPET_WINDOW
 ): string[] {
-  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
-  const lowerContent = content.toLowerCase();
-  const snippets: string[] = [];
-  const usedRanges: Array<{ start: number; end: number }> = [];
-
+  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length >= MIN_TERM_LENGTH);
+  if (terms.length === 0) return [];
+  
+  // 1. Collect all windows
+  const windows: SnippetWindow[] = [];
   for (const term of terms) {
-    if (snippets.length >= maxSnippets) break;
-
-    let searchStart = 0;
-    while (searchStart < content.length && snippets.length < maxSnippets) {
-      const matchIndex = lowerContent.indexOf(term, searchStart);
-      if (matchIndex === -1) break;
-
-      // Check if this range overlaps with existing snippets
-      const snippetStart = Math.max(0, matchIndex - windowSize);
-      const snippetEnd = Math.min(content.length, matchIndex + term.length + windowSize);
-
-      const overlaps = usedRanges.some(
-        range => !(snippetEnd < range.start || snippetStart > range.end)
-      );
-
-      if (!overlaps) {
-        let snippet = content.slice(snippetStart, snippetEnd);
-        if (snippetStart > 0) snippet = '...' + snippet;
-        if (snippetEnd < content.length) snippet = snippet + '...';
-        snippet = snippet.replace(/\s+/g, ' ').trim();
-
-        snippets.push(snippet);
-        usedRanges.push({ start: snippetStart, end: snippetEnd });
-      }
-
-      searchStart = matchIndex + term.length;
+    for (const pos of findTermPositions(content, term)) {
+      windows.push({
+        start: Math.max(0, pos - windowSize),
+        end: Math.min(content.length, pos + term.length + windowSize),
+        matches: 1
+      });
     }
   }
+  
+  // 2. Merge close windows
+  const merged = mergeWindows(windows);
+  
+  // 3. Sort by match density (most relevant first)
+  merged.sort((a, b) => (b.matches / (b.end - b.start)) - (a.matches / (a.end - a.start)));
+  
+  // 4. Extract snippets
+  return merged.slice(0, maxSnippets).map(w => createSnippet(content, w.start, w.end));
+}
 
-  return snippets;
+/**
+ * Format search results as snippets centered on intent.
+ * Returns formatted string with bullet points.
+ */
+export function formatSearchSnippets(
+  results: SearchResult[],
+  intent: string
+): string {
+  if (results.length === 0) return '';
+
+  const lines = [`Found ${results.length} matches for "${intent}":`];
+  for (const r of results) {
+    lines.push(`  • ${extractSnippet(r.snippet, intent, INTENT_SNIPPET_LENGTH)}`);
+  }
+
+  return lines.join("\n");
 }

@@ -148,18 +148,35 @@ export function summarizeResult(value: unknown, opts: TruncateOptions = {}): Sum
 }
 
 // ============================================================================
-// enforceCharacterLimit - Final safeguard
+// enforceCharacterLimit - Final safeguard with clean line breaks
 // ============================================================================
+
+/** Find last newline before target, within tolerance. Falls back to target. */
+function findCleanCut(text: string, target: number, tolerance = 200): number {
+  const idx = text.lastIndexOf('\n', target);
+  return idx >= target - tolerance ? idx + 1 : target;
+}
+
+/** Find first newline after target, within tolerance. Falls back to target. */
+function findCleanCutEnd(text: string, target: number, tolerance = 200): number {
+  const idx = text.indexOf('\n', target);
+  return idx > 0 && idx <= target + tolerance ? idx + 1 : target;
+}
 
 export function enforceCharacterLimit(text: string, limit: number = CHARACTER_LIMIT): string {
   const sanitized = sanitizeForJson(text);
   if (sanitized.length <= limit) return sanitized;
 
-  // 60/40 split: start has more context than end
   const available = limit - 50;
-  const startLen = Math.floor(available * 0.6);
-  const endLen = available - startLen;
-  return sanitized.slice(0, startLen) + `\n\n... [${sanitized.length - limit} chars truncated] ...\n\n` + sanitized.slice(-endLen);slice(-half);
+  const targetStart = Math.floor(available * 0.6);
+  const targetEnd = available - targetStart;
+
+  // Cut at line boundaries for cleaner output
+  const startCut = findCleanCut(sanitized, targetStart);
+  const endCut = findCleanCutEnd(sanitized, sanitized.length - targetEnd);
+  const omitted = endCut - startCut;
+
+  return sanitized.slice(0, startCut) + `\n... [${omitted} chars truncated] ...\n` + sanitized.slice(endCut);
 }
 
 export function sanitizeForJson(text: string): string {
@@ -221,4 +238,32 @@ export function cleanLine(line: string, maxLen: number = 100, pattern?: string):
     if (idx >= 0) matchPos = idx;
   }
   return truncateString(cleaned, maxLen, matchPos);
+}
+
+// ============================================================================
+// UTF-8 Safe Truncation
+// ============================================================================
+
+/**
+ * Truncate string at UTF-8 safe boundary using binary search.
+ * Ensures multibyte chars (emojis) are not cut in half.
+ */
+export function truncateUtf8Safe(str: string, maxBytes: number, marker = '...'): string {
+  if (Buffer.byteLength(str) <= maxBytes) return str;
+
+  const budget = maxBytes - Buffer.byteLength(marker);
+  let lo = 0, hi = str.length;
+
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (Buffer.byteLength(str.slice(0, mid)) <= budget) lo = mid;
+    else hi = mid - 1;
+  }
+
+  return str.slice(0, lo) + marker;
+}
+
+/** Truncate JSON at UTF-8 safe boundary. */
+export function truncateJsonUtf8Safe(value: unknown, maxBytes: number): string {
+  return truncateUtf8Safe(JSON.stringify(value) ?? 'null', maxBytes, '... [truncated]');
 }

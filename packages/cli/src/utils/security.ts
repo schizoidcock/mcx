@@ -245,7 +245,7 @@ export function detectShellEscape(code: string, language: string): ShellEscapeRe
 }
 
 // ============================================================================
-// Tool Redirect Enforcement
+// Tool Redirect Enforcement (Linus-style: ONE data structure, ONE function)
 // ============================================================================
 
 export type BlockedResponse = { 
@@ -253,117 +253,79 @@ export type BlockedResponse = {
   isError: true 
 };
 
+export type Language = 'shell' | 'python' | 'javascript';
+
+interface Rule {
+  lang: Language;
+  pattern: RegExp | string;  // string = literal match (JIT-safe)
+  tool?: string;             // undefined = hard block, string = redirect
+  message: string;
+}
+
+// ONE source of truth: all rules in one place
+const RULES: Rule[] = [
+  // === Security blocks (no tool = hard block) ===
+  { lang: 'shell', pattern: /\brm\s+(-[rf]+\s+)*(\/\*?|~|\$HOME|\.\.?)($|\s)/, message: 'Destructive rm command' },
+  { lang: 'shell', pattern: /\bdd\s+.*if=\/dev\/(zero|random|urandom)/, message: 'Destructive dd command' },
+  { lang: 'shell', pattern: /\b(mkfs|fdisk|parted|wipefs)\b/, message: 'Disk formatting command' },
+  { lang: 'shell', pattern: ':(){ :|:& };:', message: 'Fork bomb detected' },  // string = JIT-safe
+  
+  // === Shell redirects ===
+  { lang: 'shell', pattern: /\b(cat|head|tail|less|more)\s+["']?[^\s|>"']+/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
+  { lang: 'shell', pattern: /\b(grep|rg|ag)\s+/, tool: 'mcx_grep', message: 'mcx_grep({ query: "pattern", path: "..." })' },
+  { lang: 'shell', pattern: /\b(find|fd)\s+/, tool: 'mcx_find', message: 'mcx_find({ query: "*.ts" })' },
+  { lang: 'shell', pattern: /\b(curl|wget)\s+/, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
+  
+  // === Python redirects ===
+  { lang: 'python', pattern: /\b(open\s*\(|with\s+open)/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
+  { lang: 'python', pattern: /\b(Path\s*\(|pathlib\.)/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
+  { lang: 'python', pattern: /\b(pd|pandas)\.(read_|to_)\w+\s*\(/, tool: 'mcx_file', message: 'mcx_file for pandas file operations' },
+  { lang: 'python', pattern: /\b(os\.path\.|shutil\.|glob\.glob)/, tool: 'mcx_file', message: 'mcx_file or mcx_find for file system operations' },
+  
+  // === JavaScript redirects ===
+  { lang: 'javascript', pattern: /\bfetch\s*\(/, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
+  { lang: 'javascript', pattern: /\baxios\s*\./, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
+  { lang: 'javascript', pattern: /\bgot\s*\(/, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
+  { lang: 'javascript', pattern: /\b(readFileSync|readFile|writeFileSync|writeFile)\s*\(/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
+  { lang: 'javascript', pattern: /\bBun\.(file|write|stdin|stdout)\s*\(/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
+  { lang: 'javascript', pattern: /\bfs\.(promises\.|createReadStream|createWriteStream)/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
+];
+
 /** Create blocked response for tool redirects */
 export function blockedResponse(msg: string): BlockedResponse {
   return { content: [{ type: "text", text: msg }], isError: true };
 }
 
-/** Enforce shell command redirects to MCX tools. Returns error response or null. */
-export function enforceShellRedirects(cmd: string): BlockedResponse | null {
-  // BLOCK destructive commands (security - these should never execute)
-  if (/\brm\s+(-[rf]+\s+)*(\/\*?|~|\$HOME|\.\.?)($|\s)/.test(cmd)) {
-    return blockedResponse('🔴 BLOCKED: Destructive rm command on critical path');
+/**
+ * Enforce tool redirects. ONE function for all languages.
+ * Returns BlockedResponse if blocked/redirected, null if allowed.
+ */
+export function enforceRedirects(code: string, lang: Language): BlockedResponse | null {
+  // Check fork bomb with string match first (JIT-safe, no regex)
+  if (lang === 'shell' && code.includes(':(){ :|:& };:')) {
+    return blockedResponse('🔴 BLOCKED: Fork bomb detected');
   }
-  if (/\bdd\s+.*if=\/dev\/(zero|random|urandom)/.test(cmd)) {
-    return blockedResponse('🔴 BLOCKED: Destructive dd command');
-  }
-  if (/\b(mkfs|fdisk|parted|wipefs)\b/.test(cmd)) {
-    return blockedResponse('🔴 BLOCKED: Disk formatting command');
-  }
-  if (/:(){ :|:& };:|fork\s*bomb/i.test(cmd)) {
+  if (lang === 'shell' && /fork\s*bomb/i.test(code)) {
     return blockedResponse('🔴 BLOCKED: Fork bomb detected');
   }
   
-  // File operations → mcx_file
-  const fileMatch = cmd.match(/\b(cat|head|tail|sed|awk|wc|less|more|cut|sort|tr)\b.*?(["']?)([^\s|>"']*[\.\/\\][^\s|>"']+)\2/);
-  if (fileMatch) {
-    const filePath = fileMatch[3];
-    const varName = filePath.split(/[\/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'f';
-    return blockedResponse(`Must use mcx_file for file operations\n💡 mcx_file({ path: "${filePath}", storeAs: "${varName}" }), then grep($${varName}, 'pattern')`);
-  }
-  
-  // grep/rg → mcx_grep
-  if (/\b(grep|rg)\s+/.test(cmd)) {
-    return blockedResponse(`Must use mcx_grep instead\n💡 mcx_grep({ pattern: "...", path: "..." })`);
-  }
-  
-  // find → mcx_find
-  const findMatch = cmd.match(/\bfind\s+["']?([^\s|>"']*)/);
-  if (findMatch) {
-    return blockedResponse(`Must use mcx_find instead\n💡 mcx_find({ pattern: "...", path: "${findMatch[1] || '.'}" })`);
-  }
-  
-  // curl/wget → mcx_fetch
-  const curlMatch = cmd.match(/\b(curl|wget)\s+.*?(https?:\/\/[^\s"']+)/);
-  if (curlMatch) {
-    return blockedResponse(`Must use mcx_fetch instead\n💡 mcx_fetch({ url: "${curlMatch[2]}" })`);
-  }
-  
-  // bun -e / node -e with file operations → mcx_file
-  if (/\b(bun|node)\s+-e\s+/.test(cmd)) {
-    // Check for file operations inside the inline code
-    if (/Bun\.(file|write|stdin)|readFile|writeFile|fs\.(promises|createRead|createWrite)/.test(cmd)) {
-      return blockedResponse(`File operations in inline code must use mcx_file instead
-💡 mcx_file({ path: "...", storeAs: "x" })`);
+  for (const rule of RULES) {
+    if (rule.lang !== lang) continue;
+    
+    // String pattern = literal match (JIT-safe)
+    const matches = typeof rule.pattern === 'string'
+      ? code.includes(rule.pattern)
+      : rule.pattern.test(code);
+    
+    if (!matches) continue;
+    
+    // No tool = security block
+    if (!rule.tool) {
+      return blockedResponse(`🔴 BLOCKED: ${rule.message}`);
     }
-  }
-  
-  return null;
-}
-
-/** Enforce Python code redirects to MCX tools. Returns error response or null. */
-export function enforcePythonRedirects(code: string): BlockedResponse | null {
-  // File reading operations → mcx_file
-  if (/\b(open\s*\(|with\s+open)/.test(code)) {
-    return blockedResponse(`Must use mcx_file for file reading
-💡 mcx_file({ path: "...", storeAs: "x" }), then use helpers`);
-  }
-  
-  // pathlib operations → mcx_file
-  if (/\b(Path\s*\(|pathlib\.)/.test(code)) {
-    return blockedResponse(`Must use mcx_file for path operations
-💡 mcx_file({ path: "...", storeAs: "x" })`);
-  }
-  
-  // pandas file reading → mcx_file
-  if (/\b(pd|pandas)\.(read_\w+|to_\w+)\s*\(/.test(code)) {
-    return blockedResponse(`Must use mcx_file for pandas file operations
-💡 mcx_file({ path: "...", storeAs: "data" }), then process in Python separately`);
-  }
-  
-  // os.path, shutil, glob → mcx_file/mcx_find
-  if (/\b(os\.path\.|shutil\.|glob\.glob)/.test(code)) {
-    return blockedResponse(`Must use mcx_file or mcx_find for file system operations
-💡 mcx_find({ query: "*.py" }) or mcx_file({ path: "..." })`);
-  }
-  
-  return null;
-}
-
-/** Enforce JS/TS code redirects to MCX tools. Returns error response or null. */
-export function enforceCodeRedirects(code: string): BlockedResponse | null {
-  // Network requests → mcx_fetch
-  if (/\bfetch\s*\(/.test(code) || /\baxios\s*\./.test(code) || /\bgot\s*\(/.test(code)) {
-    return blockedResponse(`Network requests must use mcx_fetch instead
-💡 mcx_fetch({ url: "..." })`);
-  }
-  
-  // File operations → mcx_file (Node.js)
-  if (/\b(readFileSync|readFile|writeFileSync|writeFile)\s*\(/.test(code)) {
-    return blockedResponse(`File operations must use mcx_file instead
-💡 mcx_file({ path: "...", storeAs: "x" })`);
-  }
-  
-  // File operations → mcx_file (Bun)
-  if (/\bBun\.(file|write|stdin|stdout)\s*\(/.test(code)) {
-    return blockedResponse(`Bun file operations must use mcx_file instead
-💡 mcx_file({ path: "...", storeAs: "x" })`);
-  }
-  
-  // File operations → mcx_file (fs.promises, streams)
-  if (/\bfs\.(promises\.|createReadStream|createWriteStream)/.test(code)) {
-    return blockedResponse(`File operations must use mcx_file instead
-💡 mcx_file({ path: "...", storeAs: "x" })`);
+    
+    // Has tool = redirect with hint
+    return blockedResponse(`Must use ${rule.tool}\n💡 ${rule.message}`);
   }
   
   return null;

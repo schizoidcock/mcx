@@ -148,9 +148,20 @@ Object.defineProperty(globalThis, 'EventSource', {
   const _domains = ${domainsJson};
   const _real_fetch = globalThis.fetch;
 
-  // Block private/link-local IPs to prevent DNS rebinding attacks
+  // Block private/link-local IPs (JIT-safe string checks)
+  function _is172Private(h) {
+    if (!h.startsWith('172.')) return false;
+    const octet = parseInt(h.slice(4), 10);
+    return octet >= 16 && octet <= 31;
+  }
   function _isPrivateIp(hostname) {
-    return /^(localhost|127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2\\d|3[01])\\.|169\\.254\\.|\\[::1\\]|\\[fc|\\[fd)/.test(hostname);
+    const h = hostname.toLowerCase();
+    if (h === 'localhost') return true;
+    if (h.startsWith('127.') || h.startsWith('10.')) return true;
+    if (h.startsWith('192.168.') || h.startsWith('169.254.')) return true;
+    if (_is172Private(h)) return true;
+    if (h === '[::1]' || h.startsWith('[fc') || h.startsWith('[fd')) return true;
+    return false;
   }
 
   function _isUrlAllowed(url) {

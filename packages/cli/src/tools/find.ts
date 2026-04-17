@@ -31,6 +31,11 @@ export interface FindParams {
   limit?: number;    // Max results
 }
 
+interface ImporterMatch {
+  path: string;
+  line: number;
+  snippet: string;
+}
 // ============================================================================
 // Handler
 // ============================================================================
@@ -165,6 +170,18 @@ function extractImports(content: string): string[] {
   return imports;
 }
 
+/** Find line number and snippet where target is imported */
+function findImportLine(content: string, targetBase: string): { line: number; snippet: string } | null {
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.includes(targetBase)) continue;
+    if (!IMPORT_REGEX.test(line)) continue;
+    IMPORT_REGEX.lastIndex = 0;
+    return { line: i + 1, snippet: line.trim() };
+  }
+  return null;
+}
 /** Resolve import path to absolute file path */
 async function resolveImport(fromFile: string, importPath: string): Promise<string | null> {
   if (!importPath.startsWith(".")) return null;
@@ -187,29 +204,45 @@ function formatSection(title: string, items: string[], prefix: string, max: numb
   return lines;
 }
 
-/** Get files that import target */
+/** Format importers with line context */
+function formatImporters(importers: ImporterMatch[], max: number): string[] {
+  if (importers.length === 0) return [];
+  const lines = [`Imported by (${importers.length}):`];
+  for (const m of importers.slice(0, max)) {
+    lines.push(`  ← ${m.path}:${m.line} → ${m.snippet.slice(0, 60)}${m.snippet.length > 60 ? '...' : ''}`);
+  }
+  if (importers.length > max) lines.push(`  ... +${importers.length - max} more`);
+  lines.push("");
+  return lines;
+}
+/** Get files that import target with context */
 async function getImporters(
   finder: Awaited<ReturnType<typeof getFinderForPath>>,
   basePath: string,
   target: string,
   targetRel: string
-): Promise<string[]> {
+): Promise<ImporterMatch[]> {
   const targetBase = basename(target).replace(SOURCE_EXT_REGEX, "");
   const grepResult = finder.grep(`${targetBase}.`, { glob: SOURCE_GLOB, pageSize: RELATED_PAGE_SIZE });
   if (!grepResult.ok) return [];
 
-  const importers = new Set<string>();
+  const seen = new Set<string>();
+  const importers: ImporterMatch[] = [];
+  
   for (const item of grepResult.value.items) {
     const fullPath = resolve(basePath, item.path);
     const relPath = normalizePath(relative(basePath, fullPath));
-    if (relPath === targetRel || importers.has(relPath)) continue;
+    if (relPath === targetRel || seen.has(relPath)) continue;
     
     const content = await Bun.file(fullPath).text().catch(() => "");
-    if (extractImports(content).some(imp => imp.includes(targetBase))) {
-      importers.add(relPath);
-    }
+    const match = findImportLine(content, targetBase);
+    if (!match) continue;
+    
+    seen.add(relPath);
+    importers.push({ path: relPath, line: match.line, snippet: match.snippet });
   }
-  return [...importers];
+  
+  return importers;
 }
 
 /** Get sibling files in same directory */
@@ -252,7 +285,7 @@ async function handleFindRelated(ctx: ToolContext, targetFile: string): Promise<
   // Format output
   const lines = [`Related files for: ${targetRel}`, ""];
   lines.push(...formatSection("Imports", imports, "→", 10));
-  lines.push(...formatSection("Imported by", importers, "←", 10));
+  lines.push(...formatImporters(importers, 10));
   lines.push(...formatSection("Siblings", siblings, "-", 5));
 
   if (imports.length === 0 && importers.length === 0 && siblings.length === 0) {
