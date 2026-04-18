@@ -99,21 +99,6 @@ export const TOOL_META: ToolMeta[] = [
 
   // Write tools
   {
-    name: 'mcx_edit',
-    reads: false, writes: true, executes: false, network: false,
-    params: [
-      { name: 'file_path', type: 'string', description: 'Absolute path to the file to edit' },
-      { name: 'path', type: 'string', description: 'Alias for file_path' },
-      { name: 'start', type: 'number', description: 'Line mode: start line (1-indexed)', min: 1 },
-      { name: 'end', type: 'number', description: 'Line mode: end line (1-indexed)', min: 1 },
-      { name: 'old_string', type: 'string', description: 'String mode: exact string to replace' },
-      { name: 'new_string', type: 'string', description: 'The replacement string' },
-      { name: 'code', type: 'string', description: 'JS code for transform mode' },
-      { name: 'mode', type: 'string', description: 'Edit mode', enum: ['line', 'string', 'transform'] },
-      { name: 'replace_all', type: 'boolean', description: 'Replace all occurrences', default: false },
-    ],
-  },
-  {
     name: 'mcx_write',
     reads: false, writes: true, executes: false, network: false,
     params: [

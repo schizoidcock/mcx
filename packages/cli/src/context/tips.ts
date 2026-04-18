@@ -53,7 +53,7 @@ function lastTool(tools: RecentTool[]): string | undefined {
 
 function lastEditedFile(tools: RecentTool[]): string | undefined {
   for (let i = tools.length - 1; i >= 0; i--) {
-    if ((tools[i].tool === 'mcx_edit' || tools[i].tool === 'mcx_write') && tools[i].file) {
+    if ((tools[i].tool === 'mcx_file' || tools[i].tool === 'mcx_write') && tools[i].file) {
       return tools[i].file;
     }
   }
@@ -81,7 +81,7 @@ const RULES: TipRule[] = [
 
   // === Tool sequence patterns (efficiency) ===
   {
-    test: ctx => ctx.meta.reads && lastTool(ctx.recentTools) === 'mcx_edit' && ctx.filePath && lastEditedFile(ctx.recentTools) === ctx.filePath,
+    test: ctx => ctx.meta.reads && lastTool(ctx.recentTools) === 'mcx_file' && ctx.filePath && lastEditedFile(ctx.recentTools) === ctx.filePath,
     message: () => `No need to re-read after edit. Changes confirmed.`,
   },
   {
@@ -106,11 +106,11 @@ const RULES: TipRule[] = [
 
   // === Edit patterns (writes capability) ===
   {
-    test: ctx => ctx.meta.writes && lastTool(ctx.recentTools) === 'mcx_edit',
+    test: ctx => ctx.meta.writes && lastTool(ctx.recentTools) === 'mcx_file',
     message: () => `Back-to-back edits. Consider batching changes.`,
   },
   {
-    test: ctx => ctx.meta.writes && countRecent(ctx.recentTools, 'mcx_edit') >= 2 && 
+    test: ctx => ctx.meta.writes && countRecent(ctx.recentTools, 'mcx_file') >= 2 && 
                  countRecent(ctx.recentTools, 'mcx_execute') >= 1,
     message: () => `Edit→build→edit cycle. Batch all edits first, then build once.`,
   },

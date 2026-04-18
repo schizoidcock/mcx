@@ -85,7 +85,6 @@ import { mcxDoctor } from "../tools/doctor.js";
 import { mcxUpgrade } from "../tools/upgrade.js";
 import { mcxFind } from "../tools/find.js";
 import { mcxGrep } from "../tools/grep.js";
-import { mcxEdit } from "../tools/edit.js";
 import { mcxWrite } from "../tools/write.js";
 import { mcxFetch } from "../tools/fetch.js";
 import { mcxFile } from "../tools/file.js";

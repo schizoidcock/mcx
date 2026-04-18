@@ -33,7 +33,6 @@ import { mcxUpgrade } from "./upgrade.js";
 import { mcxWatch } from "./watch.js";
 import { mcxGrep } from "./grep.js";
 import { mcxFind } from "./find.js";
-import { mcxEdit } from "./edit.js";
 import { mcxFetch } from "./fetch.js";
 import { mcxStats } from "./stats.js";
 import { mcxTasks } from "./tasks.js";
@@ -89,7 +88,6 @@ export function registerExtractedTools(options: RegisterOptions): void {
     mcxWatch,
     mcxGrep,
     mcxFind,
-    mcxEdit,
     mcxFetch,
     mcxStats,
     mcxTasks,

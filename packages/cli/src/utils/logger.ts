@@ -34,7 +34,7 @@ const SCHEMAS: Record<string, string[]> = {
 const TOOL_CATEGORY: Record<string, string> = {
   mcx_execute: "execute",
   mcx_file: "file",
-  mcx_edit: "file",
+
   mcx_write: "file",
   mcx_grep: "search",
   mcx_find: "search",

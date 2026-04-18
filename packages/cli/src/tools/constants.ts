@@ -19,7 +19,6 @@ export const INTENT_THRESHOLD = 5_000;
 export const FILE_INDEX_THRESHOLD = 10_000;
 
 /** Require intent param for outputs larger than this (bytes) */
-export const INTENT_REQUIRED_THRESHOLD = 100_000;
 
 /** Auto-index large outputs instead of truncating (bytes) */
 export const FORMAT_INDEX_THRESHOLD = 20_000;

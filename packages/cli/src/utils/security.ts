@@ -268,12 +268,16 @@ const RULES: Rule[] = [
   { lang: 'shell', pattern: /\bdd\s+.*if=\/dev\/(zero|random|urandom)/, message: 'Destructive dd command' },
   { lang: 'shell', pattern: /\b(mkfs|fdisk|parted|wipefs)\b/, message: 'Disk formatting command' },
   { lang: 'shell', pattern: ':(){ :|:& };:', message: 'Fork bomb detected' },  // string = JIT-safe
+  { lang: 'shell', pattern: /(?:^|&&|\|\||;|\n)\s*git\s+(checkout|restore)\b/, message: 'git checkout/restore blocked - destructive operation' },
+  { lang: 'shell', pattern: /\s+>{1,2}\s*["']?[^|]/, tool: 'mcx_write', message: 'mcx_write({ path: "...", content: "..." })' },
   
   // === Shell redirects ===
   { lang: 'shell', pattern: /\b(cat|head|tail|less|more)\s+["']?[^\s|>"']+/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
   { lang: 'shell', pattern: /\b(grep|rg|ag)\s+/, tool: 'mcx_grep', message: 'mcx_grep({ query: "pattern", path: "..." })' },
   { lang: 'shell', pattern: /\b(find|fd)\s+/, tool: 'mcx_find', message: 'mcx_find({ query: "*.ts" })' },
   { lang: 'shell', pattern: /\b(curl|wget)\s+/, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
+  { lang: 'shell', pattern: /<<\s*['"]?EOF/, tool: 'mcx_write', message: 'mcx_write({ file_path: "...", content: "..." })' },
+  { lang: 'shell', pattern: /\bsed\s+/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "f", code: "$f.raw.replace(...)", write: true })' },
   
   // === Python redirects ===
   { lang: 'python', pattern: /\b(open\s*\(|with\s+open)/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },

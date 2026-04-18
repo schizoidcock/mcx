@@ -34,7 +34,6 @@ export { mcxUpgrade } from "./upgrade.js";
 export { mcxWatch } from "./watch.js";
 export { mcxGrep } from "./grep.js";
 export { mcxFind } from "./find.js";
-export { mcxEdit } from "./edit.js";
 export { mcxFetch } from "./fetch.js";
 export { mcxStats } from "./stats.js";
 export { mcxTasks } from "./tasks.js";

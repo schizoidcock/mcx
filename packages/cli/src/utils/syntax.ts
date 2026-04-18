@@ -17,11 +17,15 @@ export interface BraceResult {
   unmatchedLines: number[];
 }
 
+interface StringFrame {
+  char: string;
+  depth: number;
+}
+
 interface ScanState {
   i: number;
   line: number;
-  inString: boolean;
-  stringChar: string;
+  stringStack: StringFrame[];
   inLineComment: boolean;
   inBlockComment: boolean;
   inRegex: boolean;
@@ -37,14 +41,22 @@ function createState(): ScanState {
   return {
     i: 0,
     line: 1,
-    inString: false,
-    stringChar: "",
+    stringStack: [],
     inLineComment: false,
     inBlockComment: false,
     inRegex: false,
     escaped: false,
     templateDepth: 0,
   };
+}
+
+function inString(state: ScanState): boolean {
+  return state.stringStack.length > 0;
+}
+
+function currentStringChar(state: ScanState): string {
+  const top = state.stringStack[state.stringStack.length - 1];
+  return top?.char || "";
 }
 
 // ============================================================================
@@ -90,7 +102,7 @@ function handleRegex(content: string, state: ScanState): boolean {
 }
 
 function detectComment(content: string, state: ScanState): boolean {
-  if (state.inString) return false;
+  if (inString(state)) return false;
   const char = content[state.i];
   const next = content[state.i + 1];
   if (char === "/" && next === "/") {
@@ -105,7 +117,7 @@ function detectComment(content: string, state: ScanState): boolean {
 }
 
 function detectRegex(content: string, state: ScanState): boolean {
-  if (state.inString) return false;
+  if (inString(state)) return false;
   const char = content[state.i];
   const next = content[state.i + 1];
   if (char !== "/" || next === "=" || next === undefined) return false;
@@ -118,7 +130,7 @@ function detectRegex(content: string, state: ScanState): boolean {
 }
 
 function handleTemplateInterpolation(content: string, state: ScanState): boolean {
-  if (!state.inString || state.stringChar !== "`") return false;
+  if (!inString(state) || currentStringChar(state) !== "`") return false;
   if (state.escaped) return false;
   if (content[state.i] !== "$" || content[state.i + 1] !== "{") return false;
   
@@ -131,16 +143,22 @@ function handleStringChar(content: string, state: ScanState): void {
   const char = content[state.i];
   if (char !== '"' && char !== "'" && char !== "`") return;
   
-  if (!state.inString) {
-    state.inString = true;
-    state.stringChar = char;
-  } else if (char === state.stringChar && !state.escaped && state.templateDepth === 0) {
-    state.inString = false;
+  const top = state.stringStack[state.stringStack.length - 1];
+  
+  if (!top) {
+    // Not in string - open new one
+    state.stringStack.push({ char, depth: state.templateDepth });
+  } else if (char === top.char && !state.escaped && top.depth === state.templateDepth) {
+    // Same char, same depth - close string
+    state.stringStack.pop();
+  } else if (state.templateDepth > top.depth) {
+    // Inside interpolation - can open nested string
+    state.stringStack.push({ char, depth: state.templateDepth });
   }
 }
 
 function handleStringContent(content: string, state: ScanState): boolean {
-  if (!state.inString) return false;
+  if (!inString(state)) return false;
   // Inside template interpolation ${...}, braces are code - don't skip
   if (state.templateDepth > 0) return false;
   const char = content[state.i];
@@ -175,7 +193,7 @@ export function checkBraceBalance(content: string): BraceResult {
     if (handleStringContent(content, state)) { state.i++; continue; }
 
     // Count braces (only when not in string, or inside template interpolation)
-    const countBraces = !state.inString || state.templateDepth > 0;
+    const countBraces = !inString(state) || state.templateDepth > 0;
     if (countBraces && char === "{") openStack.push(state.line);
     if (char === "}") {
       if (state.templateDepth > 0) {

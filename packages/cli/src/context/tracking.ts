@@ -80,10 +80,10 @@ const TOOL_FLOW_MAP: Record<string, ToolSuggestion[]> = {
   ],
   mcx_grep: [
     { tool: "mcx_file", hint: "read full file context" },
-    { tool: "mcx_edit", hint: "modify matched lines" },
+    { tool: "mcx_file", hint: "modify with write: true" },
   ],
   mcx_file: [
-    { tool: "mcx_edit", hint: "edit file content" },
+    { tool: "mcx_file", hint: "edit with code + write: true" },
     { tool: "mcx_grep", hint: "search within file" },
   ],
   mcx_search: [

@@ -26,7 +26,7 @@ const TOOL_SCHEMA_TOKENS: Record<string, number> = {
   mcx_execute: 800,
   mcx_search: 600,
   mcx_file: 400,
-  mcx_edit: 350,
+
   mcx_find: 300,
   mcx_grep: 300,
   mcx_fetch: 250,

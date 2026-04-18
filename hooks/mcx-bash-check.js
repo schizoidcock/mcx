@@ -38,13 +38,13 @@ else if (/^find\s+/.test(cmd) || /^ls\s+.*\*/.test(cmd)) {
   }));
 }
 
-// Block heredoc/echo for file creation -> mcx_edit or Write
+// Block heredoc/echo for file creation -> mcx_file or Write
 else if (/<<\s*['"]?EOF/.test(cmd) || /^echo\s+.*>/.test(cmd)) {
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      additionalContext: "Use mcx_write for new files, mcx_edit for modifications"
+      additionalContext: "Use mcx_write for new files, mcx_file for modifications"
     }
   }));
 }

@@ -12,8 +12,9 @@ import { extractImages } from "../utils/images.js";
 import { applyHybridFilter } from "../filters/index.js";
 import { detectAndFormatGrepOutput } from "./format-grep.js";
 import { getAllPrefixed, setVariable, deleteVariable, clearVariables, setLastResult } from "../context/variables.js";
-import { AUTO_INDEX_THRESHOLD, INTENT_THRESHOLD, INTENT_REQUIRED_THRESHOLD } from "./constants.js";
+import { AUTO_INDEX_THRESHOLD, INTENT_THRESHOLD } from "./constants.js";
 import { formatSearchSnippets } from "../search/snippets.js";
+import { classifyExit } from "../utils/exit.js";
 
 
 import { DANGEROUS_ENV_KEYS, detectShellEscape, enforceRedirects } from "../utils/security.js";
@@ -389,16 +390,11 @@ async function handleExecute(
   const { output, lines, exitCode, varName, truncated, errorMsg } = execResult;
   const truncateWarning = truncated ? '\n⚠️ Output truncated (100MB limit)' : '';
 
-  // Error: return filtered message
-  if (exitCode !== 0) {
-    const prefix = shell ? '✗ Exit' : '✗ Python Exit';
-    return `${prefix} ${exitCode}\n${errorMsg}${truncateWarning}\n\n✓ Stored ${varName}`;
-  }
-
-  // Require intent for very large output
-  if (!intent && output.length > INTENT_REQUIRED_THRESHOLD) {
-    const sizeKB = Math.round(INTENT_REQUIRED_THRESHOLD / 1024);
-    return formatError(`Output > ${sizeKB}KB requires intent parameter\n→ mcx_execute({ shell: "...", intent: "what you're looking for" })`);
+  // Classify exit code (soft fail for grep/diff/find exit 1 with output)
+  const exitResult = classifyExit(exitCode, output, errorMsg || '', shell || 'python');
+  if (exitResult.isError) {
+    const prefix = shell ? '✗' : '✗ Python';
+    return `${prefix} ${exitResult.output}${truncateWarning}\n\n✓ Stored ${varName}`;
   }
 
   // Intent search for large output
@@ -479,8 +475,11 @@ Use mcx_search({ adapter: "name" }) for method details.
 ### Variables
 - Results auto-stored as $result
 - storeAs: "name" → $name
-- $clear: Clear all
-- delete $varname: Delete specific variable
+
+**Clear/Delete:**
+- mcx_execute({ clear: true }) - Clear all variables
+- mcx_execute({ delete: "result" }) - Delete $result
+- mcx_execute({ delete: "x" }) - Delete $x
 
 ## Mode 2: Shell Execution (shell parameter)
 Run system commands with proper timeout and output capture.

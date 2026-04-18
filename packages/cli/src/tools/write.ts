@@ -40,7 +40,7 @@ async function handleWrite(
   }
   
   try {
-    // Require absolute path (consistent with mcx_edit)
+    // Require absolute path (consistent with mcx_file)
     if (!isAbsolute(filePath)) {
       return formatError(`Absolute path required. Got: "${filePath}"`);
     }
@@ -74,7 +74,7 @@ export const mcxWrite: ToolDefinition<WriteParams> = {
 Example:
 mcx_write({ file_path: "/path/to/file.ts", content: "const x = 1;" })
 
-Tip: For partial edits, use mcx_edit instead (preserves existing content).`,
+Tip: For partial edits, use mcx_file with write: true instead.`,
   inputSchema: {
     type: "object",
     properties: {

@@ -44,11 +44,11 @@ const BASH_TO_MCX: Record<string, string> = {
   'grep': 'mcx_grep', 'rg': 'mcx_grep',
   'find': 'mcx_find', 'ls': 'mcx_tree',
   'curl': 'mcx_fetch', 'wget': 'mcx_fetch',
-  'sed': 'mcx_edit', 'awk': 'mcx_file',
+  'sed': 'mcx_file', 'awk': 'mcx_file',
 };
 
 const NATIVE_TO_MCX: Record<string, string> = {
-  'Read': 'mcx_file', 'Grep': 'mcx_grep', 'Edit': 'mcx_edit',
+  'Read': 'mcx_file', 'Grep': 'mcx_grep', 'Edit': 'mcx_file',
   'Write': 'mcx_write', 'Glob': 'mcx_find', 'WebFetch': 'mcx_fetch',
 };
 
@@ -202,7 +202,7 @@ function analyzeSession(filePath: string): SessionData {
                   data.fileOps[fname].reads++;
                   fileReads[fname] = (fileReads[fname] || 0) + 1;
                 }
-                if (toolName === 'Edit' || toolName === 'mcx_edit') {
+                if (toolName === 'Edit' || toolName === 'mcx_file') {
                   data.fileOps[fname].edits++;
                   const prev = fileEdits[fname];
                   if (prev) {

@@ -13,6 +13,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import pc from "picocolors";
 import { createMcxServer, loadEnvFile } from "./factory.js";
 import { logger } from "../utils/logger.js";
+import { startOrphanGuard } from "../utils/lifecycle.js";
 
 export async function runStdio(fffSearchPath?: string): Promise<void> {
   await loadEnvFile();
@@ -21,7 +22,7 @@ export async function runStdio(fffSearchPath?: string): Promise<void> {
   const { server, cleanup } = await createMcxServer(fffSearchPath);
   const transport = new StdioServerTransport();
 
-  setupHandlers(transport, cleanup);
+  const stopGuard = setupHandlers(transport, cleanup);
   await server.connect(transport);
 
   const pkg = await import("../../package.json");
@@ -29,21 +30,24 @@ export async function runStdio(fffSearchPath?: string): Promise<void> {
   console.error(pc.green("MCX MCP server running"));
 }
 
-function setupHandlers(transport: StdioServerTransport, cleanup: () => void): void {
+function setupHandlers(transport: StdioServerTransport, cleanup: () => void): () => void {
   transport.onerror = (error) => {
     console.error(pc.red("[MCX] Transport error:"), error);
     logger.error("Transport error", error);
   };
 
-  process.stdin.on("close", () => {
-    cleanup();
-    console.error(pc.dim("[MCX] stdin closed, exiting gracefully"));
-    logger.shutdown("stdin closed");
-    process.exit(0);
-  });
-
   process.stdin.on("error", (error) => {
     console.error(pc.red("[MCX] stdin error:"), error);
     logger.error("stdin error", error);
+  });
+
+  // Orphan guard: detects parent death via ppid + stdin close
+  return startOrphanGuard({
+    onOrphan: () => {
+      cleanup();
+      console.error(pc.dim("[MCX] Process orphaned, exiting gracefully"));
+      logger.shutdown("orphaned");
+      process.exit(0);
+    }
   });
 }
