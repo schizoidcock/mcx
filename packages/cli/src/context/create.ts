@@ -12,6 +12,7 @@
 import { getState as getVariablesState } from "./variables.js";
   import { getMcxHomeDir } from "../utils/paths.js";
   import { join } from "node:path";
+  import { MAX_WATCHED_PROJECTS } from "../tools/constants.js";
 
   // ============================================================================
   // Configuration
@@ -168,6 +169,16 @@ import { getState as getVariablesState } from "./variables.js";
     return ctx.finder;
   }
 
+  /** Evict oldest watched project if at limit (FIFO - Map keeps insertion order) */
+  function evictOldestProject(ctx: ToolContext): void {
+    if (ctx.watchedProjects.size < MAX_WATCHED_PROJECTS) return;
+    
+    const oldest = ctx.watchedProjects.keys().next().value;
+    const finder = ctx.watchedProjects.get(oldest);
+    if ((finder as any)?.destroy) (finder as any).destroy();
+    ctx.watchedProjects.delete(oldest);
+  }
+
   export async function getFinderForPath(ctx: ToolContext, searchPath: string): Promise<FileFinder> {
     const normalizedSearch = searchPath.replace(/\\/g, "/");
     const normalizedBase = ctx.basePath.replace(/\\/g, "/");
@@ -176,6 +187,8 @@ import { getState as getVariablesState } from "./variables.js";
 
     const cached = ctx.watchedProjects.get(normalizedSearch);
     if (cached) return cached;
+
+    evictOldestProject(ctx);
 
     const FileFinder = await loadFileFinderClass();
     const init = FileFinder.create({ basePath: searchPath });

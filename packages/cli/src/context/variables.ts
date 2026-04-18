@@ -7,6 +7,7 @@
 
 import type { SessionVariables, StoredVariable } from "../tools/types.js";
 import { getStoredAt, getEditedAt } from "./files.js";
+import { MAP_MAX_ENTRIES } from "../tools/constants.js";
 
 // Singleton state
 const state: SessionVariables = {
@@ -44,6 +45,25 @@ export function getVariable(name: string): StoredVariable | undefined {
 }
 
 /**
+ * Evict least recently used variable if over limit.
+ * Returns evicted key or null.
+ */
+function evictLRU(): string | null {
+  if (state.stored.size < MAP_MAX_ENTRIES) return null;
+  
+  // Find oldest by accessedAt (guaranteed to exist since size >= MAX)
+  let oldestKey = "";
+  let oldestTime = Infinity;
+  for (const [key, v] of state.stored) {
+    if (v.accessedAt >= oldestTime) continue;
+    oldestTime = v.accessedAt;
+    oldestKey = key;
+  }
+  deleteVariable(oldestKey);
+  return oldestKey;
+}
+
+/**
  * Set a stored variable.
  */
 export function setVariable(
@@ -53,6 +73,10 @@ export function setVariable(
   meta?: { path?: string; lineCount?: number }
 ): void {
   const key = name.startsWith("$") ? name.slice(1) : name;
+  
+  // Evict LRU if at limit and this is a new key
+  if (!state.stored.has(key)) evictLRU();
+  
   const now = Date.now();
   const originalSize = JSON.stringify(value).length;
   state.stored.set(key, {

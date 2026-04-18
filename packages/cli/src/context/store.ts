@@ -6,6 +6,7 @@
  */
 
 import { ContentStore } from "../search/store.js";
+import { CONTENT_STALE_MS } from "../tools/constants.js";
 
 let contentStore: ContentStore | null = null;
 
@@ -33,7 +34,7 @@ export function clearContentStore(): void {
  * Cleanup stale content older than maxAge.
  * Called on startup to prevent unbounded growth.
  */
-export function cleanupStaleContent(maxAgeMs: number = 24 * 60 * 60 * 1000): number {
+export function cleanupStaleContent(maxAgeMs: number = CONTENT_STALE_MS): number {
   const store = getContentStore();
   return store.cleanupStale(maxAgeMs);
 }

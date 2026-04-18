@@ -12,7 +12,7 @@ import { formatError } from "./utils.js";
 import { getMethodFrecency } from "../context/tracking.js";
 import { setVariable } from "../context/variables.js";
 import { checkSearchThrottle } from "../context/guards.js";
-import { MAX_PARAMS_FULL, MAX_PARAMS_TRUNCATED, MAX_DESC_LENGTH } from "./constants.js";
+import { MAX_PARAMS_FULL, MAX_PARAMS_TRUNCATED, MAX_DESC_LENGTH, SNIPPET_MAX_BATCH, SNIPPET_MAX_REGULAR } from "./constants.js";
 import { extractSnippet } from "../search/snippets.js";
 
 // ============================================================================
@@ -116,6 +116,10 @@ function handleContentSearch(
 function formatContentResults(
   results: Array<{ query: string; matches: SearchResult[] }>
 ): string {
+  // Adaptive snippet size: few results → more detail, many results → less
+  const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0);
+  const maxLen = totalMatches <= 3 ? SNIPPET_MAX_BATCH : SNIPPET_MAX_REGULAR;
+  
   const lines: string[] = [];
   
   for (const { query, matches } of results) {
@@ -123,11 +127,12 @@ function formatContentResults(
     
     if (matches.length === 0) {
       lines.push("(no matches)");
-    } else {
-      for (const m of matches) {
-        const source = m.source ? ` [${m.source}]` : "";
-        lines.push(`- ${extractSnippet(m.snippet || m.text || '', query)}${source}`);
-      }
+      continue;
+    }
+    
+    for (const m of matches) {
+      const source = m.source ? ` [${m.source}]` : "";
+      lines.push(`- ${extractSnippet(m.snippet || m.text || '', query, maxLen)}${source}`);
     }
     lines.push("");
   }

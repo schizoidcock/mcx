@@ -10,6 +10,7 @@
 import pc from "picocolors";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BunWorkerSandbox } from "@papicandela/mcx-core";
+import { CONTENT_STALE_MS } from "../tools/constants.js";
 
 // Types
 import type { Skill, Adapter, MCXConfig } from "./factory.js";
@@ -102,7 +103,7 @@ export async function createMcxServerCore(
 function cleanupStaleContent(): void {
   try {
     const store = getContentStore();
-    const cleaned = store.cleanupStale(24 * 60 * 60 * 1000);
+    const cleaned = store.cleanupStale(CONTENT_STALE_MS);
     if (cleaned > 0) console.error(pc.dim(`Cleaned up ${cleaned} stale source(s)`));
   } catch {
     // Ignore cleanup errors

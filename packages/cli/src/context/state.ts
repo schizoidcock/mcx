@@ -114,17 +114,7 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export function generateExecutionLabel(state: ServerState, storeAs?: string): string {
-  if (storeAs) return storeAs;
-  state.stats.executionCounter++;
-  return `exec_${state.stats.executionCounter}`;
-}
 
-export function formatTaskDuration(task: BackgroundTask, compact = false): string {
-  const elapsed = (task.completedAt || Date.now()) - task.startedAt;
-  const secs = (elapsed / 1000).toFixed(1);
-  return task.completedAt ? `${secs}s` : compact ? `${secs}s...` : `${secs}s (running)`;
-}
 
 export function generateTaskId(state: ServerState): string {
   state.taskIdCounter++;

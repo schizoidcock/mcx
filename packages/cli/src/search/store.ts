@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import type { Chunk, SearchResult, Source, SearchOptions, IndexOptions } from './types.js';
 import { chunkContent } from './chunker.js';
 import { extractSnippet } from './snippets.js';
+import { MAX_CHUNKS } from '../tools/constants.js';
 
 /**
  * FTS5 Content Store with BM25 ranking.
@@ -39,6 +40,7 @@ export class ContentStore {
     getStaleSources: Stmt;
     touchSource: Stmt;
     listSources: Stmt;
+    getOldestWithChunks: Stmt;
   };
 
   constructor(dbPath = ':memory:') {
@@ -105,6 +107,11 @@ export class ContentStore {
         GROUP BY s.id
         ORDER BY s.indexed_at DESC
       `),
+      getOldestWithChunks: this.db.prepare(`
+        SELECT s.id, COUNT(c.rowid) as chunks
+        FROM sources s LEFT JOIN chunks c ON c.source_id = s.id
+        GROUP BY s.id ORDER BY s.indexed_at ASC
+      `),
     };
   }
 
@@ -150,6 +157,7 @@ export class ContentStore {
     });
 
     tx();
+    this.evictOldestSources();
     return sourceId;
   }
 
@@ -269,6 +277,16 @@ export class ContentStore {
   }
 
   /**
+   * Delete a source by label. Returns true if deleted.
+   */
+  deleteByLabel(label: string): boolean {
+    const source = this.stmts.getSourceByLabel.get(label) as { id: number } | undefined;
+    if (!source) return false;
+    this.deleteSource(source.id);
+    return true;
+  }
+
+  /**
    * Get vocabulary for fuzzy matching.
    */
   getVocabulary(): string[] {
@@ -305,6 +323,28 @@ export class ContentStore {
     this.db.exec(`DELETE FROM sources WHERE id IN (${ids.join(',')})`);
     
     return stale.length;
+  }
+
+  /**
+   * Evict oldest sources until chunk count is under MAX_CHUNKS.
+   * Linus-style: early return, single loop, one query.
+   */
+  evictOldestSources(): number {
+    const count = this.getChunkCount();
+    if (count <= MAX_CHUNKS) return 0;
+
+    const oldest = this.stmts.getOldestWithChunks.all() as Array<{ id: number; chunks: number }>;
+    let remaining = count;
+    let evicted = 0;
+
+    for (const { id, chunks } of oldest) {
+      if (remaining <= MAX_CHUNKS) break;
+      this.deleteSource(id);
+      remaining -= chunks;
+      evicted++;
+    }
+
+    return evicted;
   }
 
   /**

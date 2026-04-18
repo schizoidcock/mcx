@@ -15,11 +15,11 @@ export { createMcxServerCore } from "./core.js";
 
 // State management (from context/)
 export { createServerState, trackTokenOutput, trackNetworkBytes, trackFsBytes } from "../context/state.js";
-export { formatBytes, formatTaskDuration, generateTaskId, cleanupOldTasks } from "../context/state.js";
+export { formatBytes, generateTaskId, cleanupOldTasks } from "../context/state.js";
 
 // Finder management (from utils/)
 export { createFinderCache, withFinder, destroyFinderCache } from "../utils/finder.js";
 
 // Transports
-export { startDaemonServer } from "./http.js";
+export { runHttp } from "./http.js";
 export { runStdio } from "./stdio.js";

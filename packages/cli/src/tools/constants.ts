@@ -66,6 +66,10 @@ export const SNIPPET_MERGE_GAP = 50;
 
 /** Max size of merged snippet window (chars) */
 export const SNIPPET_MAX_MERGED = 800;
+
+/** Adaptive snippet sizes - total chars based on query context */
+export const SNIPPET_MAX_BATCH = 2000;    // Few queries, more detail
+export const SNIPPET_MAX_REGULAR = 1000;  // Many queries, less detail
 // ============================================================================
 // Warnings
 // ============================================================================
@@ -140,8 +144,17 @@ export const MAP_TTL_MS = 30 * 60 * 1000;
 /** Max entries in tracking maps */
 export const MAP_MAX_ENTRIES = 500;
 
+/** Max watched projects (FileFinder instances) */
+export const MAX_WATCHED_PROJECTS = 20;
+
 /** Run cleanup every N tool calls */
 export const CLEANUP_INTERVAL = 50;
+
+/** Max chunks in ContentStore before eviction */
+export const MAX_CHUNKS = 5000;
+
+/** Content stale after this time (30 min, same as MAP_TTL_MS) */
+export const CONTENT_STALE_MS = 30 * 60 * 1000;
 
 // ============================================================================
 // Adapter Method Display

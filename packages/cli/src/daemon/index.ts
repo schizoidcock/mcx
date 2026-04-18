@@ -71,7 +71,7 @@ export class FileIndexerDaemon {
 
             const content = await readFile(fullPath, 'utf-8');
             
-            store.reindex(content, label, {
+            store.index(content, label, {
               contentType: this.getContentType(fullPath),
             });
 

@@ -3,6 +3,7 @@ import type { ISandbox } from "./interface.js";
 import { DEFAULT_NETWORK_POLICY, generateNetworkIsolationCode } from "./network-policy.js";
 import { normalizeCode } from "./normalizer.js";
 import { analyze, formatFindings, DEFAULT_ANALYSIS_CONFIG } from "./analyzer/index.js";
+import { MEMORY_WARNING_THRESHOLD, DEFAULT_POOL_CONFIG } from "./constants.js";
 
 /** Get current memory usage in MB */
 function getMemoryUsageMB(): { heapUsed: number; heapTotal: number; rss: number } {
@@ -13,15 +14,6 @@ function getMemoryUsageMB(): { heapUsed: number; heapTotal: number; rss: number 
     rss: Math.round(mem.rss / 1024 / 1024),
   };
 }
-
-/** Memory warning threshold in MB */
-const MEMORY_WARNING_THRESHOLD = 256;
-
-const DEFAULT_POOL_CONFIG = {
-  enabled: true,
-  maxWorkers: 4,
-  idleTimeout: 30000,
-};
 
 const DEFAULT_CONFIG: Required<SandboxConfig> = {
   timeout: 5000,
@@ -43,56 +35,40 @@ interface PooledWorker {
   executionCount: number;
 }
 
-/** Worker pool for reusing workers across executions */
+/**
+ * Worker pool - reuses workers, never terminates during session.
+ * 
+ * Bun has a segfault bug (0x58) when workers are terminated repeatedly.
+ * Workers only terminate on dispose() when process exits.
+ */
 class WorkerPool {
   private workers: PooledWorker[] = [];
   private maxWorkers: number;
-  private idleTimeout: number;
-  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
-  constructor(maxWorkers = 4, idleTimeout = 30000) {
+  constructor(maxWorkers = 4) {
     this.maxWorkers = maxWorkers;
-    this.idleTimeout = idleTimeout;
-    this.startCleanup();
-  }
-
-  private startCleanup(): void {
-    this.cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      this.workers = this.workers.filter(pw => {
-        const isIdle = !pw.busy && (now - pw.lastUsed) > this.idleTimeout;
-        if (isIdle) {
-          pw.worker.terminate();
-          URL.revokeObjectURL(pw.url);
-        }
-        return !isIdle;
-      });
-    }, 10000);
   }
 
   acquire(workerCode: string): PooledWorker | null {
-    // Reuse available worker
     const available = this.workers.find(pw => !pw.busy);
     if (available) {
       available.busy = true;
       available.executionCount++;
       return available;
     }
-    // Create new if pool not full
-    if (this.workers.length < this.maxWorkers) {
-      const blob = new Blob([workerCode], { type: "application/javascript" });
-      const url = URL.createObjectURL(blob);
-      try {
-        const worker = new Worker(url, { smol: true });
-        const pw: PooledWorker = { worker, url, busy: true, lastUsed: Date.now(), executionCount: 1 };
-        this.workers.push(pw);
-        return pw;
-      } catch {
-        URL.revokeObjectURL(url);
-        return null;
-      }
+    if (this.workers.length >= this.maxWorkers) return null;
+
+    const blob = new Blob([workerCode], { type: "application/javascript" });
+    const url = URL.createObjectURL(blob);
+    try {
+      const worker = new Worker(url, { smol: true });
+      const pw: PooledWorker = { worker, url, busy: true, lastUsed: Date.now(), executionCount: 1 };
+      this.workers.push(pw);
+      return pw;
+    } catch {
+      URL.revokeObjectURL(url);
+      return null;
     }
-    return null; // Pool exhausted
   }
 
   release(pw: PooledWorker): void {
@@ -103,14 +79,13 @@ class WorkerPool {
   remove(pw: PooledWorker): void {
     const idx = this.workers.indexOf(pw);
     if (idx >= 0) this.workers.splice(idx, 1);
-    try { pw.worker.terminate(); URL.revokeObjectURL(pw.url); } catch { /* cleanup error */ }
+    // NOTE: Not terminating worker to avoid Bun segfault bug (0x58)
+    // Worker becomes orphaned but process stays stable
   }
 
   dispose(): void {
-    if (this.cleanupInterval) clearInterval(this.cleanupInterval);
-    this.cleanupInterval = null;
     for (const pw of this.workers) {
-      try { pw.worker.terminate(); URL.revokeObjectURL(pw.url); } catch { /* dispose error */ }
+      try { pw.worker.terminate(); URL.revokeObjectURL(pw.url); } catch { /* exit cleanup */ }
     }
     this.workers = [];
   }
@@ -151,7 +126,7 @@ export class BunWorkerSandbox implements ISandbox {
     this.config = { ...DEFAULT_CONFIG, ...config };
     const poolConfig = this.config.pool ?? DEFAULT_POOL_CONFIG;
     if (poolConfig.enabled) {
-      this.pool = new WorkerPool(poolConfig.maxWorkers, poolConfig.idleTimeout);
+      this.pool = new WorkerPool(poolConfig.maxWorkers);
     }
   }
 

@@ -265,7 +265,6 @@ interface Rule {
 // ONE source of truth: all rules in one place
 const RULES: Rule[] = [
   // === Security blocks (no tool = hard block) ===
-  { lang: 'shell', pattern: /\brm\s+(-[rf]+\s+)*(\/\*?|~|\$HOME|\.\.?)($|\s)/, message: 'Destructive rm command' },
   { lang: 'shell', pattern: /\bdd\s+.*if=\/dev\/(zero|random|urandom)/, message: 'Destructive dd command' },
   { lang: 'shell', pattern: /\b(mkfs|fdisk|parted|wipefs)\b/, message: 'Disk formatting command' },
   { lang: 'shell', pattern: ':(){ :|:& };:', message: 'Fork bomb detected' },  // string = JIT-safe
@@ -296,17 +295,29 @@ export function blockedResponse(msg: string): BlockedResponse {
   return { content: [{ type: "text", text: msg }], isError: true };
 }
 
+// JIT-safe destructive rm detection (string ops, no regex)
+function isDestructiveRm(cmd: string): boolean {
+  if (!cmd.includes('rm ')) return false;
+  const hasForce = cmd.includes('-f') || cmd.includes('--force');
+  const hasRecursive = cmd.includes('-r') || cmd.includes('--recursive');
+  if (!hasForce && !hasRecursive) return false;
+  return cmd.includes(' /') || cmd.includes(' ~') || cmd.includes(' $HOME') || cmd.includes(' ..');
+}
+
 /**
  * Enforce tool redirects. ONE function for all languages.
  * Returns BlockedResponse if blocked/redirected, null if allowed.
  */
 export function enforceRedirects(code: string, lang: Language): BlockedResponse | null {
-  // Check fork bomb with string match first (JIT-safe, no regex)
+  // JIT-safe checks first (string ops, no regex)
   if (lang === 'shell' && code.includes(':(){ :|:& };:')) {
     return blockedResponse('🔴 BLOCKED: Fork bomb detected');
   }
   if (lang === 'shell' && /fork\s*bomb/i.test(code)) {
     return blockedResponse('🔴 BLOCKED: Fork bomb detected');
+  }
+  if (lang === 'shell' && isDestructiveRm(code)) {
+    return blockedResponse('🔴 BLOCKED: Destructive rm command');
   }
   
   for (const rule of RULES) {
