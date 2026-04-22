@@ -269,13 +269,14 @@ const RULES: Rule[] = [
   { lang: 'shell', pattern: /\b(mkfs|fdisk|parted|wipefs)\b/, message: 'Disk formatting command' },
   { lang: 'shell', pattern: ':(){ :|:& };:', message: 'Fork bomb detected' },  // string = JIT-safe
   { lang: 'shell', pattern: /(?:^|&&|\|\||;|\n)\s*git\s+(checkout|restore)\b/, message: 'git checkout/restore blocked - destructive operation' },
+  { lang: 'shell', pattern: /\bgit\s+commit\b.*<</, message: 'git commit with heredoc blocked - use -m or -F file instead' },
   { lang: 'shell', pattern: /\s+>{1,2}\s*["']?[^|]/, tool: 'mcx_write', message: 'mcx_write({ path: "...", content: "..." })' },
   
   // === Shell redirects ===
   { lang: 'shell', pattern: /\b(cat|head|tail|less|more)\s+["']?[^\s|>"']+/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
   { lang: 'shell', pattern: /\b(grep|rg|ag)\s+/, tool: 'mcx_grep', message: 'mcx_grep({ query: "pattern", path: "..." })' },
   { lang: 'shell', pattern: /\b(find|fd)\s+/, tool: 'mcx_find', message: 'mcx_find({ query: "*.ts" })' },
-  { lang: 'shell', pattern: /\b(curl|wget)\s+/, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
+  // curl/wget allowed - mcx_fetch blocks localhost via SSRF protection
   { lang: 'shell', pattern: /<<\s*['"]?EOF/, tool: 'mcx_write', message: 'mcx_write({ file_path: "...", content: "..." })' },
   { lang: 'shell', pattern: /\bsed\s+/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "f", code: "$f.raw.replace(...)", write: true })' },
   
@@ -340,7 +341,14 @@ export function enforceRedirects(code: string, lang: Language): BlockedResponse 
     }
     
     // Has tool = redirect with hint
-    return blockedResponse(`Must use ${rule.tool}\n💡 ${rule.message}`);
+    const desc = {
+      mcx_file: 'File read/edit',
+      mcx_write: 'File write',
+      mcx_grep: 'Content search',
+      mcx_find: 'File search',
+      mcx_fetch: 'Network request',
+    }[rule.tool] || 'Operation';
+    return blockedResponse(`${desc} command detected, must use ${rule.tool} exclusively.`);
   }
   
   return null;

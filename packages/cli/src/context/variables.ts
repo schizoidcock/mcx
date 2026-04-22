@@ -16,8 +16,8 @@ const state: SessionVariables = {
 };
 
 // File variable mapping (O(1) bidirectional lookup)
-const fileVarByPath = new Map<string, string>();  // path → varName
-const pathByFileVar = new Map<string, string>();  // varName → path
+const fileVarByPath = new Map<string, string>();  // path -> varName
+const pathByFileVar = new Map<string, string>();  // varName -> path
 
 /**
  * Get the singleton state for use by create.ts
@@ -190,13 +190,13 @@ export function compressStale(
   for (const [name, stored] of state.stored) {
     if (stored.compressed) continue;
 
-    // If indexed in FTS5 → safe to compress (data accessible via search)
+    // If indexed in FTS5 -> safe to compress (data accessible via search)
     if (isIndexed?.(name)) {
       if (compress(name)) compressed.push(name);
       continue;
     }
 
-    // Not indexed → use age/size heuristics
+    // Not indexed -> use age/size heuristics
     const size = stored.originalSize || 0;
     const accessedAt = stored.accessedAt || stored.timestamp;
     if (size < minSize) continue;

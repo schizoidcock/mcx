@@ -5,10 +5,10 @@
  * Called from register.ts every N tool calls.
  * 
  * Sources of truth:
- * - context/files.ts → file tracking
- * - context/variables.ts → session variables
- * - context/state.ts → background tasks
- * - context/store.ts → FTS5 content index
+ * - context/files.ts -> file tracking
+ * - context/variables.ts -> session variables
+ * - context/state.ts -> background tasks
+ * - context/store.ts -> FTS5 content index
  */
 
 import { cleanup as cleanupFiles } from "./files.js";

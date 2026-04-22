@@ -208,3 +208,12 @@ export const INDEXABLE_EXTENSIONS = new Set([
   '.sh', '.bash', '.zsh',
   '.sql', '.graphql', '.prisma',
 ]);
+
+// ============================================================================
+// Score Normalization
+// ============================================================================
+
+/** Normalize a score to 0-100 range */
+export const normalizeScore = (value: number, max: number): number =>
+  Math.min(value / max, 1) * 100;
+

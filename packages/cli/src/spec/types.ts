@@ -18,7 +18,7 @@ export interface ToolSpec {
     schema: Record<string, unknown>;
   };
   responses?: Record<string, unknown>;
-  /** Inferred dependencies: parameter → likely source methods */
+  /** Inferred dependencies: parameter -> likely source methods */
   requires?: Record<string, string[]>;
   /** Simplified response schema */
   responseSchema?: Record<string, unknown>;

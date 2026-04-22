@@ -16,12 +16,11 @@ import type { ToolContext, SkillDef, McpResult } from "./types.js";
 import { getToolMeta, deriveAnnotations, booleanLike } from "./meta.js";
 import { getTips, errorTips, type TipContext } from "../context/tips.js";
 import { trackToolUsage, getRecentTools, trackToolOutput } from "../context/tracking.js";
-import { summarizeResult } from "../utils/truncate.js";
+import { summarizeResult, enforceCharacterLimit } from "../utils/truncate.js";
 import { formatToolResult, formatError } from "./utils.js";
 import { getAccessCount } from "../context/files.js";
 import { coerceArrayParams } from "../utils/zod.js";
-import { compressStale } from "../context/variables.js";
-import { getPathByFileVar } from "../context/variables.js";
+import { compressStale, getPathByFileVar } from "../context/variables.js";
 import { logger } from "../utils/logger.js";
 import { runPeriodicCleanup } from "../context/cleanup.js";
 import { findSimilarParams } from "../utils/fuzzy.js";
@@ -73,6 +72,21 @@ function hasImageContent(result: unknown): boolean {
  * Register all extracted MCP tools with the server.
  * Each tool receives the shared ToolContext for dependency injection.
  */
+
+/** Check if result has text content that can be modified */
+function getTextContent(result: unknown): string | undefined {
+  if (typeof result !== 'object' || result === null) return undefined;
+  if (!('content' in result)) return undefined;
+  const r = result as { content: Array<{ type: string; text?: string }> };
+  return r.content[0]?.type === 'text' ? r.content[0].text : undefined;
+}
+
+/** Set text content on McpResult */
+function setTextContent(result: unknown, text: string): void {
+  const r = result as { content: Array<{ type: string; text?: string }> };
+  if (r.content[0]) r.content[0].text = text;
+}
+
 export function registerExtractedTools(options: RegisterOptions): void {
   const { server, ctx, skills, withFinder } = options;
 
@@ -106,6 +120,60 @@ export function registerExtractedTools(options: RegisterOptions): void {
 /**
  * Register a single tool with annotations and tracking.
  */
+/** Validate unknown params against schema */
+function validateUnknownParams(
+  params: Record<string, unknown>,
+  validParams: string[]
+): McpResult | null {
+  const unknown = Object.keys(params).filter(k => !validParams.includes(k));
+  if (unknown.length === 0) return null;
+  
+  const suggestions = unknown.flatMap(u => findSimilarParams(u, validParams));
+  const didYouMean = suggestions.length > 0 
+    ? `\nDid you mean: ${[...new Set(suggestions)].join(", ")}?` 
+    : "";
+  return formatError(
+    `Unknown parameter: ${unknown.join(", ")}${didYouMean}\n` +
+    errorTips.validParams(validParams)
+  );
+}
+
+/** Validate param types using Zod */
+function validateParamTypes(
+  params: Record<string, unknown>,
+  properties: Record<string, Record<string, unknown>>,
+  validParams: string[]
+): McpResult | null {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, prop] of Object.entries(properties)) {
+    shape[key] = convertProperty(prop).optional();
+  }
+  const result = z.object(shape).passthrough().safeParse(params);
+  if (result.success) return null;
+  
+  const issue = result.error.issues[0];
+  const path = issue.path.join('.');
+  return formatError(`${path}: ${issue.message}\n` + errorTips.validParams(validParams));
+}
+
+/** Combined param validation */
+function validateParams(
+  params: Record<string, unknown>,
+  schema: { properties?: Record<string, Record<string, unknown>> }
+): McpResult | null {
+  const properties = schema.properties;
+  const validParams = Object.keys(properties || {});
+  
+  const unknownError = validateUnknownParams(params, validParams);
+  if (unknownError) return unknownError;
+  
+  if (properties) {
+    const typeError = validateParamTypes(params, properties, validParams);
+    if (typeError) return typeError;
+  }
+  return null;
+}
+
 function registerTool(
   server: McpServer,
   ctx: ToolContext,
@@ -134,25 +202,12 @@ function registerTool(
       const p = params as Record<string, unknown>;
       coerceArrayParams(p, tool.inputSchema);
       
-      const filePath = (p.path || p.file_path) as string | undefined;
+      const filePath = (p.path || p.file_path || (p.storeAs && getPathByFileVar(p.storeAs as string))) as string | undefined;
       const start = Date.now();
 
-      // Validate unknown params (ONE source of truth: inputSchema)
-      const validParams = Object.keys(
-        (tool.inputSchema.properties as Record<string, unknown>) || {}
-      );
-      const unknown = Object.keys(p).filter(k => !validParams.includes(k));
-      if (unknown.length > 0) {
-        const suggestions = unknown.flatMap(u => findSimilarParams(u, validParams));
-        const didYouMean = suggestions.length > 0 ? `\nDid you mean: ${[...new Set(suggestions)].join(", ")}?` : "";
-        return formatError(
-          `Unknown parameter: ${unknown.join(", ")}${didYouMean}\n` +
-          errorTips.validParams(validParams)
-        );
-      }
-
-      // Track usage
-      trackToolUsage(tool.name, filePath);
+      // Validate params
+      const validationError = validateParams(p, tool.inputSchema);
+      if (validationError) return validationError;
 
       // Execute handler (returns raw result)
       let rawResult: unknown;
@@ -165,14 +220,22 @@ function registerTool(
         errorInfo = { message: msg };
         rawResult = formatError(msg);
       }
+      
+      // Track usage with success/failure
+      const wasError = errorInfo !== undefined || (typeof rawResult === 'object' && rawResult !== null && 'isError' in rawResult && rawResult.isError);
+      trackToolUsage(tool.name, filePath, !wasError);
 
-      // Truncate and track (skip truncation for image content)
-      const { value: truncatedResult, rawBytes } = summarizeResult(rawResult, {
-        enabled: !hasImageContent(rawResult),
-        maxItems: 100,
-        maxStringLength: 1500,
-      });
-      const responseChars = JSON.stringify(truncatedResult).length;
+      // Skip truncation if already McpResult (already formatted by handler)
+      const isMcpResult = typeof rawResult === 'object' && rawResult !== null && 
+                          'content' in rawResult && Array.isArray((rawResult as any).content);
+      const { value: truncatedResult, rawBytes, truncatedBytes } = isMcpResult
+        ? { value: rawResult, truncated: false, rawBytes: JSON.stringify(rawResult)?.length ?? 0 }
+        : summarizeResult(rawResult, {
+            enabled: !hasImageContent(rawResult),
+            maxItems: 100,
+            maxStringLength: 1500,
+          });
+      const responseChars = truncatedBytes ?? JSON.stringify(truncatedResult).length;
       const isError = !!errorInfo || (typeof rawResult === 'object' && rawResult !== null && 'isError' in rawResult);
       
       // Extract error context if present in result
@@ -196,7 +259,7 @@ function registerTool(
       });
 
       // Compress stale variables + periodic cleanup
-      // If variable is indexed in FTS5 → safe to compress (data still searchable)
+      // If variable is indexed in FTS5 -> safe to compress (data still searchable)
       const isIndexed = (varName: string) => {
         if (ctx.contentStore.hasSource(`exec:${varName}`)) return true;
         const path = getPathByFileVar(varName);
@@ -207,10 +270,19 @@ function registerTool(
 
       // Add tips if available
       const result = addTipsToResult(tool.name, p, filePath, truncatedResult);
+      
+      // HIGH-3: Apply character limit to McpResult text content
+      const text = getTextContent(result);
+      if (text) {
+        setTextContent(result, enforceCharacterLimit(text));
+        return result;
+      }
+      
+      // Return as-is if McpResult without text, or format if raw value
       if (typeof result === 'object' && result !== null && 'content' in result) {
-          return result;
-        }
-        return formatToolResult(String(result ?? ''), undefined, `tool:${tool.name}`);
+        return result;
+      }
+      return formatToolResult(String(result ?? ''), undefined, `tool:${tool.name}`);
     }
   );
 }
@@ -257,25 +329,25 @@ function addTipsToResult(
   const tips = getTips(tipContext);
   if (tips.length === 0) return result;
 
-  // Append tips to result
+  // Append tips to content text (not as separate field)
   const tipText = tips.map(t => `💡 ${t}`).join('\n');
-  if (typeof result === 'string') {
-    return result + '\n' + tipText;
-  }
-  if (typeof result === 'object' && result !== null) {
-    return { ...result, _tips: tips };
+  if (typeof result === 'string') return result + '\n' + tipText;
+  
+  // If McpResult with text content, append tips
+  const text = getTextContent(result);
+  if (text) {
+    setTextContent(result, text + '\n' + tipText);
   }
   return result;
 }
 
 /**
- * Convert JSON Schema to Zod schema.
+ * Permissive Zod schema for MCP SDK compatibility.
  * 
- * Uses permissive schema - validation errors go through handler's 
- * try/catch → formatError (ONE source of truth for errors).
+ * Real validation happens via convertProperty + safeParse in the handler,
+ * which allows formatError to provide user-friendly messages.
  */
 function jsonSchemaToZod(_schema: Record<string, unknown>): z.ZodTypeAny {
-  // Accept any object - real validation happens in handler with formatError
   return z.record(z.unknown());
 }
 
@@ -299,7 +371,7 @@ function convertProperty(prop: Record<string, unknown>): z.ZodTypeAny {
 
     case "number":
     case "integer":
-      // z.coerce handles "123" → 123 (Claude sends strings)
+      // z.coerce handles "123" -> 123 (Claude sends strings)
       let num = z.coerce.number();
       // Apply min/max if specified in JSON Schema
       if (typeof prop.minimum === "number") num = num.min(prop.minimum);
@@ -307,7 +379,7 @@ function convertProperty(prop: Record<string, unknown>): z.ZodTypeAny {
       return num;
 
     case "boolean":
-      // booleanLike handles "true"/"false" → true/false
+      // booleanLike handles "true"/"false" -> true/false
       return booleanLike;
 
     case "array":

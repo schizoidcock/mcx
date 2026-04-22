@@ -92,7 +92,7 @@ function handleRunSkill(
 function handleListAdapters(spec: ResolvedSpec | null): McpResult {
   const adapterList = spec?.adapters ? Object.values(spec.adapters) : [];
   if (!adapterList.length) {
-    return "No adapters loaded.\n→ mcx_doctor() to check config";
+    return "No adapters loaded.\n-> mcx_doctor() to check config";
   }
   
   const lines: string[] = [];
@@ -102,7 +102,7 @@ function handleListAdapters(spec: ResolvedSpec | null): McpResult {
   }
   
   lines.push("");
-  lines.push("→ mcx_adapter({ name: \"adapter\" }) for methods");
+  lines.push("-> mcx_adapter({ name: \"adapter\" }) for methods");
   
   return lines.join("\n");
 }
@@ -144,7 +144,7 @@ function handleShowMethods(
     lines.push("");
   }
   
-  lines.push(`→ mcx_adapter({ name: "${adapter.name}", call: "method" })`);
+  lines.push(`-> mcx_adapter({ name: "${adapter.name}", call: "method" })`);
   
   return lines.join("\n");
 }
@@ -244,10 +244,10 @@ export function createAdapterTool(
     description: `Adapter and skill discovery.
 
 ## Mode 1: List All Adapters & Skills
-mcx_adapter() → grouped by domain: [auth] betterAuth(14), [db] supabase(25)
+mcx_adapter() -> grouped by domain: [auth] betterAuth(14), [db] supabase(25)
 
 ## Mode 2: Show Adapter Methods
-mcx_adapter({ name: "supabase" }) → methods grouped by prefix
+mcx_adapter({ name: "supabase" }) -> methods grouped by prefix
 
 ## Mode 3: Call Adapter Method
 mcx_adapter({ name: "supabase", call: "list_projects" })

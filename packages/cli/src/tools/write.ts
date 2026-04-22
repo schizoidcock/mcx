@@ -5,10 +5,12 @@
  * Bypasses native Write's "must read first" requirement.
  */
 
-import { basename, isAbsolute, join } from "node:path";
+import { basename, isAbsolute } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatError } from "./utils.js";
+import { formatError, diffSummary } from "./utils.js";
 import { recordEdit } from "../context/files.js";
+import { validateWriteContent } from "./file.js";
 
 // ============================================================================
 // Types
@@ -21,6 +23,29 @@ export interface WriteParams {
 }
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+function validateWriteParams(params: WriteParams): { ok: true; filePath: string } | { ok: false; error: McpResult } {
+  const { file_path, path, content } = params;
+  const filePath = file_path || path;
+
+  if (!filePath) return { ok: false, error: formatError("Missing file_path or path parameter") };
+  if (content === undefined || content === null) return { ok: false, error: formatError("Missing content parameter") };
+  if (!isAbsolute(filePath)) return { ok: false, error: formatError(`Absolute path required. Got: "${filePath}"`) };
+
+  return { ok: true, filePath };
+}
+
+async function getOldContent(filePath: string): Promise<string | null> {
+  try {
+    return await readFile(filePath, 'utf8');
+  } catch {
+    return null;  // File doesn't exist
+  }
+}
+
+// ============================================================================
 // Handler
 // ============================================================================
 
@@ -28,35 +53,28 @@ async function handleWrite(
   ctx: ToolContext,
   params: WriteParams
 ): Promise<McpResult> {
-  const { file_path, path, content } = params;
-  const filePath = file_path || path;
-  
-  // Validate
-  if (!filePath) {
-    return formatError("Missing file_path or path parameter");
-  }
-  if (content === undefined || content === null) {
-    return formatError("Missing content parameter");
-  }
-  
+  const validated = validateWriteParams(params);
+  if (!validated.ok) return validated.error;
+
+  const { filePath } = validated;
+  const { content } = params;
+
+  // Validate content (braces, duplicates)
+  const contentValidation = validateWriteContent(content, basename(filePath));
+  if (!contentValidation.ok) return contentValidation.error;
+
   try {
-    // Require absolute path (consistent with mcx_file)
-    if (!isAbsolute(filePath)) {
-      return formatError(`Absolute path required. Got: "${filePath}"`);
-    }
-    const resolvedPath = filePath;
+    const oldContent = await getOldContent(filePath);
     
-    // Write file
-    await Bun.write(resolvedPath, content);
-    
-    // Track edit timestamp for stale detection (context/files.ts owns this)
-    recordEdit(resolvedPath);
-    
-    // Format result
+    await Bun.write(filePath, contentValidation.content);
+    recordEdit(filePath);
+
     const lineCount = content.split("\n").length;
-    const fileName = basename(resolvedPath);
-    
-    return `✓ Wrote ${lineCount} lines to ${fileName}\n💡 No need to re-read to verify.`;
+    const fileName = basename(filePath);
+    const diff = ` | ${diffSummary(oldContent ?? '', content)}`;
+
+    const tip = oldContent !== null ? '\n💡 No need to re-read to verify.' : '';
+    return `✓ Wrote ${lineCount} lines to ${fileName}${diff}${tip}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return formatError(`Failed to write file: ${msg}`);

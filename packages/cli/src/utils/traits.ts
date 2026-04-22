@@ -216,30 +216,29 @@ export function clearTraitCache(): void {
  * Strip comments from code before pattern matching.
  * Prevents false positives from commented-out code.
  */
-export function preprocess(code: string, language: string): string {
-  if (language === 'shell') {
-    // Strip # comments (simple heuristic, ignores strings)
-    return code.replace(/#[^\n]*/g, '');
-  }
+export /** Strip shell comments */
+const preprocessShell = (code: string) => code.replace(/#[^\n]*/g, '');
 
-  if (language === 'python') {
-    // Strip triple-quoted strings then # comments
-    return code
-      .replace(/'''[\s\S]*?'''/g, "''")
-      .replace(/"""[\s\S]*?"""/g, '""')
-      .replace(/#[^\n]*/g, '');
-  }
+/** Strip python comments and strings */
+const preprocessPython = (code: string) => code
+  .replace(/'''[\s\S]*?'''/g, "''")
+  .replace(/"""[\s\S]*?"""/g, '""')
+  .replace(/#[^\n]*/g, '');
 
-  // JavaScript / TypeScript
-  // @mcx-ignore: strip preceding directive line AND same-line inline directive
-  return code
-    .replace(/\/\/\s*@mcx-ignore[^\n]*\n[^\n]*/g, '') // @mcx-ignore on own line → skip that line + next line
-    .replace(/[^\n]*\/\/\s*@mcx-ignore[^\n]*/g, '') // inline @mcx-ignore → skip that line
-    .replace(/\/\*[\s\S]*?\*\//g, '') // Block comments
-    .replace(/\/\/[^\n]*/g, '') // Line comments
-    .replace(/`[^`]*`/g, '""') // Template literals → empty string
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""') // Double-quoted strings → empty
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''"); // Single-quoted strings → empty
+/** Strip JS/TS comments, strings, and @mcx-ignore directives */
+const preprocessJS = (code: string) => code
+  .replace(/\/\/\s*@mcx-ignore[^\n]*\n[^\n]*/g, '')
+  .replace(/[^\n]*\/\/\s*@mcx-ignore[^\n]*/g, '')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/\/\/[^\n]*/g, '')
+  .replace(/`[^`]*`/g, '""')
+  .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+  .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+
+function preprocess(code: string, language: string): string {
+  if (language === 'shell') return preprocessShell(code);
+  if (language === 'python') return preprocessPython(code);
+  return preprocessJS(code);
 }
 
 // ─── Pattern Matching Helpers ─────────────────────────────────────────────────
@@ -340,27 +339,34 @@ export function analyzeCodeTraits(
 /**
  * Analyze shell commands for traits.
  */
+/** Match all shell patterns and collect warnings */
+const matchShellPatterns = (clean: string): TraitWarning[] => {
+  const patterns: [RegExp[], TraitType][] = [
+    [DESTRUCTIVE_PATTERNS_SHELL, 'destructive'],
+    [STATEFUL_PATTERNS_SHELL, 'stateful'],
+    [EXTERNAL_PATTERNS_SHELL, 'external'],
+    [SLOW_PATTERNS_SHELL, 'slow'],
+  ];
+  return patterns
+    .map(([p, t]) => matchPatterns(clean, p, t))
+    .filter((w): w is TraitWarning => w !== null);
+};
+
+/** Cache result with LRU eviction */
+const cacheAnalysis = (key: string, analysis: TraitAnalysis): void => {
+  if (traitCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = traitCache.keys().next().value;
+    if (firstKey !== undefined) traitCache.delete(firstKey);
+  }
+  traitCache.set(key, analysis);
+};
+
 export function analyzeShellTraits(command: string): TraitAnalysis {
   const cacheKey = getCacheKey('shell', command);
   const cached = traitCache.get(cacheKey);
   if (cached) return cached;
 
-  const clean = preprocess(command, 'shell');
-
-  const warnings: TraitWarning[] = [];
-
-  const destructive = matchPatterns(clean, DESTRUCTIVE_PATTERNS_SHELL, 'destructive');
-  if (destructive) warnings.push(destructive);
-
-  const stateful = matchPatterns(clean, STATEFUL_PATTERNS_SHELL, 'stateful');
-  if (stateful) warnings.push(stateful);
-
-  const external = matchPatterns(clean, EXTERNAL_PATTERNS_SHELL, 'external');
-  if (external) warnings.push(external);
-
-  const slow = matchPatterns(clean, SLOW_PATTERNS_SHELL, 'slow');
-  if (slow) warnings.push(slow);
-
+  const warnings = matchShellPatterns(preprocess(command, 'shell'));
   const traits = warnings.map((w) => w.trait);
   const analysis: TraitAnalysis = {
     traits,
@@ -368,14 +374,7 @@ export function analyzeShellTraits(command: string): TraitAnalysis {
     severity: calculateSeverity(traits),
     summary: generateSummary(warnings),
   };
-
-  // Evict oldest entry if cache is full
-  if (traitCache.size >= MAX_CACHE_SIZE) {
-    const firstKey = traitCache.keys().next().value;
-    if (firstKey !== undefined) traitCache.delete(firstKey);
-  }
-  traitCache.set(cacheKey, analysis);
-
+  cacheAnalysis(cacheKey, analysis);
   return analysis;
 }
 
@@ -400,30 +399,26 @@ const TRAIT_ICON: Record<TraitType, string> = {
 /**
  * Format trait warnings into a human-readable string for display.
  */
+/** Format a single warning into lines */
+const formatWarning = (warning: TraitWarning): string[] => {
+  const icon = TRAIT_ICON[warning.trait] ?? '⚠️';
+  const conf = warning.confidence ? CONFIDENCE_ICON[warning.confidence] : '';
+  const header = `  ${icon} ${warning.trait} ${conf}`.trimEnd();
+  const patterns = (warning.patterns ?? []).slice(0, 3).map(p => `    • ${p}`);
+  return [header, ...patterns, `    -> ${warning.suggestion}`];
+};
+
+const SEVERITY_ICON: Record<string, string> = {
+  caution: '🔴',
+  warning: '⚠️',
+  info: '💡',
+};
+
 export function formatTraitWarnings(analysis: TraitAnalysis): string {
   if (analysis.warnings.length === 0) return '';
-
-  const severityIcon: Record<string, string> = {
-    caution: '🔴',
-    warning: '⚠️',
-    info: '💡',
-  };
-  const headerIcon = severityIcon[analysis.severity];
-  const lines: string[] = [`${headerIcon} Trait Analysis:`];
-
-  for (const warning of analysis.warnings) {
-    const icon = TRAIT_ICON[warning.trait] ?? '⚠️';
-    const confidenceIcon = warning.confidence ? CONFIDENCE_ICON[warning.confidence] : '';
-    lines.push(`  ${icon} ${warning.trait} ${confidenceIcon}`.trimEnd());
-
-    for (const p of warning.patterns.slice(0, 3)) {
-      lines.push(`    • ${p}`);
-    }
-
-    lines.push(`    → ${warning.suggestion}`);
-  }
-
-  return lines.join('\n');
+  const header = `${SEVERITY_ICON[analysis.severity]} Trait Analysis:`;
+  const body = analysis.warnings.flatMap(formatWarning);
+  return [header, ...body].join('\n');
 }
 
 

@@ -97,6 +97,8 @@ function handleRegex(content: string, state: ScanState): boolean {
   }
   if (char === "/") {
     state.inRegex = false;
+    // Skip regex flags
+    while (/[gimsuy]/.test(content[state.i + 1])) state.i++;
   }
   return true;
 }
@@ -168,12 +170,37 @@ function handleStringContent(content: string, state: ScanState): boolean {
 }
 
 // ============================================================================
+// Helper: find last matching element
+// ============================================================================
+
+function findLastIndex<T>(arr: T[], pred: (v: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (pred(arr[i])) return i;
+  }
+  return -1;
+}
+
+// ============================================================================
 // Main Function
 // ============================================================================
 
+/** Handle closing brace - match or track unmatched */
+function handleCloseBrace(
+  openStack: Array<{line: number; depth: number}>,
+  unmatchedLines: number[],
+  state: ScanState,
+  countBraces: boolean
+): void {
+  const matchIdx = findLastIndex(openStack, b => b.depth === state.templateDepth);
+  if (matchIdx >= 0) return void openStack.splice(matchIdx, 1);
+  if (state.templateDepth > 0) return void state.templateDepth--;
+  if (countBraces) unmatchedLines.push(state.line);
+}
+
 export function checkBraceBalance(content: string): BraceResult {
   const state = createState();
-  const openStack: number[] = [];
+  // Track {line, depth} to distinguish object braces from interpolation close
+  const openStack: Array<{line: number; depth: number}> = [];
   const unmatchedLines: number[] = [];
 
   while (state.i < content.length) {
@@ -194,14 +221,11 @@ export function checkBraceBalance(content: string): BraceResult {
 
     // Count braces (only when not in string, or inside template interpolation)
     const countBraces = !inString(state) || state.templateDepth > 0;
-    if (countBraces && char === "{") openStack.push(state.line);
+    if (countBraces && char === "{") {
+      openStack.push({line: state.line, depth: state.templateDepth});
+    }
     if (char === "}") {
-      if (state.templateDepth > 0) {
-        state.templateDepth--;
-      } else if (countBraces) {
-        if (openStack.length > 0) openStack.pop();
-        else unmatchedLines.push(state.line);
-      }
+      handleCloseBrace(openStack, unmatchedLines, state, countBraces);
     }
 
     state.i++;
@@ -209,7 +233,7 @@ export function checkBraceBalance(content: string): BraceResult {
 
   return {
     balance: openStack.length - unmatchedLines.length,
-    unclosedLines: openStack,
+    unclosedLines: openStack.map(b => b.line),
     unmatchedLines,
   };
 }

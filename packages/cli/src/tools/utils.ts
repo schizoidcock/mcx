@@ -20,7 +20,7 @@ function indexLargeOutput(text: string, label: string): string {
   const store = getContentStore();
   store.index(text, label, { contentType: "plaintext" });
   const lines = text.split('\n').length;
-  return `Indexed ${lines} lines as "${label}"\n\n${text.slice(0, 800)}...\n\n→ mcx_search({ queries: [...], source: "${label}" })`;
+  return `Indexed ${lines} lines as "${label}"\n-> mcx_search({ queries: [...], source: "${label}" })`;
 }
 
 /**
@@ -42,7 +42,8 @@ export function formatToolResult(text: string, suggestion?: string, label?: stri
  * Create an error result.
  */
 export function formatError(message: string, details?: string): McpResult {
-  const text = details ? `Error: ${message}\n${details}` : `Error: ${message}`;
+  const prefix = /^(Error|Warning|\w+Error):/i.test(message) ? '' : 'Error: ';
+  const text = details ? `${prefix}${message}\n${details}` : `${prefix}${message}`;
   return {
     content: [{ type: "text" as const, text }],
     isError: true,
@@ -142,22 +143,6 @@ export function validateRequired(
   return null;
 }
 
-/**
- * Coerce a parameter to a specific type with default.
- */
-export function coerceParam<T>(
-  value: unknown,
-  defaultValue: T,
-  coerce: (v: unknown) => T
-): T {
-  if (value === undefined || value === null) return defaultValue;
-  try {
-    return coerce(value);
-  } catch {
-    return defaultValue;
-  }
-}
-
 // ============================================================================
 // Display Utilities
 // ============================================================================
@@ -165,6 +150,77 @@ export function coerceParam<T>(
 /**
  * Format bytes as human-readable string.
  */
+// ============================================================================
+// Diff Summary (Linus-style: small focused helpers)
+// ============================================================================
+
+/** Group contiguous numbers into ranges: [1,2,3,7,8] -> "1-3, 7-8" */
+function groupRanges(nums: number[]): string {
+  if (nums.length === 0) return '';
+  const ranges: string[] = [];
+  let start = nums[0], end = nums[0];
+  
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i] !== end + 1) {
+      ranges.push(start === end ? String(start) : `${start}-${end}`);
+      start = nums[i];
+    }
+    end = nums[i];
+  }
+  
+  ranges.push(start === end ? String(start) : `${start}-${end}`);
+  return ranges.slice(0, 3).join(', ') + (ranges.length > 3 ? '...' : '');
+}
+
+/** Find first diff position and all modified line numbers */
+function findModifiedLines(oldLines: string[], newLines: string[]): { firstDiff: number; modified: number[] } {
+  let firstDiff = -1;
+  const modified: number[] = [];
+  const minLen = Math.min(oldLines.length, newLines.length);
+  
+  for (let i = 0; i < minLen; i++) {
+    if (oldLines[i] === newLines[i]) continue;
+    if (firstDiff === -1) firstDiff = i + 1;
+    modified.push(i + 1);
+  }
+  
+  return { firstDiff, modified };
+}
+
+/** Build delta indicator: [+N], [-N], or null */
+function buildDeltaPart(delta: number, firstDiff: number, oldCount: number, newCount: number): string | null {
+  if (delta > 0) {
+    const start = firstDiff > 0 ? firstDiff : oldCount + 1;
+    return `[+${delta}] at ${start}-${start + delta - 1}`;
+  }
+  if (delta < 0) {
+    const start = firstDiff > 0 ? firstDiff : newCount + 1;
+    return `[-${Math.abs(delta)}] at ${start}`;
+  }
+  return null;
+}
+
+/** Generate compact diff summary. Format: "10->15 lines ([+5] at 6-10, modified 6-10)" */
+/** Format modified lines description */
+const formatModified = (modified: number[]): string | null => {
+  if (modified.length === 0) return null;
+  if (modified.length <= 20) return `modified ${groupRanges(modified)}`;
+  return `modified ${modified.length} lines`;
+};
+
+export function diffSummary(oldContent: string, newContent: string): string {
+  const oldLines = oldContent ? oldContent.split('\n') : [];
+  const newLines = newContent ? newContent.split('\n') : [];
+  const { firstDiff, modified } = findModifiedLines(oldLines, newLines);
+  
+  const delta = buildDeltaPart(newLines.length - oldLines.length, firstDiff, oldLines.length, newLines.length);
+  const mod = formatModified(modified);
+  const parts = [delta || (modified.length > 0 ? '[~]' : null), mod].filter(Boolean);
+  
+  const changes = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  return `${oldLines.length}->${newLines.length} lines${changes}`;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;

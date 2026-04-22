@@ -102,7 +102,7 @@ async function autoUpdate(): Promise<void> {
     }
 
     // Auto-update silently
-    console.error(pc.cyan(`Updating MCX CLI: ${CURRENT_VERSION} → ${latest}...`));
+    console.error(pc.cyan(`Updating MCX CLI: ${CURRENT_VERSION} -> ${latest}...`));
     await new Promise<void>((resolve) => {
       const proc = spawn("bun", ["install", "-g", `${CLI_PACKAGE}@latest`], {
         stdio: "inherit",

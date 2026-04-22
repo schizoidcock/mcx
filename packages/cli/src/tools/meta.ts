@@ -55,6 +55,7 @@ export const TOOL_META: ToolMeta[] = [
       { name: 'pattern', type: 'string', description: 'Alias for query' },
       { name: 'path', type: 'string', description: 'Directory to search in' },
       { name: 'context', type: 'number', description: 'Lines of context', default: 0, min: 0, max: 50 },
+      { name: 'trimWhitespace', type: 'boolean', description: 'Trim leading/trailing whitespace from matches', default: false },
     ],
   },
   {
@@ -203,55 +204,6 @@ export const booleanLike = z.preprocess(
   v => v === "true" ? true : v === "false" ? false : v,
   z.boolean()
 );
-
-const jsonArray = z.preprocess(
-  v => {
-    if (typeof v === "string") {
-      try { return JSON.parse(v); } catch { return v; }
-    }
-    return v;
-  },
-  z.array(z.any())
-);
-
-/**
- * Derive Zod schema from ParamMeta
- * One loop, all tools
- */
-export function deriveSchema(params: ParamMeta[]): z.ZodObject<z.ZodRawShape> {
-  const shape: z.ZodRawShape = {};
-  
-  for (const p of params) {
-    let field = buildField(p);
-    if (p.description) field = field.describe(p.description);
-    if (!p.required) field = field.optional();
-    if (p.default !== undefined) field = field.default(p.default);
-    shape[p.name] = field;
-  }
-  
-  return z.object(shape);
-}
-
-function buildField(p: ParamMeta): z.ZodTypeAny {
-  switch (p.type) {
-    case 'number':
-      return applyLimits(z.coerce.number(), p);
-    case 'boolean':
-      return booleanLike;
-    case 'array':
-      return jsonArray;
-    case 'object':
-      return z.record(z.any());
-    default:
-      return p.enum ? z.enum(p.enum as [string, ...string[]]) : z.string();
-  }
-}
-
-function applyLimits(schema: z.ZodNumber, p: ParamMeta): z.ZodNumber {
-  if (p.min !== undefined) schema = schema.min(p.min);
-  if (p.max !== undefined) schema = schema.max(p.max);
-  return schema;
-}
 
 // ============================================================================
 // Utility Functions

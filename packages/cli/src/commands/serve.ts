@@ -139,47 +139,6 @@ const SHELL_PATH = process.platform === 'win32'
 // killTree removed - now in utils/process.ts
 
 /** Dangerous env vars to filter from shell execution */
-const DENIED_ENV = new Set([
-  // Shell — auto-execute scripts
-  "BASH_ENV", "ENV", "PROMPT_COMMAND", "PS4", "BASH_FUNC_",
-  // Node.js — require injection
-  "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
-  // Python — startup injection
-  "PYTHONSTARTUP", "PYTHONHOME", "PYTHONBREAKPOINT", "PYTHONPATH",
-  // Dynamic linker — .so injection
-  "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
-  // Git — hook/config injection
-  "GIT_TEMPLATE_DIR", "GIT_SSH", "GIT_ASKPASS", "GIT_CONFIG_GLOBAL",
-  // Editor/pager — command execution
-  "EDITOR", "VISUAL", "PAGER", "LESS", "LESSOPEN", "LESSCLOSE",
-  // Perl/Ruby — library injection
-  "PERL5LIB", "PERL5OPT", "RUBYOPT", "RUBYLIB",
-  // SSH — agent hijacking
-  "SSH_AUTH_SOCK", "SSH_AGENT_PID",
-  // Curl/wget — config injection
-  "CURL_HOME", "WGETRC",
-  // AWS/Cloud — credential exposure
-  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-  "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
-  // Generic secrets
-  "DATABASE_URL", "REDIS_URL", "API_KEY", "SECRET_KEY", "PRIVATE_KEY",
-]);
-/** Cached safe environment (computed once at startup) */
-let cachedSafeEnv: Record<string, string> | null = null;
-
-/** Get safe environment for shell execution (filters dangerous vars, cached) */
-function getSafeEnv(): Record<string, string> {
-  if (cachedSafeEnv) return cachedSafeEnv;
-
-  const safeEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value && !DENIED_ENV.has(key) && !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('TOKEN') && !key.includes('CREDENTIAL')) {
-      safeEnv[key] = value;
-    }
-  }
-  cachedSafeEnv = safeEnv;
-  return safeEnv;
-}
 // Throttling constants imported from tools/constants.js
 
 /** File access tracking for progressive tips (Optimization #2+#3) */
@@ -192,26 +151,22 @@ const fileAccessLog = new Map<string, { count: number; firstAccess: number }>();
 const grepCallLog = { count: 0, firstCall: 0 };
 
 /** Cleanup stale Map entries (called periodically) */
+/** Evict oldest entries from map by timestamp field */
+const evictOldest = <K, V extends { firstAccess: number }>(
+  map: Map<K, V>, maxSize: number
+): void => {
+  if (map.size <= maxSize) return;
+  const sorted = [...map.entries()].sort((a, b) => a[1].firstAccess - b[1].firstAccess);
+  for (let i = 0; i < sorted.length - maxSize; i++) map.delete(sorted[i][0]);
+};
+
 function cleanupStaleMaps(): void {
   const now = Date.now();
-
-  // Clean fileAccessLog (entries older than TTL)
   for (const [key, val] of fileAccessLog) {
     if (now - val.firstAccess > MAP_TTL_MS) fileAccessLog.delete(key);
   }
-
-
-
-  // Cleanup guards state (executeFailures, linesCallTracker)
   cleanupGuards(now);
-
-  // Cap sizes if still too large (LRU-ish: delete oldest)
-  if (fileAccessLog.size > MAP_MAX_ENTRIES) {
-    const entries = [...fileAccessLog.entries()].sort((a, b) => a[1].firstAccess - b[1].firstAccess);
-    for (let i = 0; i < entries.length - MAP_MAX_ENTRIES; i++) {
-      fileAccessLog.delete(entries[i][0]);
-    }
-  }
+  evictOldest(fileAccessLog, MAP_MAX_ENTRIES);
 }
 
 // Run cleanup every 5 minutes
@@ -220,10 +175,7 @@ setInterval(cleanupStaleMaps, 5 * 60 * 1000);
 
 
 /** Create a blocked/error MCP response */
-const blockedResponse = (msg: string) => ({
-  content: [{ type: "text" as const, text: msg }],
-  isError: true as const
-});
+// Using blockedResponse from utils/security.ts
 
 // sanitizeForJson imported from utils/truncate
 
@@ -245,42 +197,6 @@ const sessionWorkflow = {
 
 
 
-
-/**
- * Check brace balance in code content
-
-
-/**
- * Find duplicate lines within new content being added.
- * Only checks for internal duplicates (e.g., two return statements)
- * to catch careless edits. Does NOT compare against surrounding context.
- */
-function findDuplicatesInNewString(newString: string): string[] {
-  const lines = newString.split('\n');
-  const seen = new Map<string, number>();
-  const duplicates: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    // Skip empty lines, comments, braces, common chained methods, array pushes
-    if (!trimmed || trimmed === '{' || trimmed === '}' || trimmed.startsWith('//') ||
-        trimmed === '.optional()' || trimmed.startsWith('.describe(') ||
-        trimmed === '.default(true)' || trimmed === '.default(false)' ||
-        /^\w+\.push\(['"`]/.test(trimmed)) continue;
-    // Skip JSX patterns: opening tags, props, short lines (common to repeat in components)
-    if (trimmed.startsWith('<') || trimmed.startsWith('/>') || trimmed === '/>' ||
-        (trimmed.includes('=') && trimmed.length < 40) || trimmed.length < 20) continue;
-
-    const count = (seen.get(trimmed) || 0) + 1;
-    seen.set(trimmed, count);
-
-    if (count === 2) {
-      duplicates.push(trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed);
-    }
-  }
-
-  return duplicates;
-}
 
 // TruncateOptions imported from utils/truncate
 
@@ -304,52 +220,33 @@ function mapMcxType(type: string | undefined): string {
   return type || "unknown";
 }
 
+/** Name-based example heuristics */
+const NAME_EXAMPLES: Record<string, string> = {
+  id: "123", limit: "10", count: "10", size: "10", pagesize: "10",
+  offset: "0", start: "0", skip: "0", page: "1",
+  email: '"user@example.com"', name: '"John Doe"', phone: '"+1234567890"',
+  query: '"search term"', q: '"search term"', search: '"search term"',
+};
+
+/** Type-based fallbacks */
+const TYPE_EXAMPLES: Record<string, string> = {
+  number: "10", boolean: "true", "unknown[]": "[]", "Record<string, unknown>": "{}",
+};
+
+/** Get example by name pattern */
+const getExampleByName = (name: string): string | null => {
+  if (NAME_EXAMPLES[name]) return NAME_EXAMPLES[name];
+  if (name.endsWith("_id") || name.endsWith("id")) return "123";
+  if (name.includes("date")) return '"2024-01-15"';
+  if (name.endsWith("url")) return '"https://example.com"';
+  return null;
+};
+
 function getExampleValue(paramName: string, paramType: string, schemaExample?: unknown): string {
-  // 1. If OpenAPI provides an example, use it
-  if (schemaExample !== undefined) {
-    return JSON.stringify(schemaExample);
-  }
-
-  // 2. Heuristics based on param name
-  const nameLower = paramName.toLowerCase();
-
-  // IDs
-  if (nameLower === "id" || nameLower.endsWith("_id") || nameLower.endsWith("id")) {
-    return "123";
-  }
-
-  // Pagination
-  if (nameLower === "limit" || nameLower === "count" || nameLower === "size" || nameLower === "pagesize") return "10";
-  if (nameLower === "offset" || nameLower === "start" || nameLower === "skip") return "0";
-  if (nameLower === "page") return "1";
-
-  // Dates
-  if (nameLower.includes("date")) return '"2024-01-15"';
-
-  // Contact info
-  if (nameLower === "email") return '"user@example.com"';
-  if (nameLower === "name") return '"John Doe"';
-  if (nameLower === "phone") return '"+1234567890"';
-
-  // URLs
-  if (nameLower === "url" || nameLower.endsWith("url")) return '"https://example.com"';
-
-  // Query/search
-  if (nameLower === "query" || nameLower === "q" || nameLower === "search") return '"search term"';
-
-  // 3. Fallback by type
-  switch (paramType) {
-    case "number":
-      return "10";
-    case "boolean":
-      return "true";
-    case "unknown[]":
-      return "[]";
-    case "Record<string, unknown>":
-      return "{}";
-    default:
-      return '"..."';
-  }
+  if (schemaExample !== undefined) return JSON.stringify(schemaExample);
+  const byName = getExampleByName(paramName.toLowerCase());
+  if (byName) return byName;
+  return TYPE_EXAMPLES[paramType] ?? '"..."';
 }
 
 // summarizeObject is internal to utils/truncate

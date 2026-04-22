@@ -60,6 +60,7 @@ export interface SummarizedResult {
   truncated: boolean;
   originalSize?: string;
   rawBytes: number;
+  truncatedBytes?: number;
 }
 
 // ============================================================================
@@ -80,7 +81,13 @@ export function truncateLogs(logs: string[]): string[] {
 
 /** Filter out lint warnings from prepended FILE_HELPERS_CODE */
 export function filterHelperLogs(logs: string[]): string[] {
-  return logs.filter((_, i) => i >= FILE_HELPERS_LINE_COUNT);
+  // Filter logs that reference lines in the helper code (e.g., "at line 5")
+  return logs.filter(log => {
+    const lineMatch = log.match(/(?:line |:)(\d+)/i);
+    if (!lineMatch) return true; // Keep logs without line references
+    const lineNum = parseInt(lineMatch[1], 10);
+    return lineNum > FILE_HELPERS_LINE_COUNT; // Keep if after helper code
+  });
 }
 
 // ============================================================================
@@ -130,20 +137,24 @@ function summarizeObject(
 // ============================================================================
 
 export function summarizeResult(value: unknown, opts: TruncateOptions = {}): SummarizedResult {
-  const rawBytes = JSON.stringify(value)?.length ?? 0;
+  const rawJson = JSON.stringify(value) ?? '';
+  const rawBytes = rawJson.length;
 
   if (!opts.enabled) {
-    return { value, truncated: false, rawBytes };
+    return { value, truncated: false, rawBytes, truncatedBytes: rawBytes };
   }
 
   const summarized = summarizeObject(value, opts, 0, new WeakSet());
-  const truncated = JSON.stringify(summarized) !== JSON.stringify(value);
+  const truncatedJson = JSON.stringify(summarized) ?? '';
+  const truncatedBytes = truncatedJson.length;
+  const truncated = truncatedBytes !== rawBytes;
 
   return {
     value: summarized,
     truncated,
     originalSize: truncated ? formatBytes(rawBytes) : undefined,
     rawBytes,
+    truncatedBytes,
   };
 }
 
@@ -189,23 +200,26 @@ export function sanitizeForJson(text: string): string {
 // formatFileResult - Format file operation results
 // ============================================================================
 
-export function formatFileResult(result: unknown, code?: string): string {
+export function formatFileResult(result: unknown, code?: string, prefix?: string): string {
   if (result === undefined || result === null) return 'undefined';
 
   if (Array.isArray(result) && result.every(r => typeof r === 'string')) {
     const sliceMatch = code?.match(/\.slice\s*\(\s*(\d+)/);
     const offset = sliceMatch ? parseInt(sliceMatch[1], 10) : 0;
-    return result.map((line, i) => {
+    const formatted = result.map((line, i) => {
       const numbered = `${offset + i + 1}: ${line}`;
       return numbered.length > MAX_LINE_WIDTH ? numbered.slice(0, MAX_LINE_WIDTH - 3) + '...' : numbered;
     }).join('\n');
+    return prefix ? prefix + formatted : formatted;
   }
 
   if (typeof result === 'string') {
-    return result.split('\n').map(line => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line).join('\n');
+    const formatted = result.split('\n').map(line => line.length > MAX_LINE_WIDTH ? line.slice(0, MAX_LINE_WIDTH - 3) + '...' : line).join('\n');
+    return prefix ? prefix + formatted : formatted;
   }
 
-  return JSON.stringify(result, null, 2);
+  const json = JSON.stringify(result, null, 2);
+  return prefix ? prefix + json : json;
 }
 
 // ============================================================================

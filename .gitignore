@@ -45,3 +45,10 @@ packages/mcx-rust/
 
 # Project instructions
 CLAUDE.md
+
+# Local databases
+.fff_frecency.db/
+
+# Test files
+test-reload.txt
+test-*.txt

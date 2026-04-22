@@ -59,6 +59,13 @@ export interface ExecuteParams {
   intent?: string;
   clear?: boolean;
   delete?: string;
+  timeout?: number;
+}
+
+
+interface ExecOptions {
+  storeAs?: string;
+  timeout?: number;
 }
 
 /** Result from shell/python execution (data, not formatted) */
@@ -74,6 +81,11 @@ interface ShellResult {
 // ============================================================================
 // Code Execution (Mode 1)
 // ============================================================================
+
+/** Extract and format logs (Linus: eliminate duplication) */
+function extractLogs(result: { logs?: string[] }): string[] {
+  return result.logs?.length ? truncateLogs(filterHelperLogs(result.logs)) : [];
+}
 
 async function executeCode(
   ctx: ToolContext,
@@ -114,7 +126,7 @@ async function executeCode(
     // Check for sandbox errors
     if (!result.success) {
       const err = result.error;
-      const logs = result.logs?.length ? truncateLogs(filterHelperLogs(result.logs)) : [];
+      const logs = extractLogs(result);
       const logsSection = logs.length ? `\n\n[Logs]\n${logs.join('\n')}` : '';
       return formatError(`${err?.name || 'Error'}: ${err?.message || 'Unknown error'}${logsSection}`);
     }
@@ -133,7 +145,7 @@ async function executeCode(
 
     // Format confirmation (value stays in $result, not in context)
     const varName = storeAs || 'result';
-    const logs = result.logs?.length ? truncateLogs(filterHelperLogs(result.logs)) : [];
+    const logs = extractLogs(result);
     const valueStr = formatValue(value);
     const lines = valueStr.split('\n').length;
     
@@ -176,8 +188,9 @@ function formatValue(value: unknown): string {
 async function executeShell(
   ctx: ToolContext,
   command: string,
-  storeAs?: string
+  opts: ExecOptions = {}
 ): Promise<ShellResult | McpResult> {
+  const { storeAs, timeout = DEFAULT_TIMEOUT } = opts;
   const cmd = command.trim();
   if (!cmd) return formatError("Empty command");
 
@@ -187,11 +200,11 @@ async function executeShell(
   const spawnResult = await safeShell(cmd, {
     cwd: process.cwd(),
     env: getSafeEnv(),
-    timeout: DEFAULT_TIMEOUT,
+    timeout,
   });
 
   if (spawnResult.timedOut) {
-    return formatError(`Command timed out after ${DEFAULT_TIMEOUT}ms`);
+    return formatError(`Command timed out after ${timeout}ms`);
   }
 
   const result = {
@@ -227,8 +240,9 @@ async function executeShell(
 async function executePython(
   ctx: ToolContext,
   code: string,
-  storeAs?: string
+  opts: ExecOptions = {}
 ): Promise<ShellResult | McpResult> {
+  const { storeAs, timeout = DEFAULT_TIMEOUT } = opts;
   const pythonCode = code.trim();
   if (!pythonCode) return formatError("Empty Python code");
 
@@ -241,11 +255,11 @@ async function executePython(
   const spawnResult = await safePython(pythonCode, {
     cwd: process.cwd(),
     env: getSafeEnv(),
-    timeout: DEFAULT_TIMEOUT,
+    timeout,
   });
 
   if (spawnResult.timedOut) {
-    return formatError(`Python execution timed out after ${DEFAULT_TIMEOUT}ms`);
+    return formatError(`Python execution timed out after ${timeout}ms`);
   }
 
   const result = {
@@ -287,10 +301,10 @@ function handleLargeOutput(
 
   if (results.length === 0) {
     const hint = terms.length > 0 ? `\nSearchable: ${terms.join(', ')}` : '';
-    return `✓ Stored ${varName}\nIndexed: ${intent}\nNo matches.${hint}\n→ mcx_search() to explore`;
+    return `✓ Stored ${varName}\nIndexed: ${intent}\nNo matches.${hint}\n-> mcx_search() to explore`;
   }
 
-  return `✓ Stored ${varName}\n` + formatSearchSnippets(results, intent) + `\n→ mcx_search({ queries: ["${intent}"] }) for more`;
+  return `✓ Stored ${varName}\n` + formatSearchSnippets(results, intent) + `\n-> mcx_search({ queries: ["${intent}"] }) for more`;
 }
 
 // ============================================================================
@@ -301,7 +315,7 @@ async function handleExecute(
   ctx: ToolContext,
   params: ExecuteParams
 ): Promise<McpResult> {
-  const { code, shell, python, storeAs, intent, clear, delete: deleteVar } = params;
+  const { code, shell, python, storeAs, intent, clear, delete: deleteVar, timeout } = params;
 
   // Variable management (no code/shell/python needed)
   if (clear) {
@@ -378,15 +392,15 @@ async function handleExecute(
 
   // Shell/Python mode: returns ShellResult or McpResult (validation error)
   const execResult = shell 
-    ? await executeShell(ctx, shell, storeAs)
-    : await executePython(ctx, python!, storeAs);
+    ? await executeShell(ctx, shell, { storeAs, timeout })
+    : await executePython(ctx, python!, { storeAs, timeout });
   
-  // Validation error → return directly
+  // Validation error -> return directly
   if ('isError' in execResult || 'content' in execResult) {
     return execResult as McpResult;
   }
 
-  // ShellResult → decide indexing + format
+  // ShellResult -> decide indexing + format
   const { output, lines, exitCode, varName, truncated, errorMsg } = execResult;
   const truncateWarning = truncated ? '\n⚠️ Output truncated (100MB limit)' : '';
 
@@ -404,16 +418,16 @@ async function handleExecute(
 
   const warning = allWarnings ? allWarnings + '\n\n' : '';
   
-  // Small output → apply filters and show directly
+  // Small output -> apply filters and show directly
   if (output.length <= INTENT_THRESHOLD) {
     const filtered = applyHybridFilter(shell || 'python', output, [detectAndFormatGrepOutput]);
     return warning + filtered + truncateWarning;
   }
   
-  // Large output → index and show label
+  // Large output -> index and show label
   const label = `exec:${varName}`;
   ctx.contentStore.index(output, label, { contentType: "plaintext" });
-  return warning + `Indexed ${lines} lines as "${label}"\n→ mcx_search({ queries: [...], source: "${label}" })` + truncateWarning;
+  return warning + `Indexed ${lines} lines as "${label}"\n-> mcx_search({ queries: [...], source: "${label}" })` + truncateWarning;
 }
 // ============================================================================
 // Adapter Summary for Description
@@ -443,57 +457,23 @@ export function createExecuteTool(spec: ResolvedSpec | null): ToolDefinition<Exe
 
   return {
     name: "mcx_execute",
-    description: `Execute JavaScript/TypeScript code OR shell commands.
+    description: `Execute JS/TS code, shell commands, or Python. NOT for file operations.
 
-## Mode 1: Code Execution (code parameter)
-NOT for file/content search - use mcx_find (files) or mcx_grep (content) instead.
+Code execution:
+- mcx_execute({ code: "2 + 2" }) - JS/TS
+- mcx_execute({ shell: "npm test" }) - shell
+- mcx_execute({ python: "print('hi')" }) - Python
+- mcx_execute({ code: "api.list()", storeAs: "data" }) - store as $data
 
-### Calling Adapters
-Adapters are available as globals. Use camelCase for names with hyphens:
-- supabase.list_projects()
-- chromeDevtools.listPages()  // chrome-devtools → chromeDevtools
+File operations redirect to mcx_file (read/write/edit files).
 
-### Available Adapters
-${adapterSummary}
-
+Adapters (globals): ${adapterSummary}
 Use mcx_search({ adapter: "name" }) for method details.
 
-### Data Helpers (for adapters/JSON)
-- pick(obj, ['key1', 'key2']) - Extract fields
-- keys(obj) - Get object keys
-- values(obj) - Get object values
-- paths(obj) - List all paths in object
-- tree(obj, depth) - Visual tree of structure
-
-### File Helpers (require mcx_file storeAs variable)
-- grep($var, 'pattern') - Search content
-- lines($var, start, end) - Get line range
-- around($var, line, ctx) - Context around line
-- block($var, line) - Code block containing line
-- outline($var) - Functions/classes overview
-
-### Variables
-- Results auto-stored as $result
-- storeAs: "name" → $name
-
-**Clear/Delete:**
-- mcx_execute({ clear: true }) - Clear all variables
-- mcx_execute({ delete: "result" }) - Delete $result
-- mcx_execute({ delete: "x" }) - Delete $x
-
-## Mode 2: Shell Execution (shell parameter)
-Run system commands with proper timeout and output capture.
-- { shell: "npm test" }
-- { shell: "git status" }
-- { shell: "docker ps -a", storeAs: "containers" }
-
-## Mode 3: Python Execution (python parameter)
-Run Python code with proper timeout.
-- { python: "print(2 + 2)" }
-- { python: "import json; print(json.dumps({'a': 1}))" }
-
-## Large Output Handling
-- intent: Auto-index output >5KB and search. Returns snippets instead of full data.`,
+Data helpers: pick, keys, values, paths, tree
+Variables: auto-stored as $result, use storeAs for custom name
+Clear: { clear: true } or { delete: "varName" }
+Large output: use intent to auto-index and search.`,
     inputSchema: {
       type: "object",
       properties: {

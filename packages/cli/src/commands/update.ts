@@ -203,7 +203,7 @@ async function updateCli(): Promise<boolean> {
     return true;
   }
 
-  console.log(pc.dim(`  ${installed || "not installed"} → ${latest}`));
+  console.log(pc.dim(`  ${installed || "not installed"} -> ${latest}`));
 
   try {
     await runCommand("bun", ["install", "-g", `${CLI_PACKAGE}@latest`]);
@@ -238,14 +238,14 @@ async function updateProject(cwd: string): Promise<boolean> {
   const updates: string[] = [];
 
   if (coreVersion && latestCore && coreVersion !== latestCore) {
-    console.log(pc.dim(`  ${CORE_PACKAGE}: ${coreVersion} → ${latestCore}`));
+    console.log(pc.dim(`  ${CORE_PACKAGE}: ${coreVersion} -> ${latestCore}`));
     updates.push(`${CORE_PACKAGE}@latest`);
   } else if (coreVersion) {
     console.log(pc.green(`  ${CORE_PACKAGE}: ${coreVersion} (up to date)`));
   }
 
   if (adaptersVersion && latestAdapters && adaptersVersion !== latestAdapters) {
-    console.log(pc.dim(`  ${ADAPTERS_PACKAGE}: ${adaptersVersion} → ${latestAdapters}`));
+    console.log(pc.dim(`  ${ADAPTERS_PACKAGE}: ${adaptersVersion} -> ${latestAdapters}`));
     updates.push(`${ADAPTERS_PACKAGE}@latest`);
   } else if (adaptersVersion) {
     console.log(pc.green(`  ${ADAPTERS_PACKAGE}: ${adaptersVersion} (up to date)`));
@@ -279,7 +279,7 @@ async function checkVersions(cwd: string): Promise<void> {
     if (installedCli === latestCli) {
       console.log(pc.green(`  ${CLI_PACKAGE}: ${installedCli} (latest)`));
     } else {
-      console.log(pc.yellow(`  ${CLI_PACKAGE}: ${installedCli} → ${latestCli} available`));
+      console.log(pc.yellow(`  ${CLI_PACKAGE}: ${installedCli} -> ${latestCli} available`));
     }
   } else {
     console.log(pc.dim(`  ${CLI_PACKAGE}: ${installedCli || "not installed"}`));
@@ -297,7 +297,7 @@ async function checkVersions(cwd: string): Promise<void> {
       if (coreVersion === latestCore) {
         console.log(pc.green(`  ${CORE_PACKAGE}: ${coreVersion} (latest)`));
       } else {
-        console.log(pc.yellow(`  ${CORE_PACKAGE}: ${coreVersion} → ${latestCore} available`));
+        console.log(pc.yellow(`  ${CORE_PACKAGE}: ${coreVersion} -> ${latestCore} available`));
       }
     } else if (coreVersion) {
       console.log(pc.dim(`  ${CORE_PACKAGE}: ${coreVersion}`));
@@ -310,7 +310,7 @@ async function checkVersions(cwd: string): Promise<void> {
       if (adaptersVersion === latestAdapters) {
         console.log(pc.green(`  ${ADAPTERS_PACKAGE}: ${adaptersVersion} (latest)`));
       } else {
-        console.log(pc.yellow(`  ${ADAPTERS_PACKAGE}: ${adaptersVersion} → ${latestAdapters} available`));
+        console.log(pc.yellow(`  ${ADAPTERS_PACKAGE}: ${adaptersVersion} -> ${latestAdapters} available`));
       }
     } else if (adaptersVersion) {
       console.log(pc.dim(`  ${ADAPTERS_PACKAGE}: ${adaptersVersion}`));

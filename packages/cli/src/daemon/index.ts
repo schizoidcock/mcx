@@ -1,16 +1,25 @@
 /**
  * MCX File Indexer Daemon
  * 
- * Polls FFF's drainChanges() from multiple watched projects and re-indexes
+ * Polls FFF's drainChanges() from watched projects and re-indexes
  * changed files in FTS5. FFF handles file watching internally.
+ * 
+ * Linus principles:
+ * - Max 3 indent levels (extract helpers)
+ * - Functions 10-15 lines
+ * - Early returns
  */
 
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { relative, extname, basename } from 'path';
 import { getContentStore } from '../search';
-import { DAEMON_DAEMON_POLL_INTERVAL_MS, INDEXABLE_EXTENSIONS } from '../tools/constants.js';
+import { DAEMON_POLL_INTERVAL_MS, INDEXABLE_EXTENSIONS } from '../tools/constants.js';
 import type { FileFinder } from '@ff-labs/fff-bun';
+
+// ============================================================================
+// Types
+// ============================================================================
 
 interface DaemonOptions {
   watchedProjects: Map<string, FileFinder>;
@@ -18,10 +27,56 @@ interface DaemonOptions {
   onError?: (error: Error) => void;
 }
 
+type ContentType = 'markdown' | 'code' | 'plaintext';
+
+// ============================================================================
+// Helpers (Linus: extract to flatten indentation)
+// ============================================================================
+
+function getContentType(path: string): ContentType {
+  const ext = extname(path).toLowerCase();
+  if (ext === '.md' || ext === '.mdx') return 'markdown';
+  if (INDEXABLE_EXTENSIONS.has(ext)) return 'code';
+  return 'plaintext';
+}
+
+function shouldIndex(path: string): boolean {
+  const ext = extname(path).toLowerCase();
+  return INDEXABLE_EXTENSIONS.has(ext);
+}
+
+async function indexFile(
+  fullPath: string,
+  projectPath: string,
+  store: ReturnType<typeof getContentStore>
+): Promise<void> {
+  const label = relative(projectPath, fullPath);
+
+  // Deleted file - remove from index
+  if (!existsSync(fullPath)) {
+    store.deleteByLabel(label);
+    return;
+  }
+
+  // Index content
+  const content = await readFile(fullPath, 'utf-8');
+  store.index(content, label, { contentType: getContentType(fullPath) });
+}
+
+function drainProjectChanges(finder: FileFinder): string[] {
+  const result = finder.drainChanges();
+  if (!result.ok) return [];
+  return result.value;
+}
+
+// ============================================================================
+// Daemon Class (Linus: minimal class, logic in helpers)
+// ============================================================================
+
 export class FileIndexerDaemon {
   private pollTimer: Timer | null = null;
-  private watchedProjects: Map<string, FileFinder>;
   private isProcessing = false;
+  private watchedProjects: Map<string, FileFinder>;
   private onIndex?: (path: string, project: string) => void;
   private onError?: (error: Error) => void;
 
@@ -33,88 +88,78 @@ export class FileIndexerDaemon {
 
   start(): void {
     if (this.pollTimer) return;
-    this.pollTimer = setInterval(() => this.processChanges(), DAEMON_POLL_INTERVAL_MS);
+    this.pollTimer = setInterval(() => this.poll(), DAEMON_POLL_INTERVAL_MS);
   }
 
   stop(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
+    if (!this.pollTimer) return;
+    clearInterval(this.pollTimer);
+    this.pollTimer = null;
   }
 
-  private async processChanges(): Promise<void> {
+  private async poll(): Promise<void> {
     if (this.isProcessing) return;
     this.isProcessing = true;
-
     try {
-      const store = getContentStore();
-
-      // Poll all watched projects
-      for (const [projectPath, finder] of this.watchedProjects) {
-        const changedPaths = finder.drainChanges();
-        if (changedPaths.length === 0) continue;
-
-        for (const fullPath of changedPaths) {
-          try {
-            const ext = extname(fullPath).toLowerCase();
-            if (!INDEXABLE_EXTENSIONS.has(ext)) continue;
-
-            const label = relative(projectPath, fullPath);
-
-            // Check if file was deleted
-            if (!existsSync(fullPath)) {
-              store.deleteByLabel(label);
-              this.onIndex?.(fullPath, projectPath); // Still notify (deletion)
-              continue;
-            }
-
-            const content = await readFile(fullPath, 'utf-8');
-            
-            store.index(content, label, {
-              contentType: this.getContentType(fullPath),
-            });
-
-            this.onIndex?.(fullPath, projectPath);
-          } catch (error) {
-            this.onError?.(error instanceof Error ? error : new Error(String(error)));
-          }
-        }
-      }
+      await this.processAllProjects();
     } finally {
       this.isProcessing = false;
     }
   }
 
-  private getContentType(path: string): 'markdown' | 'code' | 'plaintext' {
-    const ext = extname(path).toLowerCase();
-    if (ext === '.md' || ext === '.mdx') return 'markdown';
-    if (INDEXABLE_EXTENSIONS.has(ext)) return 'code';
-    return 'plaintext';
+  private async processAllProjects(): Promise<void> {
+    const store = getContentStore();
+    for (const [projectPath, finder] of this.watchedProjects) {
+      await this.processProject(projectPath, finder, store);
+    }
+  }
+
+  private async processProject(
+    projectPath: string,
+    finder: FileFinder,
+    store: ReturnType<typeof getContentStore>
+  ): Promise<void> {
+    const changedPaths = drainProjectChanges(finder);
+    for (const fullPath of changedPaths) {
+      await this.processFile(fullPath, projectPath, store);
+    }
+  }
+
+  private async processFile(
+    fullPath: string,
+    projectPath: string,
+    store: ReturnType<typeof getContentStore>
+  ): Promise<void> {
+    if (!shouldIndex(fullPath)) return;
+    try {
+      await indexFile(fullPath, projectPath, store);
+      this.onIndex?.(fullPath, projectPath);
+    } catch (error) {
+      this.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }
 
-// Singleton daemon instance
+// ============================================================================
+// Singleton (Linus: simple module-level state)
+// ============================================================================
+
 let daemon: FileIndexerDaemon | null = null;
 
 export function startDaemon(watchedProjects: Map<string, FileFinder>): FileIndexerDaemon {
-  if (daemon) {
-    daemon.stop();
-  }
+  if (daemon) daemon.stop();
   daemon = new FileIndexerDaemon({
     watchedProjects,
-    onIndex: (path, project) => console.error(`[daemon] Indexed: ${basename(path)} (${basename(project)})`),
-    onError: (error) => console.error(`[daemon] Error: ${error.message}`),
+    onIndex: (p, proj) => console.error(`[daemon] Indexed: ${basename(p)} (${basename(proj)})`),
+    onError: (e) => console.error(`[daemon] Error: ${e.message}`),
   });
   daemon.start();
   return daemon;
 }
 
 export function stopDaemon(): void {
-  if (daemon) {
-    daemon.stop();
-    daemon = null;
-  }
+  daemon?.stop();
+  daemon = null;
 }
 
 export function getDaemon(): FileIndexerDaemon | null {

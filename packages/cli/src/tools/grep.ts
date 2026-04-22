@@ -12,7 +12,7 @@ import { formatStored } from "../utils/truncate.js";
 import { setVariable } from "../context/variables.js";
 import { formatGrepMCX, type GrepMatch } from "./format-grep.js";
 import { trackToolUsage, updateProximityContext, getProximityScore } from "../context/tracking.js";
-import { eventTips } from "../context/tips.js";
+import { eventTips, errorTips } from "../context/tips.js";
 import { initializeFinder, getFinderForPath } from "../context/create.js";
 import { GREP_PAGE_SIZE } from "./constants.js";
 
@@ -26,6 +26,11 @@ export interface GrepParams {
   path?: string;     // Directory to search
   context?: number;  // Lines of context
   mode?: "plain" | "regex" | "fuzzy";  // Search mode (default: plain)
+}
+
+interface ValidatedGrep {
+  parsed: ParsedQuery;
+  path: string;
 }
 
 // ============================================================================
@@ -44,11 +49,23 @@ function needsRegexMode(pattern: string): boolean {
 }
 
 /** Map fff grep results to GrepMatch[] */
-function mapGrepItems(items: Array<{ relativePath: string; lineNumber: number; lineContent: string }>): GrepMatch[] {
+function mapGrepItems(items: Array<{ 
+  relativePath: string; 
+  lineNumber: number; 
+  lineContent: string; 
+  contextBefore?: string[]; 
+  contextAfter?: string[];
+  totalFrecencyScore?: number;
+  fuzzyScore?: number;
+}>): GrepMatch[] {
   return items.map(m => ({
     relativePath: m.relativePath,
     lineNumber: m.lineNumber,
     lineContent: m.lineContent,
+    contextBefore: m.contextBefore,
+    contextAfter: m.contextAfter,
+    frecencyScore: m.totalFrecencyScore ?? 0,
+    fuzzyScore: m.fuzzyScore ?? 0,
   }));
 }
 
@@ -121,51 +138,61 @@ function processGrepResults(
 // Handler
 // ============================================================================
 
+
+function validateGrepParams(params: GrepParams): { ok: true; data: ValidatedGrep } | { ok: false; error: McpResult } {
+  const query = params.query || params.pattern;
+  
+  if (!query) {
+    return { ok: false, error: formatError("Missing query or pattern parameter") };
+  }
+  
+  const parsed = parseGrepQuery(query);
+  
+  if (!parsed.searchTerm) {
+    return { ok: false, error: formatError("No search term found", errorTips.noSearchTerm()) };
+  }
+  
+  if (!params.path) {
+    return { ok: false, error: formatError("Missing path parameter", errorTips.missingGrepPath(parsed.searchTerm)) };
+  }
+  
+  if (!isAbsolute(params.path)) {
+    return { ok: false, error: formatError(`Absolute path required. Got: "${params.path}"`) };
+  }
+
+  // Detect file path (has extension) - grep needs directory
+  if (params.path.match(/\.[a-zA-Z0-9]+$/)) {
+    return { ok: false, error: formatError("Path must be a directory", errorTips.grepNeedsDirectory(params.path)) };
+  }
+  
+  return { ok: true, data: { parsed, path: params.path } };
+}
+
 async function handleGrep(
   ctx: ToolContext,
   params: GrepParams
 ): Promise<McpResult> {
-  const query = params.query || params.pattern;
-
-  if (!query) {
-    return formatError("Missing query or pattern parameter");
-  }
-
-  // Parse query
-  const parsed = parseGrepQuery(query);
-
-  if (!parsed.searchTerm) {
-    return formatError(
-      "No search term found in query",
-      "Example: mcx_grep({ query: '*.ts useState' })"
-    );
-  }
-
-  // Path is required
-  if (!params.path) {
-    return formatError(
-      "Missing path parameter",
-      `Example: mcx_grep({ query: "${parsed.searchTerm}", path: "src/" })`
-    );
-  }
-
-  // Require absolute path
-  if (!isAbsolute(params.path)) {
-    return formatError(`Absolute path required. Got: "${params.path}"`);
-  }
+  // Validate
+  const v = validateGrepParams(params);
+  if (!v.ok) return v.error;
+  const { parsed, path: basePath } = v.data;
 
   // Get finder for search path
-  const searchPath = resolve(params.path);
+  const searchPath = resolve(basePath);
 
   try {
     const finder = await getFinderForPath(ctx, searchPath);
     const fffQuery = buildFffQuery(parsed);
     const autoMode = params.mode || (needsRegexMode(parsed.searchTerm) ? "regex" : "plain");
     
+    const contextLines = params.context ?? 3;
     const results = finder.grep(fffQuery, {
       pageSize: GREP_PAGE_SIZE,
       glob: parsed.filePattern || undefined,
       mode: autoMode,
+      trimWhitespace: params.trimWhitespace ?? false,
+      beforeContext: contextLines,
+      afterContext: contextLines,
     });
 
     if (!results.ok) return formatError(`Search failed: ${results.error}`);
@@ -207,13 +234,20 @@ export const mcxGrep: ToolDefinition<GrepParams> = {
   description: `Search CONTENT inside files. NOT for finding files by name.
 
 USE THIS FOR: "find useState in code", "search for TODO comments"
-DO NOT USE FOR: "where is config.ts?" → use mcx_find instead
+DO NOT USE FOR: "where is config.ts?" -> use mcx_find instead
 
-Query syntax:
-- "TODO" - Search for text in all files
-- "*.ts useState" - Search "useState" only in .ts files
-- "src/ handleClick" - Search in src/ directory only
-- "*.{ts,tsx} import" - Search in multiple file types`,
+Examples:
+- mcx_grep({ query: "TODO", path: "/project" }) - Search all files
+- mcx_grep({ query: "*.ts useState", path: "/project" }) - Only in .ts files
+- mcx_grep({ query: "handleClick", mode: "regex", path: "/project" }) - Regex search
+- mcx_grep({ query: "improt", mode: "fuzzy", path: "/project" }) - Typo-tolerant
+
+Modes: plain (literal), regex (patterns with |), fuzzy (typo-tolerant)
+Path is REQUIRED (absolute path to DIRECTORY, NOT a file)
+
+View code blocks: Use context param, then mcx_search to see the code:
+- mcx_grep({ query: "handleAuth", context: 3 }) -> finds and stores matches
+- mcx_search({ queries: ["handleAuth"] }) -> shows function/block around match`,
   inputSchema: {
     type: "object",
     properties: {
@@ -248,6 +282,11 @@ Query syntax:
         enum: ["plain", "regex", "fuzzy"],
         default: "plain",
         description: "Search mode: plain (literal), regex (OR with |), fuzzy (typo-tolerant)",
+      },
+      trimWhitespace: {
+        type: "boolean",
+        default: false,
+        description: "Trim leading/trailing whitespace from matched lines",
       },
     },
   },

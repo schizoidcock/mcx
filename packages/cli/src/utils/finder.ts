@@ -8,7 +8,6 @@
  */
 
 import * as path from "node:path";
-import { join } from "node:path";
 import pc from "picocolors";
 import { getMcxHomeDir } from "../utils/paths.js";
 import { type FileFinder } from "../utils/fff";
@@ -61,7 +60,7 @@ export async function createFinderCache(
     
     const result = FF.create({
       basePath,
-      frecencyDbPath: disableFrecency ? "" : join(getMcxHomeDir(), "frecency.db"),
+      frecencyDbPath: disableFrecency ? "" : path.join(getMcxHomeDir(), "frecency.db"),
     });
     
     if (result.ok) {
@@ -71,8 +70,9 @@ export async function createFinderCache(
     } else {
       console.error(pc.yellow(`FFF init skipped: ${result.error}`));
     }
-  } catch {
+  } catch (e) {
     console.error(pc.yellow(`FFF not available - mcx_find/mcx_grep disabled`));
+    console.error(pc.red(`FFF error: ${e}`));
   }
 
   return cache;

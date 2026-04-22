@@ -160,12 +160,12 @@ async function handleStats(
       const contextWindow = 200000;
       const pctPreserved = ((tokensSaved / contextWindow) * 100).toFixed(1);
       output.push(`   🎯 ${formatBytes(keptOut)} kept in sandbox (${reductionPct}% reduction)`);
-      output.push(`      → ${tokensSaved.toLocaleString()} tokens preserved (${pctPreserved}% of context)`);
+      output.push(`      -> ${tokensSaved.toLocaleString()} tokens preserved (${pctPreserved}% of context)`);
 
       // Cost avoided (Opus pricing ~$5/1M input tokens)
       const costSaved = (tokensSaved / 1000000 * 5).toFixed(3);
       if (parseFloat(costSaved) >= 0.01) {
-        output.push(`      → $${costSaved} context cost avoided`);
+        output.push(`      -> $${costSaved} context cost avoided`);
       }
     } else {
       output.push(`   ${formatBytes(stats.totalChars)} sent to model (no sandbox data yet)`);

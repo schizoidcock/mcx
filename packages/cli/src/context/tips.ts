@@ -5,6 +5,7 @@
 import type { ToolMeta } from "../tools/meta.js";
 import { getAccessCount, isStale } from "./files.js";
 import { getAllVariables, getVariable } from "./variables.js";
+import { wasLastToolSuccessful } from "./tracking.js";
 
 // ============================================================================
 // Types
@@ -70,22 +71,24 @@ function countRecent(tools: RecentTool[], name: string, n = 5): number {
 
 const RULES: TipRule[] = [
   // === File access patterns (security) ===
+  // NOTE: Skip stale warnings after successful write (auto-reload handles it)
   {
-    test: ctx => ctx.meta.reads && ctx.filePath !== undefined && isStale(ctx.filePath),
+    test: ctx => ctx.meta.reads && ctx.filePath !== undefined && isStale(ctx.filePath) && ctx.params?.write !== true,
     message: () => `File was modified since last store. Re-read recommended.`,
   },
   {
-    test: ctx => ctx.meta.writes && ctx.filePath !== undefined && isStale(ctx.filePath),
+    test: ctx => ctx.meta.writes && ctx.filePath !== undefined && isStale(ctx.filePath) && ctx.params?.write !== true,
     message: () => `Warning: File changed since last read. Verify before editing.`,
   },
 
   // === Tool sequence patterns (efficiency) ===
+  // Removed: tip is already in success message, was firing on errors too
+  // {
+  //   test: ctx => ctx.params?.write === true && ctx.filePath,
+  //   message: () => `No need to re-read after edit. Changes confirmed.`,
+  // },
   {
-    test: ctx => ctx.meta.reads && lastTool(ctx.recentTools) === 'mcx_file' && ctx.filePath && lastEditedFile(ctx.recentTools) === ctx.filePath,
-    message: () => `No need to re-read after edit. Changes confirmed.`,
-  },
-  {
-    test: ctx => ctx.meta.reads && lastTool(ctx.recentTools) === 'mcx_write' && ctx.filePath && lastEditedFile(ctx.recentTools) === ctx.filePath,
+    test: ctx => ctx.meta.reads && wasLastToolSuccessful() && lastTool(ctx.recentTools) === 'mcx_write' && ctx.filePath && lastEditedFile(ctx.recentTools) === ctx.filePath,
     message: () => `No need to re-read after write. Content confirmed.`,
   },
 
@@ -106,13 +109,13 @@ const RULES: TipRule[] = [
 
   // === Edit patterns (writes capability) ===
   {
-    test: ctx => ctx.meta.writes && lastTool(ctx.recentTools) === 'mcx_file',
+    test: ctx => ctx.meta.writes && wasLastToolSuccessful() && (lastTool(ctx.recentTools) === 'mcx_file' || lastTool(ctx.recentTools) === 'mcx_write'),
     message: () => `Back-to-back edits. Consider batching changes.`,
   },
   {
-    test: ctx => ctx.meta.writes && countRecent(ctx.recentTools, 'mcx_file') >= 2 && 
+    test: ctx => ctx.meta.writes && wasLastToolSuccessful() && (countRecent(ctx.recentTools, 'mcx_file') + countRecent(ctx.recentTools, 'mcx_write')) >= 2 && 
                  countRecent(ctx.recentTools, 'mcx_execute') >= 1,
-    message: () => `Edit→build→edit cycle. Batch all edits first, then build once.`,
+    message: () => `Edit->build->edit cycle. Batch all edits first, then build once.`,
   },
 
   // === Search patterns (error prevention) ===
@@ -168,7 +171,7 @@ export function getFirstTip(ctx: TipContext): string | null {
 
 export const errorTips = {
   reload: (path: string, storeAs: string) =>
-    `💡 Reload: mcx_file({ path: "${path}", storeAs: "${storeAs}" })`,
+    `💡 Reload file again: mcx_file({ path: "${path}", storeAs: "${storeAs}" })`,
 
   loadFirst: (storeAs: string) =>
     `💡 Load first: mcx_file({ path: "/abs/path/file", storeAs: "${storeAs}" })`,
@@ -176,8 +179,37 @@ export const errorTips = {
   useExisting: (varName: string) =>
     `💡 Use: mcx_file({ storeAs: "${varName}", code: "..." }) to read the content.`,
 
+  alreadyLoaded: (existingVar: string, correctedCode: string) =>
+    `Already loaded as ${existingVar}. Use: mcx_file({ storeAs: "${existingVar}", code: "${correctedCode}" })`,
+
+
   validParams: (params: string[]) =>
     `💡 Valid: ${params.join(", ")}`,
+
+  // file.ts
+  fullFileFillsContext: () =>
+    `💡 Returning full file fills context. Use grep/lines instead.`,
+
+  writeRequiresString: (varName: string) =>
+    `💡 ${varName}: write requires code to return string, e.g.: $var.raw.replace('old', 'new')`,
+
+  // search.ts  
+  noSpecLoaded: () =>
+    `💡 No spec loaded. Use mcx_doctor() to check config.`,
+
+  // grep.ts
+  grepNeedsDirectory: (path: string) =>
+    `💡 Path must be a DIRECTORY, not a file: "${path}". Use mcx_file with grep() for single files.`,
+
+  noSearchTerm: () =>
+    `💡 No search term found. Example: mcx_grep({ query: '*.ts useState' })`,
+
+  missingGrepPath: (searchTerm: string) =>
+    `💡 Missing path. Example: mcx_grep({ query: "${searchTerm}", path: "/project/src" })`,
+
+  // fetch.ts
+  invalidUrl: (url: string) =>
+    `💡 Invalid URL: "${url}". Must start with http:// or https://`,
 };
 
 // ============================================================================
@@ -192,7 +224,7 @@ export const eventTips = {
   },
   
   grepNoMatches: (term: string, filesSearched: number) =>
-    `No matches for "${term}" in ${filesSearched} files\n→ Try: broader pattern or different path`,
+    `No matches for "${term}" in ${filesSearched} files\n-> Try: broader pattern or different path`,
 
   linesHunting: (varName: string, count: number) =>
     `Hunting pattern (${count}x). Use grep(${varName}, 'pattern', 5) for context.`,

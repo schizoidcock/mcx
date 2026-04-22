@@ -12,7 +12,7 @@ const RRF_K = 60;
 /**
  * RRF search: Run Porter AND Trigram in parallel, merge by rank fusion.
  * 
- * Unlike cascading fallback (Porter → Trigram → Fuzzy), RRF runs both
+ * Unlike cascading fallback (Porter -> Trigram -> Fuzzy), RRF runs both
  * strategies and merges results so documents that rank well in BOTH
  * strategies surface higher than those ranking well in only one.
  * 

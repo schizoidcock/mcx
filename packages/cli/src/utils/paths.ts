@@ -10,7 +10,7 @@ import { access } from "node:fs/promises";
 /** Max directory depth to traverse (prevents symlink loops) */
 const MAX_TRAVERSE_DEPTH = 100;
 
-/** Normalize path: backslash → forward slash (Windows compatibility) */
+/** Normalize path: backslash -> forward slash (Windows compatibility) */
 export const normalizePath = (p: string): string => p.replace(/\\/g, '/');
 
 /**
@@ -124,7 +124,7 @@ export async function exists(path: string): Promise<boolean> {
 
 /**
  * Compact a path by replacing middle segments with "..."
- * e.g., "packages/cli/src/commands/serve.ts" → "packages/.../serve.ts"
+ * e.g., "packages/cli/src/commands/serve.ts" -> "packages/.../serve.ts"
  */
 export function compactPath(filePath: string, maxLen = 50): string {
   if (filePath.length <= maxLen) return filePath;

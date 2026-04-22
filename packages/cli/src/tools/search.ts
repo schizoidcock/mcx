@@ -9,6 +9,7 @@ import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import type { ResolvedSpec, ToolSpec, ParameterSpec } from "../spec/types.js";
 import type { ContentStore } from "../search/store.js";
 import { formatError } from "./utils.js";
+import { errorTips } from "../context/tips.js";
 import { getMethodFrecency } from "../context/tracking.js";
 import { setVariable } from "../context/variables.js";
 import { checkSearchThrottle } from "../context/guards.js";
@@ -45,7 +46,7 @@ async function handleSpecSearch(
   storeAs?: string
 ): Promise<McpResult> {
   if (!ctx.spec) {
-    return formatError("No spec loaded. Use mcx_doctor() to check config.");
+    return formatError("No spec loaded", errorTips.noSpecLoaded());
   }
   
   try {
@@ -116,7 +117,7 @@ function handleContentSearch(
 function formatContentResults(
   results: Array<{ query: string; matches: SearchResult[] }>
 ): string {
-  // Adaptive snippet size: few results → more detail, many results → less
+  // Adaptive snippet size: few results -> more detail, many results -> less
   const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0);
   const maxLen = totalMatches <= 3 ? SNIPPET_MAX_BATCH : SNIPPET_MAX_REGULAR;
   
@@ -208,7 +209,7 @@ function handleAdapterSearch(spec: ResolvedSpec, query: string): McpResult {
   const output = [`Found ${allMatches.length} matches for "${query}":`, ""];
   output.push(...allMatches.slice(0, 20).map(m => `- ${m}`));
   if (allMatches.length > 20) output.push(`... +${allMatches.length - 20} more`);
-  output.push("", "→ mcx_adapter({ name: \"...\", call: \"methodName\", params: {...} }) to execute");
+  output.push("", "-> mcx_adapter({ name: \"...\", call: \"methodName\", params: {...} }) to execute");
   return output.join("\n");
 }
 // ============================================================================
@@ -248,7 +249,7 @@ async function handleSearch(
   
   // Mode 3: Adapter search
   if (adapter) {
-    if (!ctx.spec) return formatError("No spec loaded");
+    if (!ctx.spec) return formatError("No spec loaded", errorTips.noSpecLoaded());
     return handleAdapterSearch(ctx.spec, adapter);
   }
   
@@ -282,8 +283,8 @@ Full-text search indexed content (from mcx_fetch, mcx_file).
 
 ## Mode 3: Adapter/Method Search (adapter param)
 Find adapter methods by name.
-- mcx_search({ adapter: "create" }) → all methods with "create"
-- mcx_search({ adapter: "stripe" }) → all stripe methods`,
+- mcx_search({ adapter: "create" }) -> all methods with "create"
+- mcx_search({ adapter: "stripe" }) -> all stripe methods`,
   inputSchema: {
     type: "object",
     properties: {

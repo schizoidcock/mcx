@@ -7,6 +7,7 @@
 
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatError, formatBytes } from "./utils.js";
+import { errorTips } from "../context/tips.js";
 import { trackToolUsage, suggestNextTool, trackNetworkBytes } from "../context/tracking.js";
 import { htmlToMarkdown, extractHtmlTitle } from "../search/html-to-markdown.js";
 import { isBlockedUrl } from "../utils/security.js";
@@ -126,7 +127,7 @@ function formatCacheHit(
 ): McpResult {
   const lines = [
     `✓ ${label} | ${chunks} sections | ${sizeKB || "?"}KB | cached ${formatAge(age)}`,
-    `→ mcx_search({ queries: [...] }) or force: true`,
+    `-> mcx_search({ queries: [...] }) or force: true`,
     ...searchOutput,
   ];
   return lines.join("\n");
@@ -243,7 +244,7 @@ async function handleFetch(
         }
       }
       
-      output.push(`→ Try mcx_search({ queries: [...] }) with different terms`);
+      output.push(`-> Try mcx_search({ queries: [...] }) with different terms`);
     } else if (preview) {
       output.push("Full content indexed — use mcx_search({ queries: [...] }) for retrieval");
       output.push("");

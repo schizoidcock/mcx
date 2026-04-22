@@ -3,7 +3,7 @@ import { extractProducts } from './products.js';
 
 /**
  * Infer likely source methods for ID parameters.
- * E.g., customer_id → ['getCustomers', 'listCustomers', 'get_customers']
+ * E.g., customer_id -> ['getCustomers', 'listCustomers', 'get_customers']
  */
 function inferRequires(paramName: string): string[] | null {
   // Match patterns: customer_id, customerId, customer_uuid, customerUuid
@@ -11,11 +11,11 @@ function inferRequires(paramName: string): string[] | null {
   if (!match) return null;
 
   const entity = match[1];
-  // Normalize: customer_name → customerName, already camelCase stays same
+  // Normalize: customer_name -> customerName, already camelCase stays same
   const camelEntity = entity.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
   const snakeEntity = entity.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
 
-  // Pluralize (simple: add 's', handle 'y' → 'ies')
+  // Pluralize (simple: add 's', handle 'y' -> 'ies')
   const pluralize = (s: string) => s.endsWith('y') ? s.slice(0, -1) + 'ies' : s + 's';
   const camelPlural = pluralize(camelEntity);
   const snakePlural = pluralize(snakeEntity);

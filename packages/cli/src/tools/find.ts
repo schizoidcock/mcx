@@ -8,15 +8,17 @@
 import { resolve, isAbsolute, dirname, basename, relative } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatError } from "./utils.js";
+
 import { compactPath, normalizePath } from "../utils/paths.js";
 import { trackToolUsage, updateProximityContext, getProximityScore } from "../context/tracking.js";
 import { initializeFinder, getFinderForPath } from "../context/create.js";
-import { 
-  IMPORT_REGEX, 
-  RESOLVE_EXTENSIONS, 
-  SOURCE_GLOB, 
-  SOURCE_EXT_REGEX, 
-  RELATED_PAGE_SIZE 
+import {
+  IMPORT_REGEX,
+  RESOLVE_EXTENSIONS,
+  SOURCE_GLOB,
+  SOURCE_EXT_REGEX,
+  RELATED_PAGE_SIZE,
+  normalizeScore,
 } from "./constants.js";
 
 // ============================================================================
@@ -36,62 +38,126 @@ interface ImporterMatch {
   line: number;
   snippet: string;
 }
+
+interface ValidatedFind {
+  query: string;
+  path: string;
+  limit: number;
+}
 // ============================================================================
 // Handler
 // ============================================================================
+
+
+function validateFindParams(params: FindParams): { ok: true; data: ValidatedFind } | { ok: false; error: McpResult } {
+  const query = params.query || params.pattern;
+  
+  if (!query) {
+    return { ok: false, error: formatError(
+      "Missing query or pattern parameter",
+      "Example: mcx_find({ query: '*.ts' }) or mcx_find({ related: 'file.ts' })"
+    )};
+  }
+  
+  if (!params.path) {
+    return { ok: false, error: formatError(
+      "path parameter is required",
+      'mcx_find({ query: "*.ts", path: "/abs/path/to/project" })'
+    )};
+  }
+  
+  if (!isAbsolute(params.path)) {
+    return { ok: false, error: formatError(`Absolute path required. Got: "${params.path}"`) };
+  }
+  
+  return { ok: true, data: { query, path: params.path, limit: params.limit || 20 } };
+}
+
+/** Parse query for embedded path (Linus: single responsibility) */
+function parseQueryPath(
+  query: string,
+  basePath: string
+): { searchPath: string; searchQuery: string } | McpResult {
+  const lastSlash = query.lastIndexOf("/");
+  if (lastSlash <= 0) return { searchPath: resolve(basePath), searchQuery: query };
+  
+  const pathPart = query.slice(0, lastSlash);
+  if (!isAbsolute(pathPart) && !pathPart.includes("*") && !pathPart.includes("?")) {
+    return formatError(
+      `Absolute path required. Got: "${pathPart}"`,
+      `Use full path: mcx_find({ query: "/absolute/path/${query}" })`
+    );
+  }
+  return { searchPath: resolve(basePath, pathPart), searchQuery: query.slice(lastSlash + 1) };
+}
+
+/** Score and sort files by combined fff+proximity (Linus: single responsibility) */
+function scoreAndSortFiles<T extends { relativePath: string }>(
+  files: T[],
+  fffScores: Array<{ total?: number }> | undefined
+): T[] {
+  const scored = files.map((f, i) => {
+    const fff = normalizeScore(fffScores?.[i]?.total || 0, 100);
+    const prox = normalizeScore(getProximityScore(f.relativePath), 10);
+    return { file: f, score: (fff * 0.7) + (prox * 0.3) };
+  });
+  return scored.sort((a, b) => b.score - a.score).map(s => s.file);
+}
+
+/** Format find results (Linus: extract formatting) */
+function formatFindResults(
+  files: Array<{ relativePath: string; status?: string }>,
+  fffScores: Array<{ total?: number }> | undefined,
+  limit: number
+): string {
+  const sorted = scoreAndSortFiles(files, fffScores);
+  const toShow = sorted.slice(0, limit);
+  const hidden = files.length - toShow.length;
+
+  const lines = [`Found ${files.length} files${hidden > 0 ? ` (showing ${limit}, +${hidden} hidden)` : ""}:`, ""];
+  for (const file of toShow) {
+    let line = file.relativePath;
+    if (file.status === "modified") line += " ★";
+    else if (file.status === "untracked") line += " [untracked]";
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
 
 async function handleFind(
   ctx: ToolContext,
   params: FindParams
 ): Promise<McpResult> {
-  const query = params.query || params.pattern;
-  const limit = params.limit || 20;
+  // Related files mode (different flow)
+  if (params.related) return handleFindRelated(ctx, params.related);
 
-  // Related files mode
-  if (params.related) {
-    return handleFindRelated(ctx, params.related);
-  }
+  // Validate
+  const v = validateFindParams(params);
+  if (!v.ok) return v.error;
+  const { query, path: basePath, limit } = v.data;
 
-  if (!query) {
-    return formatError(
-      "Missing query or pattern parameter",
-      "Example: mcx_find({ query: '*.ts' }) or mcx_find({ related: 'file.ts' })"
-    );
-  }
-
-  // Require absolute path if provided
-  if (params.path && !isAbsolute(params.path)) {
-    return formatError(`Absolute path required. Got: "${params.path}"`);
-  }
-
-  // Handle path in query (e.g., "D:/project/tasks/*.md" → path=D:/project/tasks, query=*.md)
-  let searchPath = params.path ? resolve(params.path) : ctx.basePath;
-  let searchQuery = query;
-  const lastSlash = query.lastIndexOf("/");
-  if (lastSlash > 0) {
-    const pathPart = query.slice(0, lastSlash);
-    // Require absolute path in query (reject "tasks/" but allow "*.ts", "src/*.ts" globs)
-    if (!isAbsolute(pathPart) && !pathPart.includes("*") && !pathPart.includes("?")) {
-      return formatError(
-        `Absolute path required. Got: "${pathPart}"`,
-        `Use full path: mcx_find({ query: "/absolute/path/${query}" })`
-      );
-    }
-    searchPath = resolve(searchPath, pathPart);
-    searchQuery = query.slice(lastSlash + 1);
-  }
+  // Parse query for embedded path
+  const parsed = parseQueryPath(query, basePath);
+  if ('content' in parsed) return parsed; // Error result
+  const { searchPath, searchQuery } = parsed;
 
   try {
     const finder = await getFinderForPath(ctx, searchPath);
 
-    // Execute search
-    const results = finder.fileSearch(searchQuery, { pageSize: limit * 2 });
+    // Execute search based on type
+    const searchType = params.type || "files";
+    const results = searchType === "dirs"
+      ? finder.directorySearch(searchQuery, { pageSize: limit * 2 })
+      : searchType === "all"
+        ? finder.mixedSearch(searchQuery, { pageSize: limit * 2 })
+        : finder.fileSearch(searchQuery, { pageSize: limit * 2 });
 
     if (!results.ok) {
       return formatError(`Search failed: ${results.error}`);
     }
 
     const files = results.value.items;
+    const fffScores = results.value.scores || [];
 
     // Track usage
     trackToolUsage("mcx_find");
@@ -104,39 +170,11 @@ async function handleFind(
 
     // No matches
     if (files.length === 0) {
-      return `No files matching "${query}"\n→ Try: broader pattern or different path`;
+      const typeLabel = searchType === "dirs" ? "directories" : searchType === "all" ? "files/dirs" : "files";
+      return `No ${typeLabel} matching "${query}" (searched: ${results.value.totalMatched || 0})\n-> Try: broader pattern or different path`;
     }
 
-    // Sort by proximity score (recently accessed files rank higher)
-    const scored = files.map(f => ({
-      file: f,
-      score: getProximityScore(f.relativePath)
-    }));
-    scored.sort((a, b) => b.score - a.score);
-
-    // Format output
-    const toShow = scored.slice(0, limit).map(s => s.file);
-    const hidden = files.length - toShow.length;
-
-    const lines: string[] = [];
-    lines.push(`Found ${files.length} files${hidden > 0 ? ` (showing ${limit}, +${hidden} hidden)` : ""}:`);
-    lines.push("");
-
-    for (const file of toShow) {
-      let line = file.relativePath;
-
-      // Add git status if available
-      if (file.status) {
-        const statusIcon = file.status === "modified" ? "★"
-          : file.status === "untracked" ? "[untracked]"
-          : "";
-        if (statusIcon) line += ` ${statusIcon}`;
-      }
-
-      lines.push(line);
-    }
-
-    return lines.join("\n");
+    return formatFindResults(files, fffScores, limit);
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -209,7 +247,7 @@ function formatImporters(importers: ImporterMatch[], max: number): string[] {
   if (importers.length === 0) return [];
   const lines = [`Imported by (${importers.length}):`];
   for (const m of importers.slice(0, max)) {
-    lines.push(`  ← ${m.path}:${m.line} → ${m.snippet.slice(0, 60)}${m.snippet.length > 60 ? '...' : ''}`);
+    lines.push(`  ← ${m.path}:${m.line} -> ${m.snippet.slice(0, 60)}${m.snippet.length > 60 ? '...' : ''}`);
   }
   if (importers.length > max) lines.push(`  ... +${importers.length - max} more`);
   lines.push("");
@@ -284,7 +322,7 @@ async function handleFindRelated(ctx: ToolContext, targetFile: string): Promise<
 
   // Format output
   const lines = [`Related files for: ${targetRel}`, ""];
-  lines.push(...formatSection("Imports", imports, "→", 10));
+  lines.push(...formatSection("Imports", imports, "->", 10));
   lines.push(...formatImporters(importers, 10));
   lines.push(...formatSection("Siblings", siblings, "-", 5));
 
@@ -301,20 +339,19 @@ async function handleFindRelated(ctx: ToolContext, targetFile: string): Promise<
 
 export const mcxFind: ToolDefinition<FindParams> = {
   name: "mcx_find",
-  description: `Find FILES by name. NOT for searching content inside files.
+  description: `Find files or directories by name. NOT for searching content inside files.
 
-USE THIS FOR: "where is config.ts?", "find all *.test.ts files"
-DO NOT USE FOR: "find useState in code" → use mcx_grep instead
+USE THIS FOR: "where is config.ts?", "find all *.test.ts", "find src directories"
+DO NOT USE FOR: "find useState in code" -> use mcx_grep instead
 
-Query syntax:
-- "config.ts" - Find file by name
-- "*.ts" - All TypeScript files
-- "!test" - Exclude test files
-- "src/" - Files in src directory
-- "status:modified" - Git modified files
+Examples:
+- mcx_find({ query: "*.ts", path: "/project" }) - Find TypeScript files
+- mcx_find({ query: "src", type: "dirs", path: "/project" }) - Find directories
+- mcx_find({ query: "config", type: "all", path: "/project" }) - Files and dirs
+- mcx_find({ related: "serve.ts", path: "/project" }) - Find imports/importers
 
-Related files mode:
-- mcx_find({ related: "serve.ts" }) - Find imports, importers, and siblings`,
+Query syntax: "file.ts", "*.ts", "!test", "status:modified"
+Path is REQUIRED (absolute path to project directory)`,
   inputSchema: {
     type: "object",
     properties: {
@@ -339,6 +376,12 @@ Related files mode:
         minimum: 1,
         maximum: 200,
         default: 20, description: "Maximum results",
+      },
+      type: {
+        type: "string",
+        enum: ["files", "dirs", "all"],
+        default: "files",
+        description: "Search type: files, dirs, or all",
       },
     },
   },

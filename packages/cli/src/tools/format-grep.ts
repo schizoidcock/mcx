@@ -7,6 +7,7 @@
 
 import { compactPath } from "../utils/paths.js";
 import { cleanLine } from "../utils/truncate.js";
+import { normalizeScore } from "./constants.js";
 
 // ============================================================================
 // Types
@@ -16,6 +17,10 @@ export interface GrepMatch {
   relativePath: string;
   lineNumber: number;
   lineContent: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+  frecencyScore?: number;
+  fuzzyScore?: number;
 }
 
 export interface FormatGrepOptions {
@@ -35,8 +40,8 @@ export interface FormatGrepResult {
 // Constants
 // ============================================================================
 
-const GREP_MAX_PER_FILE = 5;
-const GREP_MAX_LINE_WIDTH = 100;
+import { GREP_MAX_PER_FILE, GREP_MAX_LINE_WIDTH } from "./constants.js";
+
 const GREP_MAX_FILES = 20;
 
 // ============================================================================
@@ -54,16 +59,44 @@ function groupByFile(items: GrepMatch[]): Map<string, GrepMatch[]> {
   return byFile;
 }
 
-/** Sort file entries by proximity score (higher first) */
+/** Calculate combined score for a file's matches */
+function calculateFileScore(
+  matches: GrepMatch[],
+  proximityScore: number
+): number {
+  if (matches.length === 0) return proximityScore;
+  
+  // Average frecency and fuzzy scores across matches
+  const avgFrecency = matches.reduce((sum, m) => sum + (m.frecencyScore || 0), 0) / matches.length;
+  const avgFuzzy = matches.reduce((sum, m) => sum + (m.fuzzyScore || 0), 0) / matches.length;
+  
+  // Normalize scores (fuzzy is 0-100, frecency varies widely)
+  const normalizedFrecency = normalizeScore(avgFrecency, 1000);
+  const normalizedFuzzy = avgFuzzy;
+  const normalizedProximity = normalizeScore(proximityScore, 10);
+  
+  // Weighted combination: fuzzy (40%), frecency (30%), proximity (30%)
+  return (normalizedFuzzy * 0.4) + (normalizedFrecency * 0.3) + (normalizedProximity * 0.3);
+}
+
+/** Sort file entries by combined score (fuzzy + frecency + proximity) */
 function sortByProximity(
   entries: [string, GrepMatch[]][],
   proxScores: Map<string, number> | null
 ): [string, GrepMatch[]][] {
-  if (!proxScores) return entries;
-  return entries.sort((a, b) => (proxScores.get(b[0]) || 0) - (proxScores.get(a[0]) || 0));
+  return entries.sort((a, b) => {
+    const scoreA = calculateFileScore(a[1], proxScores?.get(a[0]) || 0);
+    const scoreB = calculateFileScore(b[1], proxScores?.get(b[0]) || 0);
+    return scoreB - scoreA;
+  });
 }
 
-/** Format matches for a single file */
+/** Format context lines (Linus: eliminates duplication) */
+function formatContextLines(ctx: string[], start: number, maxW: number): string[] {
+  return ctx.map((line, i) => `  ${(start + i).toString().padStart(4)}  ${cleanLine(line, maxW)}`);
+}
+
+/** Format matches for a single file (Linus: max 3 indent) */
 function formatFileMatches(
   filePath: string,
   matches: GrepMatch[],
@@ -75,9 +108,20 @@ function formatFileMatches(
   const toShow = matches.slice(0, maxPerFile);
   const hidden = matches.length - toShow.length;
 
-  for (const m of toShow) {
-    const lineNum = m.lineNumber.toString().padStart(4);
-    lines.push(`  ${lineNum}: ${cleanLine(m.lineContent, maxLineWidth, pattern)}`);
+  for (const [i, m] of toShow.entries()) {
+    const hasContext = (m.contextBefore?.length || 0) + (m.contextAfter?.length || 0) > 0;
+    
+    if (m.contextBefore?.length) {
+      lines.push(...formatContextLines(m.contextBefore, m.lineNumber - m.contextBefore.length, maxLineWidth));
+    }
+    
+    lines.push(`  ${m.lineNumber.toString().padStart(4)}> ${cleanLine(m.lineContent, maxLineWidth, pattern)}`);
+    
+    if (m.contextAfter?.length) {
+      lines.push(...formatContextLines(m.contextAfter, m.lineNumber + 1, maxLineWidth));
+    }
+    
+    if (hasContext && i < toShow.length - 1) lines.push(`  ----`);
   }
   if (hidden > 0) lines.push(`  ... +${hidden} more matches`);
 
@@ -93,77 +137,98 @@ function buildSummary(totalMatched: number, fileCount: number, hiddenFiles: numb
 }
 
 // ============================================================================
-// Formatting
+// Main Formatter
 // ============================================================================
 
 /**
- * Format grep matches for display.
- * Groups by file, limits per-file matches, compacts paths.
+ * Format grep results for display
+ * Groups by file, sorts by proximity, limits output
  */
 export function formatGrepMCX(
   items: GrepMatch[],
   totalMatched: number,
-  totalFilesSearched: number,
+  totalFiles: number,
   options: FormatGrepOptions = {}
 ): FormatGrepResult {
-  const { maxPerFile = GREP_MAX_PER_FILE, maxLineWidth = GREP_MAX_LINE_WIDTH, pattern, proxScores } = options;
+  const {
+    maxPerFile = GREP_MAX_PER_FILE,
+    maxLineWidth = GREP_MAX_LINE_WIDTH,
+    pattern,
+    proxScores = null
+  } = options;
 
+  // Group by file
   const byFile = groupByFile(items);
-  const sorted = sortByProximity([...byFile.entries()], proxScores);
-  const filesToShow = sorted.slice(0, GREP_MAX_FILES);
-  const hiddenFiles = sorted.length - filesToShow.length;
+  
+  // Sort entries by proximity score
+  const sortedEntries = sortByProximity([...byFile.entries()], proxScores);
 
-  const lines: string[] = [];
-  let hiddenMatches = 0;
+  // Limit files shown
+  const toShow = sortedEntries.slice(0, GREP_MAX_FILES);
+  const hiddenFiles = sortedEntries.length - toShow.length;
 
-  for (const [path, matches] of filesToShow) {
-    const result = formatFileMatches(path, matches, maxPerFile, maxLineWidth, pattern);
-    lines.push(...result.lines);
-    hiddenMatches += result.hidden;
+  // Format each file's matches
+  const outputLines: string[] = [];
+  let totalHiddenMatches = 0;
+
+  for (const [filePath, matches] of toShow) {
+    const { lines, hidden } = formatFileMatches(filePath, matches, maxPerFile, maxLineWidth, pattern);
+    outputLines.push(...lines);
+    totalHiddenMatches += hidden;
   }
 
-  lines.unshift(buildSummary(totalMatched, byFile.size, hiddenFiles, totalFilesSearched));
+  // Build final output
+  const summary = buildSummary(totalMatched, totalFiles, hiddenFiles, totalFiles);
+  const output = summary + outputLines.join("\n");
 
-  return { output: lines.join("\n"), hiddenMatches, hiddenFiles };
-}
-
-/**
- * Format file find results for display.
- */
-export function formatFindResults(
-  files: Array<{ path: string; score?: number; status?: string }>,
-  total: number,
-  options: { maxFiles?: number; showScores?: boolean } = {}
-): string {
-  const { maxFiles = 20, showScores = false } = options;
-
-  const toShow = files.slice(0, maxFiles);
-  const hidden = total - toShow.length;
-
-  const lines: string[] = [];
-  lines.push(`Found ${total} files${hidden > 0 ? ` (showing ${maxFiles})` : ""}:`);
-  lines.push("");
-
-  for (const file of toShow) {
-    let line = compactPath(file.path, 70);
-    if (file.status) {
-      line += ` [${file.status}]`;
-    }
-    if (showScores && file.score !== undefined) {
-      line += ` (${file.score.toFixed(2)})`;
-    }
-    lines.push(line);
-  }
-
-  if (hidden > 0) {
-    lines.push(`→ +${hidden} more files hidden`);
-  }
-
-  return lines.join("\n");
+  return {
+    output,
+    hiddenMatches: totalHiddenMatches,
+    hiddenFiles
+  };
 }
 
 // ============================================================================
-// Shell Grep Detection
+// Find Formatter (reuses grep infrastructure)
+// ============================================================================
+
+export interface FindMatch {
+  relativePath: string;
+  isDir?: boolean;
+  status?: string;
+}
+
+export function formatFindMCX(
+  items: FindMatch[],
+  totalMatched: number,
+  options: { limit?: number; proxScores?: Map<string, number> | null } = {}
+): string {
+  const { limit = 20, proxScores = null } = options;
+
+  if (items.length === 0) {
+    return `No files found (searched ${totalMatched} files)`;
+  }
+
+  // Sort by proximity if available
+  const sorted = proxScores
+    ? items.sort((a, b) => (proxScores.get(b.relativePath) || 0) - (proxScores.get(a.relativePath) || 0))
+    : items;
+
+  const toShow = sorted.slice(0, limit);
+  const hidden = items.length - toShow.length;
+
+  const lines = toShow.map(f => {
+    const icon = f.isDir ? "📁" : "📄";
+    const status = f.status ? ` [${f.status}]` : "";
+    return `${icon} ${f.relativePath}${status}`;
+  });
+
+  const header = `Found ${items.length} files${hidden > 0 ? ` (showing ${limit})` : ""}:`;
+  return [header, ...lines, hidden > 0 ? `... +${hidden} more` : ""].filter(Boolean).join("\n");
+}
+
+// ============================================================================
+// Auto-detect Grep Output
 // ============================================================================
 
 /** Pattern: file:linenum:content (handles Windows paths like D:/path) */
@@ -184,19 +249,14 @@ export function detectAndFormatGrepOutput(output: string): string | null {
       parsed.push({
         relativePath: match[1],
         lineNumber: parseInt(match[2], 10),
-        lineContent: match[4],
+        lineContent: match[4] || "",
       });
     }
   }
 
-  // Need ≥60% match and ≥3 results
-  if (parsed.length / lines.length < 0.6 || parsed.length < 3) return null;
+  if (parsed.length / lines.length < 0.6) return null;
 
-  const { output: formatted } = formatGrepMCX(
-    parsed,
-    parsed.length,
-    new Set(parsed.map(p => p.relativePath)).size,
-  );
-
-  return formatted;
+  const totalMatched = parsed.length;
+  const files = new Set(parsed.map(p => p.relativePath)).size;
+  return formatGrepMCX(parsed, totalMatched, files).output;
 }

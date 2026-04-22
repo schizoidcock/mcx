@@ -89,7 +89,7 @@ async function handleSpawn(
     (error) => failTask(task, String(error))
   );
   
-  return `Spawned task: ${taskId}\n→ mcx_tasks({ id: "${taskId}" }) to check status`;
+  return `Spawned task: ${taskId}\n-> mcx_tasks({ id: "${taskId}" }) to check status`;
 }
 
 function handleCheckById(

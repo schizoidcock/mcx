@@ -337,7 +337,7 @@ function extractCategory(filePath: string): string {
 }
 
 export function generateMethodName(method: string, pathStr: string, _operation: OpenAPIOperation): string {
-  // Extract path params for suffix (e.g., {script_name} → ByScriptName)
+  // Extract path params for suffix (e.g., {script_name} -> ByScriptName)
   const pathParams: string[] = [];
   const pathWithoutParams = pathStr.replace(/\{([^}]+)\}/g, (_, param) => {
     pathParams.push(param);

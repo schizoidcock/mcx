@@ -35,6 +35,9 @@ import { getState as getVariablesState } from "./variables.js";
   // ============================================================================
 
   export const FILE_HELPERS_CODE = `
+  // Escape helpers - use NL instead of '\\n' in strings
+  const NL = '\\n';
+  const TAB = '\\t';
   const isNumbered = (lines) => lines.length > 0 && /^\\d+:\\s/.test(lines[0]);
   const around = (stored, line, ctx = 10) => {
     const start = Math.max(0, line - ctx - 1);
@@ -42,13 +45,13 @@ import { getState as getVariablesState } from "./variables.js";
     return stored.lines.slice(start, end).join('\\n');
   };
   const lines = (stored, start, end) => {
-    if (!stored?.lines) return 'Error: not a file variable';
+    if (!stored?.lines) throw new Error('not a file variable');
     const s = Math.max(0, start - 1);
     const e = Math.min(stored.lines.length, end);
     return stored.lines.slice(s, e).join('\\n');
   };
   const grep = (stored, pattern, ctx = 0) => {
-    if (!stored?.lines) return 'Error: not a file variable';
+    if (!stored?.lines) throw new Error('not a file variable');
     const regex = typeof pattern === 'string' ? new RegExp(pattern, 'i') : pattern;
     const matches = [];
     stored.lines.forEach((line, idx) => {
@@ -60,19 +63,26 @@ import { getState as getVariablesState } from "./variables.js";
     });
     return matches.length > 0 ? matches.join('\\n') : 'No matches';
   };
-  const block = (stored, startLine, endPattern = /^\\s*\\}/) => {
-    if (!stored?.lines) return 'Error: not a file variable';
-    const start = startLine - 1;
-    if (start < 0 || start >= stored.lines.length) return 'Invalid start line';
-    const result = [stored.lines[start]];
-    for (let i = start + 1; i < stored.lines.length; i++) {
-      result.push(stored.lines[i]);
-      if (endPattern.test(stored.lines[i].replace(/^\\d+:\\s*/, ''))) break;
+  const block = (stored, pattern) => {
+    if (!stored?.lines) throw new Error('not a file variable');
+    const start = stored.lines.findIndex(l => l.includes(pattern));
+    if (start < 0) return 'Pattern not found: ' + pattern;
+    let depth = 0;
+    let entered = false;
+    const result = [];
+    for (let i = start; i < stored.lines.length; i++) {
+      const line = stored.lines[i];
+      const content = line.replace(/^\\d+:\\s*/, '');
+      result.push(line);
+      depth += (content.match(/\\{/g) || []).length;
+      depth -= (content.match(/\\}/g) || []).length;
+      if (depth > 0) entered = true;
+      if (entered && depth <= 0) break;
     }
     return result.join('\\n');
   };
   const outline = (stored, opts = {}) => {
-    if (!stored?.lines) return 'Error: not a file variable';
+    if (!stored?.lines) throw new Error('not a file variable');
     const patterns = [
       /^\\d+:\\s*(export\\s+)?(async\\s+)?function\\s+\\w+/,
       /^\\d+:\\s*(export\\s+)?(const|let|var)\\s+\\w+\\s*=/,
