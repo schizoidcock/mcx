@@ -15,14 +15,19 @@ import { createMcxServer, loadEnvFile } from "./factory.js";
 import { logger } from "../utils/logger.js";
 import { startOrphanGuard } from "../utils/lifecycle.js";
 
+import { createDebugger, reloadDebugConfig } from "../utils/debug.js";
+
+const debug = createDebugger("stdio");
+
 export async function runStdio(fffSearchPath?: string): Promise<void> {
   await loadEnvFile();
+  reloadDebugConfig();
   console.error(pc.cyan("Starting MCX MCP server (stdio)...\n"));
 
   const { server, cleanup } = await createMcxServer(fffSearchPath);
   const transport = new StdioServerTransport();
 
-  const stopGuard = setupHandlers(transport, cleanup);
+  setupHandlers(transport, cleanup);
   await server.connect(transport);
 
   const pkg = await import("../../package.json");

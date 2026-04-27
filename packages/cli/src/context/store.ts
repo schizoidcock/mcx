@@ -8,6 +8,10 @@
 import { ContentStore } from "../search/store.js";
 import { CONTENT_STALE_MS } from "../tools/constants.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("ctxstore");
+
 let contentStore: ContentStore | null = null;
 
 /**

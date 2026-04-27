@@ -1,6 +1,9 @@
 import type { AdapterSpec, ToolSpec, ParameterSpec, ResolvedSpec } from './types.js';
 import { extractProducts } from './products.js';
 
+import { createDebugger } from "../utils/debug.js";
+const debug = createDebugger("specloader");
+
 /**
  * Infer likely source methods for ID parameters.
  * E.g., customer_id -> ['getCustomers', 'listCustomers', 'get_customers']
@@ -16,7 +19,7 @@ function inferRequires(paramName: string): string[] | null {
   const snakeEntity = entity.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
 
   // Pluralize (simple: add 's', handle 'y' -> 'ies')
-  const pluralize = (s: string) => s.endsWith('y') ? s.slice(0, -1) + 'ies' : s + 's';
+  const pluralize = (s: string) => s.endsWith('y') ? `${s.slice(0, -1)}ies` : `${s}s`;
   const camelPlural = pluralize(camelEntity);
   const snakePlural = pluralize(snakeEntity);
 

@@ -4,6 +4,10 @@
 
 import { HARD_CAP_BYTES, DEFAULT_TIMEOUT } from "../tools/constants.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("process");
+
 // ============================================================================
 // Types
 // ============================================================================

@@ -18,6 +18,7 @@ import { getTips, errorTips, type TipContext } from "../context/tips.js";
 import { trackToolUsage, getRecentTools, trackToolOutput } from "../context/tracking.js";
 import { summarizeResult, enforceCharacterLimit } from "../utils/truncate.js";
 import { formatToolResult, formatError } from "./utils.js";
+import { debugRegister as debug } from "../utils/debug.js";
 import { getAccessCount } from "../context/files.js";
 import { coerceArrayParams } from "../utils/zod.js";
 import { compressStale, getPathByFileVar } from "../context/variables.js";
@@ -26,7 +27,6 @@ import { runPeriodicCleanup } from "../context/cleanup.js";
 import { findSimilarParams } from "../utils/fuzzy.js";
 
 // Import extracted tools
-import { mcxWrite } from "./write.js";
 import { mcxDoctor } from "./doctor.js";
 import { mcxUpgrade } from "./upgrade.js";
 import { mcxWatch } from "./watch.js";
@@ -88,15 +88,14 @@ function setTextContent(result: unknown, text: string): void {
 }
 
 export function registerExtractedTools(options: RegisterOptions): void {
+  debug.debug("registerExtractedTools", { toolCount: 12 });
   const { server, ctx, skills, withFinder } = options;
-
   // Create dynamic tools (need runtime data)
   const adapterTool = createAdapterTool(skills);
   const executeTool = createExecuteTool(ctx.spec);
 
   // All tools to register
   const tools = [
-    mcxWrite,
     mcxDoctor,
     mcxUpgrade,
     mcxWatch,
@@ -120,60 +119,6 @@ export function registerExtractedTools(options: RegisterOptions): void {
 /**
  * Register a single tool with annotations and tracking.
  */
-/** Validate unknown params against schema */
-function validateUnknownParams(
-  params: Record<string, unknown>,
-  validParams: string[]
-): McpResult | null {
-  const unknown = Object.keys(params).filter(k => !validParams.includes(k));
-  if (unknown.length === 0) return null;
-  
-  const suggestions = unknown.flatMap(u => findSimilarParams(u, validParams));
-  const didYouMean = suggestions.length > 0 
-    ? `\nDid you mean: ${[...new Set(suggestions)].join(", ")}?` 
-    : "";
-  return formatError(
-    `Unknown parameter: ${unknown.join(", ")}${didYouMean}\n` +
-    errorTips.validParams(validParams)
-  );
-}
-
-/** Validate param types using Zod */
-function validateParamTypes(
-  params: Record<string, unknown>,
-  properties: Record<string, Record<string, unknown>>,
-  validParams: string[]
-): McpResult | null {
-  const shape: Record<string, z.ZodTypeAny> = {};
-  for (const [key, prop] of Object.entries(properties)) {
-    shape[key] = convertProperty(prop).optional();
-  }
-  const result = z.object(shape).passthrough().safeParse(params);
-  if (result.success) return null;
-  
-  const issue = result.error.issues[0];
-  const path = issue.path.join('.');
-  return formatError(`${path}: ${issue.message}\n` + errorTips.validParams(validParams));
-}
-
-/** Combined param validation */
-function validateParams(
-  params: Record<string, unknown>,
-  schema: { properties?: Record<string, Record<string, unknown>> }
-): McpResult | null {
-  const properties = schema.properties;
-  const validParams = Object.keys(properties || {});
-  
-  const unknownError = validateUnknownParams(params, validParams);
-  if (unknownError) return unknownError;
-  
-  if (properties) {
-    const typeError = validateParamTypes(params, properties, validParams);
-    if (typeError) return typeError;
-  }
-  return null;
-}
-
 function registerTool(
   server: McpServer,
   ctx: ToolContext,
@@ -199,15 +144,44 @@ function registerTool(
       ...(annotations && { annotations }),
     },
     async (params) => {
+      debug.debug("toolCall", { tool: tool.name, params: Object.keys(params) });
       const p = params as Record<string, unknown>;
       coerceArrayParams(p, tool.inputSchema);
-      
       const filePath = (p.path || p.file_path || (p.storeAs && getPathByFileVar(p.storeAs as string))) as string | undefined;
       const start = Date.now();
 
-      // Validate params
-      const validationError = validateParams(p, tool.inputSchema);
-      if (validationError) return validationError;
+      // Validate unknown params (ONE source of truth: inputSchema)
+      const properties = tool.inputSchema.properties as Record<string, Record<string, unknown>> | undefined;
+      const validParams = Object.keys(properties || {});
+      const unknown = Object.keys(p).filter(k => !validParams.includes(k));
+      if (unknown.length > 0) {
+        const suggestions = unknown.flatMap(u => findSimilarParams(u, validParams));
+        const didYouMean = suggestions.length > 0 ? `\nDid you mean: ${[...new Set(suggestions)].join(", ")}?` : "";
+        return formatError(
+          `Unknown parameter: ${unknown.join(", ")}${didYouMean}\n` +
+          errorTips.validParams(validParams)
+        );
+      }
+
+      // Validate param types using convertProperty + safeParse
+      if (properties) {
+        const shape: Record<string, z.ZodTypeAny> = {};
+        for (const [key, prop] of Object.entries(properties)) {
+          shape[key] = convertProperty(prop).optional();
+        }
+        const result = z.object(shape).passthrough().safeParse(p);
+        if (!result.success) {
+          const issue = result.error.issues[0];
+          const path = issue.path.join('.');
+          return formatError(
+            `${path}: ${issue.message}\n` +
+            errorTips.validParams(validParams)
+          );
+        }
+      }
+
+      // Track usage
+      trackToolUsage(tool.name, filePath);
 
       // Execute handler (returns raw result)
       let rawResult: unknown;
@@ -220,10 +194,6 @@ function registerTool(
         errorInfo = { message: msg };
         rawResult = formatError(msg);
       }
-      
-      // Track usage with success/failure
-      const wasError = errorInfo !== undefined || (typeof rawResult === 'object' && rawResult !== null && 'isError' in rawResult && rawResult.isError);
-      trackToolUsage(tool.name, filePath, !wasError);
 
       // Skip truncation if already McpResult (already formatted by handler)
       const isMcpResult = typeof rawResult === 'object' && rawResult !== null && 

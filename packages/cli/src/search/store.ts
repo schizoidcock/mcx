@@ -3,6 +3,7 @@ import type { Chunk, SearchResult, Source, SearchOptions, IndexOptions } from '.
 import { chunkContent } from './chunker.js';
 import { extractSnippet } from './snippets.js';
 import { MAX_CHUNKS } from '../tools/constants.js';
+import { debugStore as debug } from '../utils/debug.js';
 
 /**
  * FTS5 Content Store with BM25 ranking.
@@ -207,7 +208,7 @@ export class ContentStore {
       SELECT
         title,
         snippet(${table}, 1, '**', '**', '...', 64) as snippet,
-        bm25(${table}${bm25Args ? ', ' + bm25Args : ''}) as score,
+        bm25(${table}${bm25Args ? `, ${bm25Args}` : ''}) as score,
         source_id,
         (SELECT label FROM sources WHERE id = source_id) as source_label
       FROM ${table}

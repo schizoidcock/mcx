@@ -9,6 +9,11 @@ import { formatBytes } from "./utils.js";
 import { getVariableSummary } from "../context/variables.js";
 import { getRecentTools, getRecentFiles, getTopMethods, getSessionStats } from "../context/tracking.js";
 
+import { createDebugger } from "../utils/debug.js";
+import { warnings } from "../context/messages/index.js";
+
+const debug = createDebugger("stats");
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -30,7 +35,6 @@ const TOOL_SCHEMA_TOKENS: Record<string, number> = {
   mcx_find: 300,
   mcx_grep: 300,
   mcx_fetch: 250,
-  mcx_write: 200,
   mcx_stats: 150,
   mcx_tasks: 400,
   mcx_watch: 200,
@@ -48,6 +52,7 @@ async function handleStats(
   params: StatsParams
 ): Promise<McpResult> {
   const { graph = false, context = false } = params;
+  const span = debug.span("handleStats", { graph, context });
   const output: string[] = [];
   
   // Header
@@ -286,6 +291,7 @@ async function handleStats(
     output.push("");
   }
 
+  span.end({ sections: output.length });
   return output.join("\n");
 }
 
@@ -326,7 +332,7 @@ function hasField(keys: string[], pattern: string): boolean {
 }
 
 /** Build suggestion for array data based on detected fields */
-function buildArraySuggestion(keys: string[], length: number): string[] {
+function buildArraySuggestion(keys: string[], _length: number): string[] {
   const suggestions: string[] = [];
   
   const idKey = keys.find(k => k.toLowerCase().includes('id'));
@@ -358,8 +364,7 @@ export function detectRawData(value: unknown, serializedLength: number): string 
     if (first && typeof first === 'object') {
       const keys = Object.keys(first);
       const suggestions = buildArraySuggestion(keys, value.length);
-      return `⚠️ Large array (${value.length} items, ${Math.round(serializedLength/1024)}KB). Try:\n` +
-             suggestions.slice(0, 3).map(s => `   • ${s}`).join('\n');
+      return warnings.largeArray(value.length, Math.round(serializedLength/1024), suggestions);
     }
   }
   
@@ -367,9 +372,11 @@ export function detectRawData(value: unknown, serializedLength: number): string 
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const keys = Object.keys(value);
     if (keys.length > 20) {
-      return `⚠️ Large object (${keys.length} keys, ${Math.round(serializedLength/1024)}KB). Try:\n` +
-             `   • $result.${keys[0]} — access specific key\n` +
-             `   • pick($result, ['${keys.slice(0, 3).join("', '")}'])`;
+      const suggestions = [
+        `$result.${keys[0]} — access specific key`,
+        `pick($result, ['${keys.slice(0, 3).join("', '")}'])`
+      ];
+      return warnings.largeObject(keys.length, Math.round(serializedLength/1024), suggestions);
     }
   }
   

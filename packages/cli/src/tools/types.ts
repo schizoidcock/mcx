@@ -54,6 +54,7 @@ export interface SessionWorkflow {
     file?: string;
     timestamp: number;
     success?: boolean;
+    isWrite?: boolean;
   }>;
   /** Proximity context for search boosting */
   proximityContext: {

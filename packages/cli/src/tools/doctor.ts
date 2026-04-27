@@ -8,6 +8,10 @@
 import { BunWorkerSandbox } from "@papicandela/mcx-core";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("doctor");
+
 
 // ============================================================================
 // Types
@@ -20,7 +24,7 @@ interface DiagnosticCheck {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface DoctorParams {}
+export type DoctorParams = {}
 
 // ============================================================================
 // Handler
@@ -30,6 +34,7 @@ async function handleDoctor(
   ctx: ToolContext,
   _params: DoctorParams
 ): Promise<McpResult> {
+  const span = debug.span("handleDoctor");
   const checks: DiagnosticCheck[] = [];
 
   // 1. Bun runtime
@@ -134,6 +139,7 @@ async function handleDoctor(
     `${passCount}/${checks.length} checks passed`,
   ];
 
+  span.end({ passed: passCount, total: checks.length });
   return output.join("\n");
 }
 

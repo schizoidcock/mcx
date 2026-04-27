@@ -6,10 +6,15 @@
  */
 
 import type { ToolContext, ToolDefinition, McpResult, SkillDef } from "./types.js";
-import type { ResolvedSpec, AdapterSpec } from "../spec/types.js";
+import type { ResolvedSpec, } from "../spec/types.js";
 import { formatError } from "./utils.js";
+import { validationErrors } from "../context/messages/index.js";
 import { setVariable, getAllPrefixed } from "../context/variables.js";
 import { extractImages } from "../utils/images.js";
+import { maybeToTOON, maybeObjectToTOON } from "../utils/truncate.js";
+import { getContentStore } from "../context/store.js";
+import { ADAPTER_TRUNCATE_THRESHOLD, ADAPTER_DISPLAY_LIMIT } from "./constants.js";
+import { debugAdapter as debug } from "../utils/debug.js";
 
 // ============================================================================
 // Helpers
@@ -27,16 +32,23 @@ function formatAdapterSuccess(
   resultValue: unknown
 ): McpResult {
   const { value, images } = extractImages(resultValue);
-  const output = JSON.stringify(value, null, 2) ?? '(no output)';
-  const truncated = output.length > 3000;
-  const displayed = truncated ? output.slice(0, 3000) + '\n...' : output;
+  const jsonStr = JSON.stringify(value, null, 2) ?? '(no output)';
+  const output = maybeToTOON(value) ?? (typeof value === 'object' && value !== null && !Array.isArray(value) ? maybeObjectToTOON(value as Record<string, unknown>, 'result') : jsonStr);
+  const truncated = jsonStr.length > ADAPTER_TRUNCATE_THRESHOLD;
+  let displayed = output;
+  let indexNote = '';
   
   if (truncated) {
     setVariable('_adapterResult', value);
+    const label = adapterName + '.' + methodName;
+    const store = getContentStore();
+    store.index(jsonStr, label, { contentType: 'plaintext' });
+    displayed = output.slice(0, ADAPTER_DISPLAY_LIMIT) + '\n...';
+    indexNote = '\n📦 Indexed as "' + label + '". Use mcx_search({ queries: [...], source: "' + label + '" })';
   }
   
   const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
-    { type: "text", text: `✓ ${adapterName}.${methodName}\n\n${displayed}` }
+    { type: "text", text: '✓ ' + adapterName + '.' + methodName + '\n\n' + displayed + indexNote }
   ];
   for (const img of images) {
     content.push({ type: "image", data: img.data, mimeType: img.mimeType });
@@ -71,7 +83,7 @@ function handleRunSkill(
   const skill = skills.get(skillName);
   if (!skill) {
     const available = Array.from(skills.keys()).join(", ") || "none";
-    return formatError(`Skill "${skillName}" not found. Available: ${available}`);
+    return formatError(validationErrors.notFoundWithAvailable("Skill", skillName, available.split(", ")));
   }
   
   // Build skill invocation
@@ -118,7 +130,7 @@ function handleShowMethods(
   
   if (!adapter) {
     const names = adapterList.map((a) => a.name).join(", ");
-    return formatError(`Adapter "${adapterName}" not found. Available: ${names}`);
+    return formatError(validationErrors.notFoundWithAvailable("Adapter", adapterName, names.split(", ")));
   }
   
   const methods = Object.values(adapter.tools || {});
@@ -131,7 +143,7 @@ function handleShowMethods(
   for (const m of methods) {
     const prefix = m.name.split("_")[0] || "other";
     if (!byPrefix.has(prefix)) byPrefix.set(prefix, []);
-    byPrefix.get(prefix)!.push(m);
+    byPrefix.get(prefix)?.push(m);
   }
   
   const lines = [`## ${adapter.name}`, ""];
@@ -157,7 +169,7 @@ async function handleCallMethod(
 ): Promise<McpResult> {
   const spec = ctx.spec as ResolvedSpec | null;
   if (!spec) {
-    return formatError("No adapters loaded");
+    return formatError(validationErrors.noAdaptersLoaded());
   }
   
   const adapterList = Object.values(spec.adapters);
@@ -166,7 +178,7 @@ async function handleCallMethod(
   );
   
   if (!adapter) {
-    return formatError(`Adapter "${adapterName}" not found`);
+    return formatError(validationErrors.notFound("Adapter", adapterName));
   }
   
   // Find method (fuzzy match)
@@ -178,7 +190,7 @@ async function handleCallMethod(
   
   if (!method) {
     const names = methods.map((m) => m.name).join(", ") || "none";
-    return formatError(`Method "${methodName}" not found in ${adapter.name}. Available: ${names}`);
+    return formatError(validationErrors.methodNotFound(methodName, adapter.name, names.split(", ")));
   }
   
   // Build call code (convert kebab-case to camelCase for JS)
@@ -211,24 +223,29 @@ async function handleAdapter(
   params: AdapterParams,
   skills: Map<string, SkillDef>
 ): Promise<McpResult> {
+  const span = debug.span("handleAdapter", { skill: params.skill, name: params.name, call: params.call });
   // Mode 4: Run skill
   if (params.skill) {
+    span.end({ mode: "skill" });
     return handleRunSkill(skills, params.skill, params.params);
   }
   
   // Mode 3: Call method
   if (params.name && params.call) {
+    span.end({ mode: "call" });
     return handleCallMethod(ctx, params.name, params.call, params.params);
   }
   
   // Mode 2: Show methods
   if (params.name) {
     const spec = ctx.spec as ResolvedSpec | null;
-    if (!spec) return formatError("No adapters loaded");
+    if (!spec) { span.end({ error: "no spec" }); return formatError(validationErrors.noAdaptersLoaded()); }
+    span.end({ mode: "methods" });
     return handleShowMethods(spec, params.name);
   }
   
   // Mode 1: List adapters
+  span.end({ mode: "list" });
   return handleListAdapters(ctx.spec as ResolvedSpec | null);
 }
 

@@ -17,6 +17,10 @@ import { cleanupOldTasks, type BackgroundTask } from "./state.js";
 import { cleanupStaleContent } from "./store.js";
 import { CLEANUP_INTERVAL, MAP_TTL_MS } from "../tools/constants.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("cleanup");
+
 // ============================================================================
 // State
 // ============================================================================

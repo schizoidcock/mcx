@@ -7,12 +7,13 @@
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import type { ResolvedSpec } from "../spec/types.js";
 import { formatError, indexAndSearch } from "./utils.js";
+import { validationErrors, warnings } from "../context/messages/index.js";
 import { truncateLogs, filterHelperLogs, formatStored } from "../utils/truncate.js";
 import { extractImages } from "../utils/images.js";
 import { applyHybridFilter } from "../filters/index.js";
 import { detectAndFormatGrepOutput } from "./format-grep.js";
 import { getAllPrefixed, setVariable, deleteVariable, clearVariables, setLastResult } from "../context/variables.js";
-import { AUTO_INDEX_THRESHOLD, INTENT_THRESHOLD } from "./constants.js";
+import { INTENT_THRESHOLD, LARGE_OUTPUT_THRESHOLD } from "./constants.js";
 import { formatSearchSnippets } from "../search/snippets.js";
 import { classifyExit } from "../utils/exit.js";
 
@@ -21,9 +22,9 @@ import { DANGEROUS_ENV_KEYS, detectShellEscape, enforceRedirects } from "../util
 // Guards and tracking
 import { getCodeSignature, checkRetryLoop, recordFailure, clearFailure, checkLinesHunting } from "../context/guards.js";
 import { trackMethodUsage, trackSandboxIO } from "../context/tracking.js";
-import { eventTips } from "../context/tips.js";
 import { analyzeExecuteParams, formatTraitWarnings } from "../utils/traits.js";
 import { safeShell, safePython } from "../utils/process.js";
+import { debugExecute as debug } from "../utils/debug.js";
 import { DEFAULT_TIMEOUT } from "./constants.js";
 
 // ============================================================================
@@ -92,6 +93,9 @@ async function executeCode(
   code: string,
   storeAs?: string
 ): Promise<McpResult> {
+  debug.time("executeCode");
+  debug.debug("executeCode", { codeLen: code.length, storeAs });
+  
   // Enforce redirects to MCX tools
   const blocked = enforceRedirects(code, 'javascript');
   if (blocked) return blocked;
@@ -143,15 +147,20 @@ async function executeCode(
       setVariable(storeAs, value);
     }
 
-    // Format confirmation (value stays in $result, not in context)
+    // Format result - show value if small (like context-mode)
     const varName = storeAs || 'result';
     const logs = extractLogs(result);
     const valueStr = formatValue(value);
-    const lines = valueStr.split('\n').length;
+    const lineCount = valueStr.split('\n').length;
+    const byteSize = Buffer.byteLength(valueStr);
     
-    // Include logs for debugging, but not the full value
     const logsSection = logs.length ? `\n[Logs]\n${logs.join('\n')}` : '';
-    const text = formatStored(varName, { lines }) + logsSection;
+    const header = formatStored(varName, { lines: lineCount });
+    
+    // Show result if small, otherwise just header
+    const text = byteSize < LARGE_OUTPUT_THRESHOLD
+      ? `${header}\n${valueStr}${logsSection}`
+      : `${header}${logsSection}`;
     
     // Return with images if present
     if (images.length > 0) {
@@ -186,13 +195,15 @@ function formatValue(value: unknown): string {
 // ============================================================================
 
 async function executeShell(
-  ctx: ToolContext,
+  _ctx: ToolContext,
   command: string,
   opts: ExecOptions = {}
 ): Promise<ShellResult | McpResult> {
+  debug.time("executeShell");
+  debug.debug("executeShell", { cmdLen: command.length, timeout: opts.timeout });
   const { storeAs, timeout = DEFAULT_TIMEOUT } = opts;
   const cmd = command.trim();
-  if (!cmd) return formatError("Empty command");
+  if (!cmd) return formatError(validationErrors.empty("command"));
 
   const blocked = enforceRedirects(cmd, 'shell');
   if (blocked) return blocked;
@@ -238,13 +249,13 @@ async function executeShell(
 // ============================================================================
 
 async function executePython(
-  ctx: ToolContext,
+  _ctx: ToolContext,
   code: string,
   opts: ExecOptions = {}
 ): Promise<ShellResult | McpResult> {
   const { storeAs, timeout = DEFAULT_TIMEOUT } = opts;
   const pythonCode = code.trim();
-  if (!pythonCode) return formatError("Empty Python code");
+  if (!pythonCode) return formatError(validationErrors.empty("Python code"));
 
   const escape = detectShellEscape(pythonCode, 'python');
   if (escape.detected) return formatError(escape.suggestion);
@@ -292,7 +303,7 @@ async function executePython(
 // ============================================================================
 
 function handleLargeOutput(
-  ctx: ToolContext,
+  _ctx: ToolContext,
   output: string,
   intent: string,
   varName: string
@@ -304,7 +315,7 @@ function handleLargeOutput(
     return `✓ Stored ${varName}\nIndexed: ${intent}\nNo matches.${hint}\n-> mcx_search() to explore`;
   }
 
-  return `✓ Stored ${varName}\n` + formatSearchSnippets(results, intent) + `\n-> mcx_search({ queries: ["${intent}"] }) for more`;
+  return `✓ Stored ${varName}\n${formatSearchSnippets(results, intent)}\n-> mcx_search({ queries: ["${intent}"] }) for more`;
 }
 
 // ============================================================================
@@ -315,6 +326,7 @@ async function handleExecute(
   ctx: ToolContext,
   params: ExecuteParams
 ): Promise<McpResult> {
+  const span = debug.span("handleExecute", { hasCode: !!params.code, hasShell: !!params.shell, hasPython: !!params.python });
   const { code, shell, python, storeAs, intent, clear, delete: deleteVar, timeout } = params;
 
   // Variable management (no code/shell/python needed)
@@ -331,15 +343,12 @@ async function handleExecute(
   const modes = [code, shell, python].filter(Boolean);
   if (modes.length === 0) {
     return formatError(
-      "Specify one of: code (JS/TS), shell (command), python (code)\n" +
-      "Examples:\n" +
-      "- mcx_execute({ code: \"2 + 2\" })\n" +
-      "- mcx_execute({ shell: \"git status\" })\n" +
-      "- mcx_execute({ python: \"print('hello')\" })"
+      validationErrors.requireOneOf(["code (JS/TS)", "shell (command)", "python (code)"]),
+      "Examples:\n- mcx_execute({ code: \"2 + 2\" })\n- mcx_execute({ shell: \"git status\" })"
     );
   }
   if (modes.length > 1) {
-    return formatError("Specify only one of: code, shell, or python");
+    return formatError(validationErrors.onlyOneOf(["code", "shell", "python"]));
   }
 
   // Trait analysis - single entry point for all modes
@@ -359,9 +368,9 @@ async function handleExecute(
     const linesMatch = code.match(/lines\(\$(\w+),\s*(\d+),\s*(\d+)\)/);
     if (linesMatch) {
       const [, varName, s, e] = linesMatch;
-      const check = checkLinesHunting(varName, parseInt(s), parseInt(e));
+      const check = checkLinesHunting(varName, parseInt(s, 10), parseInt(e, 10));
       if (check.blocked) return formatError(check.tip!);
-      if (check.tip) retryWarning += "\n" + check.tip;
+      if (check.tip) retryWarning += `\n${check.tip}`;
     }
   }
 
@@ -385,7 +394,7 @@ async function handleExecute(
     
     // Append warnings if any
     if (allWarnings && result.content?.[0]?.type === "text") {
-      result.content[0].text = allWarnings + "\n\n" + result.content[0].text;
+      result.content[0].text = `${allWarnings}\n\n${result.content[0].text}`;
     }
     return result;
   }
@@ -402,7 +411,7 @@ async function handleExecute(
 
   // ShellResult -> decide indexing + format
   const { output, lines, exitCode, varName, truncated, errorMsg } = execResult;
-  const truncateWarning = truncated ? '\n⚠️ Output truncated (100MB limit)' : '';
+  const truncateWarning = truncated ? '\n' + warnings.outputTruncated('100MB') : '';
 
   // Classify exit code (soft fail for grep/diff/find exit 1 with output)
   const exitResult = classifyExit(exitCode, output, errorMsg || '', shell || 'python');
@@ -416,7 +425,7 @@ async function handleExecute(
     return handleLargeOutput(ctx, output, intent, varName);
   }
 
-  const warning = allWarnings ? allWarnings + '\n\n' : '';
+  const warning = allWarnings ? `${allWarnings}\n\n` : '';
   
   // Small output -> apply filters and show directly
   if (output.length <= INTENT_THRESHOLD) {
@@ -427,7 +436,7 @@ async function handleExecute(
   // Large output -> index and show label
   const label = `exec:${varName}`;
   ctx.contentStore.index(output, label, { contentType: "plaintext" });
-  return warning + `Indexed ${lines} lines as "${label}"\n-> mcx_search({ queries: [...], source: "${label}" })` + truncateWarning;
+  return `${warning}Indexed ${lines} lines as "${label}"\n-> mcx_search({ queries: [...], source: "${label}" })${truncateWarning}`;
 }
 // ============================================================================
 // Adapter Summary for Description
@@ -440,7 +449,7 @@ function buildAdapterSummary(spec: ResolvedSpec | null): string {
   for (const a of spec.adapters) {
     const domain = a.domain || "general";
     if (!byDomain.has(domain)) byDomain.set(domain, []);
-    byDomain.get(domain)!.push(`${a.name}(${a.methods?.length || 0})`);
+    byDomain.get(domain)?.push(`${a.name}(${a.methods?.length || 0})`);
   }
 
   return Array.from(byDomain.entries())

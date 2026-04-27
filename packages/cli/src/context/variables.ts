@@ -9,6 +9,10 @@ import type { SessionVariables, StoredVariable } from "../tools/types.js";
 import { getStoredAt, getEditedAt } from "./files.js";
 import { MAP_MAX_ENTRIES } from "../tools/constants.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("variables");
+
 // Singleton state
 const state: SessionVariables = {
   stored: new Map(),

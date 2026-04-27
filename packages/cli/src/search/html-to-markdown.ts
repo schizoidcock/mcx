@@ -20,7 +20,7 @@ export function htmlToMarkdown(html: string): string {
 
   // Convert headers
   md = md.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, content) => {
-    return '\n' + '#'.repeat(Number(level)) + ' ' + content.trim() + '\n';
+    return `\n${'#'.repeat(Number(level))} ${content.trim()}\n`;
   });
 
   // Convert paragraphs
@@ -50,7 +50,7 @@ export function htmlToMarkdown(html: string): string {
 
   // Convert blockquotes
   md = md.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
-    return content.split('\n').map((line: string) => '> ' + line).join('\n');
+    return content.split('\n').map((line: string) => `> ${line}`).join('\n');
   });
 
   // Remove remaining HTML tags

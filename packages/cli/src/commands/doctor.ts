@@ -39,19 +39,21 @@ export async function doctorCommand(): Promise<void> {
   }
 
   // 4. SQLite/FTS5
+  let testDb: Database | undefined;
   try {
-    const db = new Database(":memory:");
-    db.run("CREATE VIRTUAL TABLE test USING fts5(content)");
-    db.close();
+    testDb = new Database(":memory:");
+    testDb.run("CREATE VIRTUAL TABLE test USING fts5(content)");
     checks.push({ name: "SQLite/FTS5", status: "pass", detail: "Available" });
   } catch (e) {
     checks.push({ name: "SQLite/FTS5", status: "fail", detail: String(e) });
+  } finally {
+    testDb?.close();
   }
 
   // 5. FFF (optional) - quick check without loading native module
   try {
     // Just resolve the package path, don't load it
-    const resolved = Bun.resolveSync("@ff-labs/fff-bun", process.cwd());
+    Bun.resolveSync("@ff-labs/fff-bun", process.cwd());
     checks.push({ name: "FFF", status: "pass", detail: "Installed" });
   } catch {
     checks.push({ name: "FFF", status: "warn", detail: "Not installed (optional)" });

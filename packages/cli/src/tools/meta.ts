@@ -45,6 +45,8 @@ export const TOOL_META: ToolMeta[] = [
       { name: 'language', type: 'string', description: 'Execution language', enum: ['js', 'shell', 'python'] },
       { name: 'storeAs', type: 'string', description: 'Store result as variable' },
       { name: 'intent', type: 'string', description: 'Auto-index if output > 5KB' },
+      { name: 'write', type: 'boolean', description: 'Write edited content back to file' },
+      { name: 'content', type: 'string', description: 'Direct content to write (no read required)' },
     ],
   },
   {
@@ -95,17 +97,6 @@ export const TOOL_META: ToolMeta[] = [
       { name: 'paths', type: 'array', description: 'Paths to watch' },
       { name: 'patterns', type: 'array', description: 'Glob patterns to match' },
       { name: 'debounceMs', type: 'number', description: 'Debounce delay', default: 300, min: 100, max: 10000 },
-    ],
-  },
-
-  // Write tools
-  {
-    name: 'mcx_write',
-    reads: false, writes: true, executes: false, network: false,
-    params: [
-      { name: 'file_path', type: 'string', description: 'Absolute path to the file' },
-      { name: 'path', type: 'string', description: 'Alias for file_path' },
-      { name: 'content', type: 'string', description: 'Content to write', required: true },
     ],
   },
 

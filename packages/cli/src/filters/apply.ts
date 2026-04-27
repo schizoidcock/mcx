@@ -7,6 +7,10 @@
 import type { FilterRule } from "./types.js";
 import { BUILTIN_FILTERS } from "./rules.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("filters");
+
 // ANSI escape code regex
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 
@@ -50,14 +54,14 @@ export function applyDeclarativeFilter(
   let filtered = lines;
   
   if (compiled?.keepLines) {
-    filtered = lines.filter(line => compiled.keepLines!.some(r => r.test(line)));
+    filtered = lines.filter(line => compiled.keepLines?.some(r => r.test(line)));
   } else if (p.keepLines) {
     const keepRegexes = p.keepLines.map(pat => new RegExp(pat));
     filtered = lines.filter(line => keepRegexes.some(r => r.test(line)));
   }
   
   if (compiled?.stripLines) {
-    filtered = filtered.filter(line => !compiled.stripLines!.some(r => r.test(line)));
+    filtered = filtered.filter(line => !compiled.stripLines?.some(r => r.test(line)));
   } else if (p.stripLines) {
     const stripRegexes = p.stripLines.map(pat => new RegExp(pat));
     filtered = filtered.filter(line => !stripRegexes.some(r => r.test(line)));
@@ -77,7 +81,7 @@ export function applyDeclarativeFilter(
   
   // Stage 6: truncate if needed
   if (p.truncateAt && result.length > p.truncateAt) {
-    result = result.substring(0, p.truncateAt) + '...';
+    result = `${result.substring(0, p.truncateAt)}...`;
   }
   
   return result || null;

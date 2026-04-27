@@ -5,10 +5,12 @@
  */
 
 import { basename, resolve, join } from "node:path";
-import type { FileFinder } from "@ff-labs/fff-bun";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatError } from "./utils.js";
 import { startDaemon, stopDaemon } from "../daemon/index.js";
+
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("watch");
 
 // ============================================================================
 // Types
@@ -48,16 +50,16 @@ async function handleWatch(
   params: WatchParams
 ): Promise<McpResult> {
   const { projects = [], action = "add" } = params;
+  const span = debug.span("handleWatch", { projects: projects?.length, action });
   const { watchedProjects } = ctx;
-
   // List action
   if (action === "list" || (projects.length === 0 && action !== "remove")) {
     const watched = Array.from(watchedProjects.keys());
+    span.end({ action: "list", count: watched.length });
     if (watched.length === 0) {
       return "No projects currently watched.";
     }
-    return `Watched projects (${watched.length}):\n` + 
-      watched.map(p => `  - ${p}`).join("\n");
+    return `Watched projects (${watched.length}):\n` + watched.map(p => `  - ${p}`).join("\n");
   }
 
   // Remove action
@@ -80,6 +82,7 @@ async function handleWatch(
       stopDaemon();
     }
     
+    span.end({ action: "remove", removed: removed.length });
     if (removed.length === 0) {
       return "No matching projects to remove.";
     }
@@ -128,7 +131,7 @@ async function handleWatch(
     result.push(`Errors: ${errors.join("; ")}`);
   }
   result.push(`Total projects watched: ${watchedProjects.size}`);
-
+  span.end({ action: "add", added: added.length, errors: errors.length, total: watchedProjects.size });
   return result.join("\n");
 }
 

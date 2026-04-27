@@ -29,13 +29,13 @@ export function classifyExit(
   }
   
   return { 
-    isError: true, 
+     
     output: formatError(exitCode, stdout, stderr)
   };
 }
 
 function isSoftFailCommand(cmd: string): boolean {
-  const first = cmd.trim().split(/\s+/)[0].replace(/^.*[\/\\]/, '');
+  const first = cmd.trim().split(/\s+/)[0].replace(/^.*[/\\]/, '');
   return SOFT_FAIL_COMMANDS.has(first);
 }
 

@@ -5,7 +5,7 @@
  * Structure: ~/.mcx/logs/{YYYY-MM-DD}/{category}.toon
  */
 
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { readdir, readFile, rm, } from "node:fs/promises";
 import { join } from "node:path";
 import pc from "picocolors";
 import { LOG_DIR } from "../utils/logger";
@@ -19,7 +19,6 @@ export interface LogsOptions {
   all?: boolean;      // show all categories
 }
 
-const CATEGORIES = ["session", "execute", "file", "search", "fetch", "adapter", "tasks", "stats"];
 
 /**
  * Get available dates (folders)

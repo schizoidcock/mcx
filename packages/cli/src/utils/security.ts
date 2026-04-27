@@ -3,6 +3,8 @@
  * SSRF protection, environment variable validation, shell escape detection
  */
 
+import { securityBlocks, toolRedirects, ssrfBlocks, detectionMessages } from "../context/messages/security.js";
+
 // SECURITY: Environment variables that must never be overwritten from .env files
 // These could enable privilege escalation, code injection, or other attacks
 export const DANGEROUS_ENV_KEYS = new Set([
@@ -240,7 +242,7 @@ export function detectShellEscape(code: string, language: string): ShellEscapeRe
   return {
     detected: true,
     patterns: detected,
-    suggestion: `Shell escape detected: ${detected.join(', ')}\n💡 Must use mcx_execute({ shell: "your command" }) instead`,
+    suggestion: detectionMessages.shellEscape(detected),
   };
 }
 
@@ -249,8 +251,8 @@ export function detectShellEscape(code: string, language: string): ShellEscapeRe
 // ============================================================================
 
 export type BlockedResponse = { 
-  content: Array<{ type: "text"; text: string }>; 
-  isError: true 
+  content: Array<{ type: "text"; text: string }>;
+  isError: true;
 };
 
 export type Language = 'shell' | 'python' | 'javascript';
@@ -265,34 +267,34 @@ interface Rule {
 // ONE source of truth: all rules in one place
 const RULES: Rule[] = [
   // === Security blocks (no tool = hard block) ===
-  { lang: 'shell', pattern: /\bdd\s+.*if=\/dev\/(zero|random|urandom)/, message: 'Destructive dd command' },
-  { lang: 'shell', pattern: /\b(mkfs|fdisk|parted|wipefs)\b/, message: 'Disk formatting command' },
-  { lang: 'shell', pattern: ':(){ :|:& };:', message: 'Fork bomb detected' },  // string = JIT-safe
-  { lang: 'shell', pattern: /(?:^|&&|\|\||;|\n)\s*git\s+(checkout|restore)\b/, message: 'git checkout/restore blocked - destructive operation' },
-  { lang: 'shell', pattern: /\bgit\s+commit\b.*<</, message: 'git commit with heredoc blocked - use -m or -F file instead' },
-  { lang: 'shell', pattern: /\s+>{1,2}\s*["']?[^|]/, tool: 'mcx_write', message: 'mcx_write({ path: "...", content: "..." })' },
+  { lang: 'shell', pattern: /\bdd\s+.*if=\/dev\/(zero|random|urandom)/, message: securityBlocks.destructiveDd },
+  { lang: 'shell', pattern: /\b(mkfs|fdisk|parted|wipefs)\b/, message: securityBlocks.diskFormat },
+  { lang: 'shell', pattern: ':(){ :|:& };:', message: securityBlocks.forkBomb },  // string = JIT-safe
+  { lang: 'shell', pattern: /(?:^|&&|\|\||;|\n)\s*git\s+(checkout|restore)\b/, message: securityBlocks.gitCheckout },
+  { lang: 'shell', pattern: /\bgit\s+commit\b.*<</, message: securityBlocks.gitHeredoc },
+  { lang: 'shell', pattern: /\s+>{1,2}\s*["']?[^|]/, tool: 'mcx_file', message: toolRedirects.shellWrite },
   
   // === Shell redirects ===
-  { lang: 'shell', pattern: /\b(cat|head|tail|less|more)\s+["']?[^\s|>"']+/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
-  { lang: 'shell', pattern: /\b(grep|rg|ag)\s+/, tool: 'mcx_grep', message: 'mcx_grep({ query: "pattern", path: "..." })' },
-  { lang: 'shell', pattern: /\b(find|fd)\s+/, tool: 'mcx_find', message: 'mcx_find({ query: "*.ts" })' },
+  { lang: 'shell', pattern: /\b(cat|head|tail|less|more)\s+["']?[^\s|>"']+/, tool: 'mcx_file', message: toolRedirects.fileRead },
+  { lang: 'shell', pattern: /\b(grep|rg|ag)\s+/, tool: 'mcx_grep', message: toolRedirects.grepRedirect },
+  { lang: 'shell', pattern: /\b(find|fd)\s+/, tool: 'mcx_find', message: toolRedirects.findRedirect },
   // curl/wget allowed - mcx_fetch blocks localhost via SSRF protection
-  { lang: 'shell', pattern: /<<\s*['"]?EOF/, tool: 'mcx_write', message: 'mcx_write({ file_path: "...", content: "..." })' },
-  { lang: 'shell', pattern: /\bsed\s+/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "f", code: "$f.raw.replace(...)", write: true })' },
+  { lang: 'shell', pattern: /<<\s*['"]?EOF/, tool: 'mcx_file', message: toolRedirects.shellWrite },
+  { lang: 'shell', pattern: /\bsed\s+/, tool: 'mcx_file', message: toolRedirects.sedRedirect },
   
   // === Python redirects ===
-  { lang: 'python', pattern: /\b(open\s*\(|with\s+open)/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
-  { lang: 'python', pattern: /\b(Path\s*\(|pathlib\.)/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
-  { lang: 'python', pattern: /\b(pd|pandas)\.(read_|to_)\w+\s*\(/, tool: 'mcx_file', message: 'mcx_file for pandas file operations' },
-  { lang: 'python', pattern: /\b(os\.path\.|shutil\.|glob\.glob)/, tool: 'mcx_file', message: 'mcx_file or mcx_find for file system operations' },
+  { lang: 'python', pattern: /\b(open\s*\(|with\s+open)/, tool: 'mcx_file', message: toolRedirects.pythonOpen },
+  { lang: 'python', pattern: /\b(Path\s*\(|pathlib\.)/, tool: 'mcx_file', message: toolRedirects.pythonPath },
+  { lang: 'python', pattern: /\b(pd|pandas)\.(read_|to_)\w+\s*\(/, tool: 'mcx_file', message: toolRedirects.pythonPandas },
+  { lang: 'python', pattern: /\b(os\.path\.|shutil\.|glob\.glob)/, tool: 'mcx_file', message: toolRedirects.pythonOsPath },
   
   // === JavaScript redirects ===
-  { lang: 'javascript', pattern: /\bfetch\s*\(/, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
-  { lang: 'javascript', pattern: /\baxios\s*\./, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
-  { lang: 'javascript', pattern: /\bgot\s*\(/, tool: 'mcx_fetch', message: 'mcx_fetch({ url: "..." })' },
-  { lang: 'javascript', pattern: /\b(readFileSync|readFile|writeFileSync|writeFile)\s*\(/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
-  { lang: 'javascript', pattern: /\bBun\.(file|write|stdin|stdout)\s*\(/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
-  { lang: 'javascript', pattern: /\bfs\.(promises\.|createReadStream|createWriteStream)/, tool: 'mcx_file', message: 'mcx_file({ path: "...", storeAs: "x" })' },
+  { lang: 'javascript', pattern: /\bfetch\s*\(/, tool: 'mcx_fetch', message: toolRedirects.jsFetch },
+  { lang: 'javascript', pattern: /\baxios\s*\./, tool: 'mcx_fetch', message: toolRedirects.jsFetch },
+  { lang: 'javascript', pattern: /\bgot\s*\(/, tool: 'mcx_fetch', message: toolRedirects.jsFetch },
+  { lang: 'javascript', pattern: /\b(readFileSync|readFile|writeFileSync|writeFile)\s*\(/, tool: 'mcx_file', message: toolRedirects.jsReadFile },
+  { lang: 'javascript', pattern: /\bBun\.(file|write|stdin|stdout)\s*\(/, tool: 'mcx_file', message: toolRedirects.jsBunFile },
+  { lang: 'javascript', pattern: /\bfs\.(promises\.|createReadStream|createWriteStream)/, tool: 'mcx_file', message: toolRedirects.jsFsStreams },
 ];
 
 /** Create blocked response for tool redirects */
@@ -343,12 +345,11 @@ export function enforceRedirects(code: string, lang: Language): BlockedResponse 
     // Has tool = redirect with hint
     const desc = {
       mcx_file: 'File read/edit',
-      mcx_write: 'File write',
       mcx_grep: 'Content search',
       mcx_find: 'File search',
       mcx_fetch: 'Network request',
     }[rule.tool] || 'Operation';
-    return blockedResponse(`${desc} command detected, must use ${rule.tool} exclusively.`);
+    return blockedResponse(`${desc}: ${rule.message}`);
   }
   
   return null;

@@ -13,19 +13,14 @@ import {
   MAX_LINE_WIDTH,
   MAX_LOGS,
 } from "../tools/constants.js";
+import { createDebugger } from "../utils/debug.js";
 
-// ============================================================================
-// Constants (internal)
-// ============================================================================
+const debug = createDebugger("truncate");
 
 const MAX_SUMMARIZE_DEPTH = 10;
 const MAX_ARRAY_ITEMS = 100;
 const MAX_STRING_LENGTH = 5000;
 const MAX_OBJECT_KEYS = 50;
-
-// ============================================================================
-// Stored Confirmation (ONE source of truth for tool outputs)
-// ============================================================================
 
 export interface StoredStats {
   lines?: number;
@@ -33,20 +28,12 @@ export interface StoredStats {
   exitCode?: number;
 }
 
-/**
- * Format confirmation message for stored results.
- * Pure formatting - no side effects.
- */
 export function formatStored(varName: string, stats: StoredStats): string {
   const name = varName.startsWith('$') ? varName : `$${varName}`;
   const info = stats.lines ? `${stats.lines} lines` : stats.bytes ? formatBytes(stats.bytes) : '';
   const status = stats.exitCode === 0 ? '✓' : stats.exitCode != null ? `✗ Exit ${stats.exitCode}` : '✓';
   return `${status} Stored ${name}${info ? ` (${info})` : ''}`;
 }
-
-// ============================================================================
-// Types
-// ============================================================================
 
 export interface TruncateOptions {
   enabled?: boolean;
@@ -63,36 +50,25 @@ export interface SummarizedResult {
   truncatedBytes?: number;
 }
 
-// ============================================================================
-// Helper
-// ============================================================================
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + 'B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB';
   return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
 }
 
-/** Truncate logs array with "... +N more" message */
 export function truncateLogs(logs: string[]): string[] {
   if (logs.length <= MAX_LOGS) return logs;
   return [...logs.slice(0, MAX_LOGS), `... +${logs.length - MAX_LOGS} more`];
 }
 
-/** Filter out lint warnings from prepended FILE_HELPERS_CODE */
 export function filterHelperLogs(logs: string[]): string[] {
-  // Filter logs that reference lines in the helper code (e.g., "at line 5")
   return logs.filter(log => {
     const lineMatch = log.match(/(?:line |:)(\d+)/i);
-    if (!lineMatch) return true; // Keep logs without line references
+    if (!lineMatch) return true;
     const lineNum = parseInt(lineMatch[1], 10);
-    return lineNum > FILE_HELPERS_LINE_COUNT; // Keep if after helper code
+    return lineNum > FILE_HELPERS_LINE_COUNT;
   });
 }
-
-// ============================================================================
-// summarizeObject - Recursive truncation
-// ============================================================================
 
 function summarizeObject(
   obj: unknown,
@@ -109,9 +85,7 @@ function summarizeObject(
   }
 
   if (depth >= maxDepth) return '[max depth]';
-
   if (obj === null || typeof obj !== 'object') return obj;
-
   if (seen.has(obj)) return '[circular]';
   seen.add(obj);
 
@@ -121,7 +95,7 @@ function summarizeObject(
     return items;
   }
 
-  const result: Record<string, unknown> = {};
+  const result = {};
   const keys = Object.keys(obj);
   let count = 0;
   for (const key of keys) {
@@ -132,9 +106,190 @@ function summarizeObject(
   return result;
 }
 
-// ============================================================================
-// summarizeResult - Main export
-// ============================================================================
+const TREE_SKIP_KEYS = new Set(['id', 'name', 'date', 'status', 'state', 'total', 'amount', 'created_at', 'number', 'title']);
+const TREE_ID_KEYS = ['id', 'name', 'number', 'title'];
+const TREE_STATUS_KEYS = ['status', 'state'];
+const TREE_AMOUNT_KEYS = ['total', 'amount'];
+const TREE_DATE_KEYS = ['date', 'created_at'];
+const TREE_MAX_ITEMS = 10;
+
+function escapeField(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  if (Array.isArray(val)) return '[' + val.map(v => escapeField(v)).join(',') + ']';
+  if (typeof val === 'object') {
+    const entries = Object.entries(val as Record<string, unknown>).map(([k, v]) => k + ':' + escapeField(v));
+    return '{' + entries.join(',') + '}';
+  }
+  const s = String(val);
+  const PIPE = String.fromCharCode(124);
+  const NL = String.fromCharCode(10);
+  if (!s.includes(PIPE) && !s.includes(NL)) return s;
+  return '"' + s.replace(/"/g, '""').replace(/\n/g, '\\n') + '"';
+}
+
+function isUniformArray(arr: unknown[]): arr is Record<string, unknown>[] {
+  if (arr.length === 0) return false;
+  return arr.every(item => typeof item === 'object' && item !== null && !Array.isArray(item));
+}
+
+export function toTOON(items: Record<string, unknown>[], name = 'data'): string {
+  if (!items.length) return name + '[0]{}';
+  const allKeys = new Set();
+  for (const item of items) Object.keys(item).forEach(k => allKeys.add(k));
+  const keys = Array.from(allKeys);
+  const header = name + '[' + items.length + ']{' + keys.join(',') + '}:';
+  const rows = items.map(item => '  ' + keys.map(k => escapeField(item[k])).join('|'));
+  return [header, ...rows].join('\n');
+}
+
+function getDepth(obj: unknown, current = 0): number {
+  if (current > 5) return current;
+  if (obj === null || typeof obj !== 'object') return current;
+  if (Array.isArray(obj)) {
+    return obj.length ? Math.max(...obj.map(v => getDepth(v, current + 1))) : current + 1;
+  }
+  const vals = Object.values(obj);
+  return vals.length ? Math.max(...vals.map(v => getDepth(v, current + 1))) : current + 1;
+}
+
+function countFields(obj: unknown): number {
+  if (obj === null || typeof obj !== 'object') return 0;
+  if (Array.isArray(obj)) return obj.reduce((n, v) => n + countFields(v), 0);
+  const entries = Object.entries(obj as Record<string, unknown>);
+  return entries.length + entries.reduce((n, [, v]) => n + countFields(v), 0);
+}
+
+function formatTreeSummary(item: Record<string, unknown>, idKey: string | undefined, index: number): string {
+  const id = idKey ? item[idKey] : index;
+  const status = TREE_STATUS_KEYS.map(k => item[k]).find(Boolean) || '';
+  const total = TREE_AMOUNT_KEYS.map(k => item[k]).find(Boolean) || '';
+  const date = TREE_DATE_KEYS.map(k => item[k]).find(Boolean) || '';
+
+  let sum = '#' + id;
+  if (date) sum += ' (' + String(date).slice(0, 10) + ')';
+  if (status) sum += ' ' + status;
+  if (total) sum += ' $' + total;
+  return sum;
+}
+
+function formatNestedField(key: string, val: unknown): string {
+  if (Array.isArray(val)) {
+    const preview = val.slice(0, 2).map(v =>
+      (v && typeof v === 'object') ? (v.name || v.id || '?') : v
+    ).join(', ');
+    return key + '[' + val.length + ']: ' + preview + (val.length > 2 ? '...' : '');
+  }
+  const nm = val.name || val.id || '';
+  return key + ': ' + nm;
+}
+
+function toTree(items: Record<string, unknown>[], name = 'data'): string {
+  const out = [name + '[' + items.length + ']:'];
+  const idKey = TREE_ID_KEYS.find(k => items[0]?.[k]);
+  const max = Math.min(items.length, TREE_MAX_ITEMS);
+
+  for (let i = 0; i < max; i++) {
+    const item = items[i];
+    const isLast = i === max - 1;
+    const pfx = isLast ? 'L ' : '| ';
+    out.push(pfx + formatTreeSummary(item, idKey, i));
+
+    const cpfx = isLast ? '  ' : '| ';
+    const nested = Object.entries(item)
+      .filter(([k, v]) => typeof v === 'object' && v !== null && !TREE_SKIP_KEYS.has(k))
+      .slice(0, 3);
+
+    for (let j = 0; j < nested.length; j++) {
+      const cp = cpfx + (j === nested.length - 1 ? 'L ' : '| ');
+      out.push(cp + formatNestedField(nested[j][0], nested[j][1]));
+    }
+  }
+
+  if (items.length > TREE_MAX_ITEMS) out.push('... +' + (items.length - TREE_MAX_ITEMS) + ' more');
+  return out.join('\n');
+}
+
+function toTreeTOON(obj: Record<string, unknown>, indent = ''): string {
+  const lines = [];
+  const entries = Object.entries(obj as Record<string, unknown>);
+
+  for (let i = 0; i < entries.length; i++) {
+    const [key, val] = entries[i];
+    const isLast = i === entries.length - 1;
+    const branch = indent + (isLast ? '└── ' : '├── ');
+    const childIndent = indent + (isLast ? '    ' : '│   ');
+
+    if (val === null || val === undefined) continue;
+    if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
+      const keys = Object.keys(val[0]).slice(0, 8);
+      lines.push(branch + key + '[' + val.length + ']{' + keys.join(',') + '}:');
+      for (const item of val.slice(0, 10)) {
+        lines.push(childIndent + '  ' + keys.map(k => escapeField(item[k])).join('|'));
+      }
+      if (val.length > 10) lines.push(childIndent + '  ... +' + (val.length - 10) + ' more');
+    } else if (typeof val === 'object' && !Array.isArray(val)) {
+      const summary = formatObjectSummary(val);
+      lines.push(branch + key + ': ' + summary);
+      const nested = toTreeTOON(val, childIndent);
+      if (nested) lines.push(nested);
+    } else {
+      lines.push(branch + key + ': ' + escapeField(val));
+    }
+  }
+  return lines.join('\n');
+}
+
+function formatObjectSummary(obj: Record<string, unknown>): string {
+  const id = TREE_ID_KEYS.map(k => obj[k]).find(Boolean) || '';
+  const name = obj.name || obj.title || '';
+  if (id && name && id !== name) return id + ' (' + name + ')';
+  return String(id || name || '{...}');
+}
+
+export function objectToTOON(obj: Record<string, unknown>, name = 'data'): string {
+  const entries = Object.entries(obj).filter(([, v]) => v !== null && v !== undefined);
+  if (entries.length === 0) return name + ': {}';
+
+  const lines = entries.map(([k, v]) => {
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      return '  ' + k + ': ' + formatObjectSummary(v);
+    }
+    return '  ' + k + ': ' + escapeField(v);
+  });
+
+  return name + ':\n' + lines.join('\n');
+}
+
+export function maybeObjectToTOON(obj: Record<string, unknown>, name = 'data'): string {
+  const depth = getDepth(obj);
+  const hasArrays = Object.values(obj).some(v => Array.isArray(v) && v.length > 0 && typeof v[0] === 'object');
+  if (depth > 2 || hasArrays) {
+    const summary = formatObjectSummary(obj);
+    return summary + '\n' + toTreeTOON(obj, '');
+  }
+  return objectToTOON(obj, name);
+}
+
+export function maybeToTOON(value: unknown): string | null {
+  if (!Array.isArray(value) || !isUniformArray(value)) return null;
+  const depth = getDepth(value);
+  const fields = countFields(value[0]);
+  if (depth > 3 || fields > 15) return toTreeTOONList(value);
+  return toTOON(value);
+}
+
+function toTreeTOONList(items: Record<string, unknown>[], name = 'data'): string {
+  const out = [name + '[' + items.length + ']:'];
+  const max = Math.min(items.length, TREE_MAX_ITEMS);
+
+  for (let i = 0; i < max; i++) {
+    const item = items[i];
+    out.push(formatTreeSummary(item, TREE_ID_KEYS.find(k => item[k]), i));
+    out.push(toTreeTOON(item, '  '));
+  }
+  if (items.length > TREE_MAX_ITEMS) out.push('... +' + (items.length - TREE_MAX_ITEMS) + ' more');
+  return out.join('\n');
+}
 
 export function summarizeResult(value: unknown, opts: TruncateOptions = {}): SummarizedResult {
   const rawJson = JSON.stringify(value) ?? '';
@@ -158,17 +313,11 @@ export function summarizeResult(value: unknown, opts: TruncateOptions = {}): Sum
   };
 }
 
-// ============================================================================
-// enforceCharacterLimit - Final safeguard with clean line breaks
-// ============================================================================
-
-/** Find last newline before target, within tolerance. Falls back to target. */
 function findCleanCut(text: string, target: number, tolerance = 200): number {
   const idx = text.lastIndexOf('\n', target);
   return idx >= target - tolerance ? idx + 1 : target;
 }
 
-/** Find first newline after target, within tolerance. Falls back to target. */
 function findCleanCutEnd(text: string, target: number, tolerance = 200): number {
   const idx = text.indexOf('\n', target);
   return idx > 0 && idx <= target + tolerance ? idx + 1 : target;
@@ -182,7 +331,6 @@ export function enforceCharacterLimit(text: string, limit: number = CHARACTER_LI
   const targetStart = Math.floor(available * 0.6);
   const targetEnd = available - targetStart;
 
-  // Cut at line boundaries for cleaner output
   const startCut = findCleanCut(sanitized, targetStart);
   const endCut = findCleanCutEnd(sanitized, sanitized.length - targetEnd);
   const omitted = endCut - startCut;
@@ -195,10 +343,6 @@ export function sanitizeForJson(text: string): string {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
     .replace(/\uFFFD/g, '');
 }
-
-// ============================================================================
-// formatFileResult - Format file operation results
-// ============================================================================
 
 export function formatFileResult(result: unknown, code?: string, prefix?: string): string {
   if (result === undefined || result === null) return 'undefined';
@@ -222,10 +366,6 @@ export function formatFileResult(result: unknown, code?: string, prefix?: string
   return prefix ? prefix + json : json;
 }
 
-// ============================================================================
-// String Truncation
-// ============================================================================
-
 export function truncateString(str: string, maxLen: number, matchPos?: number): string {
   if (str.length <= maxLen) return str;
 
@@ -237,7 +377,6 @@ export function truncateString(str: string, maxLen: number, matchPos?: number): 
     return (start > 0 ? "..." : "") + str.slice(start, end) + (end < str.length ? "..." : "");
   }
 
-  // 60/40 split: start has more context than end
   const contentLen = maxLen - 6;
   const startLen = Math.floor(contentLen * 0.6);
   const endLen = contentLen - startLen;
@@ -246,7 +385,7 @@ export function truncateString(str: string, maxLen: number, matchPos?: number): 
 
 export function cleanLine(line: string, maxLen: number = 100, pattern?: string): string {
   let cleaned = line.replace(/^\d+:\s*/, "").replace(/\s+/g, " ").trim();
-  let matchPos: number | undefined;
+  let matchPos;
   if (pattern) {
     const idx = cleaned.toLowerCase().indexOf(pattern.toLowerCase());
     if (idx >= 0) matchPos = idx;
@@ -254,14 +393,6 @@ export function cleanLine(line: string, maxLen: number = 100, pattern?: string):
   return truncateString(cleaned, maxLen, matchPos);
 }
 
-// ============================================================================
-// UTF-8 Safe Truncation
-// ============================================================================
-
-/**
- * Truncate string at UTF-8 safe boundary using binary search.
- * Ensures multibyte chars (emojis) are not cut in half.
- */
 export function truncateUtf8Safe(str: string, maxBytes: number, marker = '...'): string {
   if (Buffer.byteLength(str) <= maxBytes) return str;
 
@@ -277,7 +408,6 @@ export function truncateUtf8Safe(str: string, maxBytes: number, marker = '...'):
   return str.slice(0, lo) + marker;
 }
 
-/** Truncate JSON at UTF-8 safe boundary. */
 export function truncateJsonUtf8Safe(value: unknown, maxBytes: number): string {
   return truncateUtf8Safe(JSON.stringify(value) ?? 'null', maxBytes, '... [truncated]');
 }

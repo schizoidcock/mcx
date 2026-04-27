@@ -14,6 +14,9 @@
 
 import { compactPath } from "../utils/paths.js";
 
+import { createDebugger } from "../utils/debug.js";
+const debug = createDebugger("formatters");
+
 // ANSI escape code regex
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 
@@ -21,7 +24,7 @@ const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 // GIT
 // ============================================================================
 
-/** Format git diff - compact view with file summary */
+/** Format git diff - TOON format */
 export function formatGitDiff(output: string): string | null {
   const diffLines = output.replace(ANSI_REGEX, '').split('\n');
   
@@ -29,8 +32,7 @@ export function formatGitDiff(output: string): string | null {
     return null;
   }
   
-  const MAX_CHANGES = 10;
-  type FileChange = { name: string; adds: number; dels: number; changes: string[] };
+  type FileChange = { name: string; adds: number; dels: number };
   const files: FileChange[] = [];
   let cur: FileChange | null = null;
   
@@ -38,27 +40,21 @@ export function formatGitDiff(output: string): string | null {
     if (ln.startsWith('diff --git')) {
       const match = ln.match(/b\/(.+)$/);
       if (match) {
-        cur = { name: match[1], adds: 0, dels: 0, changes: [] };
+        cur = { name: match[1], adds: 0, dels: 0 };
         files.push(cur);
       }
     } else if (cur) {
-      if (ln.startsWith('+') && !ln.startsWith('+++')) {
-        cur.adds++;
-        if (cur.changes.length < MAX_CHANGES) cur.changes.push(ln);
-      } else if (ln.startsWith('-') && !ln.startsWith('---')) {
-        cur.dels++;
-        if (cur.changes.length < MAX_CHANGES) cur.changes.push(ln);
-      }
+      if (ln.startsWith('+') && !ln.startsWith('+++')) cur.adds++;
+      else if (ln.startsWith('-') && !ln.startsWith('---')) cur.dels++;
     }
   }
   
   if (files.length === 0) return null;
   
-  const summary = files.map(f => 
-    `${compactPath(f.name)} (+${f.adds}/-${f.dels})`
-  ).join('\n');
-  
-  return `${files.length} file(s) changed:\n${summary}`;
+  const NL = String.fromCharCode(10);
+  const header = 'changes[' + files.length + ']{file,adds,dels}:';
+  const rows = files.map(f => '  ' + compactPath(f.name) + '|' + f.adds + '|' + f.dels);
+  return [header, ...rows].join(NL);
 }
 
 // ============================================================================
@@ -81,27 +77,6 @@ export function formatTestOutput(output: string): string | null {
   const pytestMatch = clean.match(/(\d+) passed|(\d+) failed/);
   if (pytestMatch) {
     return clean.split('\n').slice(-5).join('\n').trim();
-  }
-  
-  return null;
-}
-
-// ============================================================================
-// LINTING
-// ============================================================================
-
-/** Format lint output - extract error summary */
-export function formatLintOutput(cmd: string, output: string): string | null {
-  const clean = output.replace(ANSI_REGEX, '');
-  
-  // ESLint/Biome pattern
-  const errorMatch = clean.match(/(\d+)\s+(error|problem)/i);
-  const warnMatch = clean.match(/(\d+)\s+warning/i);
-  
-  if (errorMatch || warnMatch) {
-    const errors = errorMatch ? errorMatch[1] : '0';
-    const warnings = warnMatch ? warnMatch[1] : '0';
-    return `Lint: ${errors} errors, ${warnings} warnings`;
   }
   
   return null;
@@ -135,7 +110,7 @@ export function formatLsOutput(output: string): string | null {
   if (lines.length <= 10) return null;
   
   // Truncate long listings
-  const head = lines.slice(0, 10);
+  const head = lines.slice(0, FORMAT_MAX_ITEMS);
   return [...head, `... (${lines.length - 10} more files)`].join('\n');
 }
 
@@ -150,12 +125,12 @@ export function formatJsonStructure(output: string): string | null {
     
     if (Array.isArray(parsed)) {
       if (parsed.length > 10) {
-        return `Array[${parsed.length}]: ${JSON.stringify(parsed.slice(0, 3))}...`;
+        return `Array[${parsed.length}]: ${JSON.stringify(parsed.slice(0, FORMAT_ARRAY_PREVIEW))}...`;
       }
     } else if (typeof parsed === 'object' && parsed !== null) {
       const keys = Object.keys(parsed);
       if (keys.length > 10) {
-        return `Object{${keys.length} keys}: ${keys.slice(0, 5).join(', ')}...`;
+        return `Object{${keys.length} keys}: ${keys.slice(0, FORMAT_KEYS_PREVIEW).join(', ')}...`;
       }
     }
     
@@ -181,7 +156,7 @@ export function formatLogOutput(output: string): string | null {
   
   if (relevant.length === 0) return null;
   if (relevant.length > 20) {
-    return [...relevant.slice(0, 20), `... (${relevant.length - 20} more)`].join('\n');
+    return [...relevant.slice(0, FORMAT_MAX_RELEVANT), `... (${relevant.length - FORMAT_MAX_RELEVANT} more)`].join('\n');
   }
   
   return relevant.join('\n');
@@ -191,43 +166,53 @@ export function formatLogOutput(output: string): string | null {
 // GITHUB CLI
 // ============================================================================
 
-/** Format gh pr list - parse JSON, show compact list */
+/** Format gh pr list - TOON format */
 export function formatGhPrList(output: string): string | null {
   try {
     const prs = JSON.parse(output.trim());
     if (!Array.isArray(prs) || prs.length === 0) return '(no PRs)';
-    
-    return prs.slice(0, 10).map((pr: { number: number; title: string; state: string }) =>
-      `#${pr.number} ${pr.title} [${pr.state}]`
-    ).join('\n');
+    const items = prs.slice(0, FORMAT_MAX_ITEMS);
+    const NL = String.fromCharCode(10);
+    const header = 'prs[' + items.length + ']{num,title,state}:';
+    const rows = items.map((pr: { number: number; title: string; state: string }) =>
+      '  ' + pr.number + '|' + pr.title.slice(0, FORMAT_MAX_TITLE) + '|' + pr.state
+    );
+    return [header, ...rows].join(NL);
   } catch {
     return null;
   }
 }
 
-/** Format gh issue list */
+/** Format gh issue list - TOON format */
 export function formatGhIssueList(output: string): string | null {
   try {
     const issues = JSON.parse(output.trim());
     if (!Array.isArray(issues) || issues.length === 0) return '(no issues)';
-    
-    return issues.slice(0, 10).map((i: { number: number; title: string; state: string }) =>
-      `#${i.number} ${i.title} [${i.state}]`
-    ).join('\n');
+    const items = issues.slice(0, FORMAT_MAX_ITEMS);
+    const NL = String.fromCharCode(10);
+    const header = 'issues[' + items.length + ']{num,title,state}:';
+    const rows = items.map((i: { number: number; title: string; state: string }) =>
+      '  ' + i.number + '|' + i.title.slice(0, FORMAT_MAX_TITLE) + '|' + i.state
+    );
+    return [header, ...rows].join(NL);
   } catch {
     return null;
   }
 }
 
-/** Format gh run list - workflow runs */
+/** Format gh run list - TOON format */
 export function formatGhRunList(output: string): string | null {
   try {
     const runs = JSON.parse(output.trim());
     if (!Array.isArray(runs) || runs.length === 0) return '(no runs)';
-    
-    return runs.slice(0, 10).map((r: { status: string; conclusion: string; name: string }) =>
-      `${r.status === 'completed' ? (r.conclusion === 'success' ? '✓' : '✗') : '○'} ${r.name}`
-    ).join('\n');
+    const items = runs.slice(0, FORMAT_MAX_ITEMS);
+    const NL = String.fromCharCode(10);
+    const header = 'runs[' + items.length + ']{icon,name}:';
+    const rows = items.map((r: { status: string; conclusion: string; name: string }) => {
+      const icon = r.status === 'completed' ? (r.conclusion === 'success' ? '+' : 'x') : 'o';
+      return '  ' + icon + '|' + r.name;
+    });
+    return [header, ...rows].join(NL);
   } catch {
     return null;
   }

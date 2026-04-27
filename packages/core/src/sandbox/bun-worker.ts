@@ -4,6 +4,7 @@ import { DEFAULT_NETWORK_POLICY, generateNetworkIsolationCode } from "./network-
 import { normalizeCode } from "./normalizer.js";
 import { analyze, formatFindings, DEFAULT_ANALYSIS_CONFIG } from "./analyzer/index.js";
 import { MEMORY_WARNING_THRESHOLD, DEFAULT_POOL_CONFIG } from "./constants.js";
+import { debugSandbox as debug } from "../debug.js";
 
 /** Get current memory usage in MB */
 function getMemoryUsageMB(): { heapUsed: number; heapTotal: number; rss: number } {
@@ -142,6 +143,8 @@ export class BunWorkerSandbox implements ISandbox {
     code: string,
     context: ExecutionContext
   ): Promise<SandboxResult<T>> {
+    debug.time("execute");
+    debug("execute", { codeLen: code.length });
     const startTime = performance.now();
 
     // Normalize code if enabled (auto-add return, etc.)
@@ -253,8 +256,7 @@ export class BunWorkerSandbox implements ISandbox {
               this.pool.release(pooledWorker);
             }
           } else {
-            // Direct worker - terminate and cleanup
-            worker.terminate();
+            // Direct worker - orphan to avoid Bun segfault (0x58)
             URL.revokeObjectURL(url);
           }
         }

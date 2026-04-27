@@ -7,6 +7,7 @@
  */
 
 import { eventTips } from "./tips.js";
+import { warnings } from "./messages/index.js";
 
 // ============================================================================
 // Constants
@@ -39,7 +40,7 @@ export function checkRetryLoop(sig: string): string | null {
   if (!prev) return null;
   if (Date.now() - prev.lastTime > FAILURE_WINDOW_MS) return null;
   if (prev.count < 2) return null;
-  return `⚠️ This code failed ${prev.count}x recently. Last: ${prev.lastError.slice(0, 100)}`;
+  return warnings.retryLoop(prev.count, prev.lastError);
 }
 
 /** Record a failure */
@@ -118,6 +119,10 @@ export function checkLinesHunting(varName: string, start: number, end: number): 
 // ============================================================================
 
 import { THROTTLE_AFTER, BLOCK_AFTER, THROTTLE_WINDOW_MS } from "../tools/constants.js";
+
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("guards");
 
 interface SearchThrottleState {
   count: number;

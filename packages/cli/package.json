@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ff-labs/fff-bun": "link:@ff-labs/fff-bun",
+    "@ff-labs/fff-bun": "^0.6.4",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@opentui-ui/dialog": "^0.1.2",
     "@opentui-ui/toast": "^0.0.5",
@@ -54,7 +54,7 @@
     "@ff-labs/fff-bin-darwin-arm64": "0.5.2",
     "@ff-labs/fff-bin-darwin-x64": "0.5.2",
     "@ff-labs/fff-bin-linux-x64-gnu": "0.5.2",
-    "@ff-labs/fff-bin-win32-x64": "0.5.2"
+    "@ff-labs/fff-bin-win32-x64": "^0.6.4"
   },
   "keywords": [
     "mcx",

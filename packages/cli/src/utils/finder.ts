@@ -10,7 +10,11 @@
 import * as path from "node:path";
 import pc from "picocolors";
 import { getMcxHomeDir } from "../utils/paths.js";
-import { type FileFinder } from "../utils/fff";
+import type { FileFinder } from "../utils/fff";
+
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("finder");
 
 // ============================================================================
 // Types
@@ -170,7 +174,7 @@ export async function withFinder<T>(
     const msg = isExternal 
       ? `Failed to initialize search in: ${searchPath}`
       : "FFF not initialized. Run from a project directory.";
-    return { content: [{ type: "text" as const, text: msg }], isError: true };
+    return { content: [{ type: "text" as const, text: msg }],  };
   }
 
   return fn(finder);

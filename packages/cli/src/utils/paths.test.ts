@@ -58,7 +58,7 @@ describe('getMcxCliDir', () => {
 });
 
 describe('exists', () => {
-  const testDir = join(process.cwd(), '.test-exists-' + process.pid);
+  const testDir = join(process.cwd(), `.test-exists-${process.pid}`);
   const testFile = join(testDir, 'test-file.txt');
 
   beforeAll(async () => {

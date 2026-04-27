@@ -523,6 +523,10 @@ export function buildAdapterContext(adapters: Adapter[]): Record<string, Record<
 
 import { createMcxServerCore } from "./core.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("factory");
+
 /**
  * Create MCX MCP server with all adapters and skills loaded
  */

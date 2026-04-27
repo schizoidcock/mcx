@@ -2,7 +2,7 @@
  * MCX Adapter Generator - Core Logic
  * Shared between CLI and TUI
  */
-import * as path from "path";
+import * as path from "node:path";
 import { parse as parseYAML } from "yaml";
 import { getAdaptersDir, normalizePath } from "../utils/paths";
 
@@ -175,6 +175,19 @@ export async function findMarkdownFiles(source: string): Promise<string[]> {
 // Parsing
 // ============================================================================
 
+// Helper: Extract OpenAPI spec from markdown code block (JSON or YAML)
+function extractSpecFromMarkdown(content: string): OpenAPISpec | null {
+  const jsonMatch = content.match(/`{3,4}json[^\n]*\n([\s\S]*?)\n`{3,4}/);
+  if (jsonMatch) {
+    try { return JSON.parse(jsonMatch[1]); } catch {}
+  }
+  const yamlMatch = content.match(/`{3,4}ya?ml[^\n]*\n([\s\S]*?)\n`{3,4}/);
+  if (yamlMatch) {
+    try { return parseYAML(yamlMatch[1]) as OpenAPISpec; } catch {}
+  }
+  return null;
+}
+
 export function parseMarkdownDoc(content: string, filePath: string): ParseResult {
   const endpoints: ParsedEndpoint[] = [];
   let spec: OpenAPISpec | null = null;
@@ -200,7 +213,7 @@ export function parseMarkdownDoc(content: string, filePath: string): ParseResult
     }
   }
 
-  if (!spec || !spec.paths) return { endpoints, serverUrl, auth, sdk };
+  if (!spec?.paths) return { endpoints, serverUrl, auth, sdk };
 
   // Extract server URL if available
   if (spec.servers && spec.servers.length > 0 && spec.servers[0].url) {
@@ -356,7 +369,7 @@ export function generateMethodName(method: string, pathStr: string, _operation: 
   // Add suffix with actual param names: ByScriptName, ByProjectIdAndItemId
   if (pathParams.length > 0) {
     const suffix = pathParams
-      .map(p => "By" + p.split(/[_-]/).map(capitalize).join(""))
+      .map(p => `By${p.split(/[_-]/).map(capitalize).join("")}`)
       .join("And");
     cleaned += suffix;
   }
@@ -439,6 +452,46 @@ function simplifySchema(schema: ResponseSchema, depth = 0): Record<string, unkno
   return result;
 }
 
+// TOON schema field definition
+interface TOONField {
+  name: string;
+  transform?: 'relativeTime' | 'boolYesNo';
+}
+
+// TOON schema for auto-formatting adapter output
+interface TOONSchema {
+  format: 'tabular' | 'detail';
+  fields: TOONField[];
+}
+
+// Detect transform based on field name/type
+function detectTransform(name: string, prop: Record<string, unknown>): TOONField['transform'] {
+  if (prop.format === 'date-time' || name.endsWith('_at') || name.endsWith('At')) return 'relativeTime';
+  if (prop.type === 'boolean') return 'boolYesNo';
+  return undefined;
+}
+
+// Generate TOON schema from OpenAPI response schema
+function generateTOONSchema(schema: ResponseSchema): TOONSchema | null {
+  if (schema.type === 'array' && schema.items?.properties) {
+    const props = schema.items.properties as Record<string, Record<string, unknown>>;
+    const fields = Object.entries(props).slice(0, 10).map(([name, prop]) => ({
+      name,
+      transform: detectTransform(name, prop),
+    }));
+    return { format: 'tabular', fields };
+  }
+  if (schema.type === 'object' && schema.properties) {
+    const props = schema.properties as Record<string, Record<string, unknown>>;
+    const fields = Object.entries(props).slice(0, 10).map(([name, prop]) => ({
+      name,
+      transform: detectTransform(name, prop),
+    }));
+    return { format: 'detail', fields };
+  }
+  return null;
+}
+
 export function groupByCategory(endpoints: ParsedEndpoint[]): Record<string, ParsedEndpoint[]> {
   const groups: Record<string, ParsedEndpoint[]> = {};
   for (const ep of endpoints) {
@@ -490,76 +543,48 @@ export function filterEndpoints(endpoints: ParsedEndpoint[], options: FilterOpti
 // Source Analysis (combines discovery + parsing)
 // ============================================================================
 
-export async function analyzeSource(source: string): Promise<SourceAnalysis> {
+// Factory for empty/error analysis result
+function emptyAnalysis(error?: string, files: string[] = []): SourceAnalysis {
+  return {
+    valid: false, error, files, filesWithSpecs: [], filesWithoutSpecs: files,
+    endpoints: [], serverUrl: null, auth: null, sdk: null, summary: "",
+  };
+}
+
+// Process single markdown file
+async function processMarkdownFile(file: string): Promise<ParseResult | null> {
   try {
-    const files = await findMarkdownFiles(source);
-    const endpoints: ParsedEndpoint[] = [];
-    const filesWithSpecs: string[] = [];
-    const filesWithoutSpecs: string[] = [];
-    let serverUrl: string | null = null;
-    let auth: DetectedAuth | null = null;
-    let sdk: DetectedSDK | null = null;
-
-    for (const file of files) {
-      try {
-        const content = await Bun.file(file).text();
-        const result = parseMarkdownDoc(content, file);
-        if (result.endpoints.length > 0) {
-          endpoints.push(...result.endpoints);
-          filesWithSpecs.push(file);
-          if (!serverUrl && result.serverUrl) serverUrl = result.serverUrl;
-          if (!auth && result.auth) auth = result.auth;
-          if (!sdk && result.sdk) sdk = result.sdk;
-        } else {
-          filesWithoutSpecs.push(file);
-        }
-      } catch {
-        filesWithoutSpecs.push(file);
-      }
-    }
-
-    if (endpoints.length === 0) {
-      return {
-        valid: false,
-        error: "No OpenAPI specifications found",
-        files,
-        filesWithSpecs: [],
-        filesWithoutSpecs: files,
-        endpoints: [],
-        serverUrl: null,
-        auth: null,
-        sdk: null,
-        summary: "",
-      };
-    }
-
-    const summary = `${filesWithSpecs.length} file(s), ${endpoints.length} endpoints`;
-
-    return {
-      valid: true,
-      files,
-      filesWithSpecs,
-      filesWithoutSpecs,
-      endpoints,
-      serverUrl,
-      auth,
-      sdk,
-      summary,
-    };
-  } catch (err) {
-    return {
-      valid: false,
-      error: (err as Error).message,
-      files: [],
-      filesWithSpecs: [],
-      filesWithoutSpecs: [],
-      endpoints: [],
-      serverUrl: null,
-      auth: null,
-      sdk: null,
-      summary: "",
-    };
+    const content = await Bun.file(file).text();
+    const result = parseMarkdownDoc(content, file);
+    return result.endpoints.length > 0 ? result : null;
+  } catch {
+    return null;
   }
+}
+
+// Main: Analyze source directory for OpenAPI specs
+export async function analyzeSource(source: string): Promise<SourceAnalysis> {
+  let files: string[];
+  try { files = await findMarkdownFiles(source); }
+  catch (err) { return emptyAnalysis((err as Error).message); }
+
+  const results = await Promise.all(files.map(processMarkdownFile));
+  const validResults = results.filter((r): r is ParseResult => r !== null);
+  
+  if (validResults.length === 0) return emptyAnalysis("No OpenAPI specifications found", files);
+  
+  const filesWithSpecs = files.filter((_, i) => results[i] !== null);
+  return {
+    valid: true,
+    files,
+    filesWithSpecs,
+    filesWithoutSpecs: files.filter((_, i) => results[i] === null),
+    endpoints: validResults.flatMap(r => r.endpoints),
+    serverUrl: validResults.find(r => r.serverUrl)?.serverUrl || null,
+    auth: validResults.find(r => r.auth)?.auth || null,
+    sdk: validResults.find(r => r.sdk)?.sdk || null,
+    summary: `${filesWithSpecs.length} file(s), ${validResults.flatMap(r => r.endpoints).length} endpoints`,
+  };
 }
 
 // ============================================================================
@@ -572,31 +597,12 @@ export async function extractApiName(source: string): Promise<string | null> {
     if (files.length === 0) return null;
 
     const content = await Bun.file(files[0]).text();
-
-    // Try JSON
-    const jsonMatch = content.match(/`{3,}json[^\n]*\n([\s\S]*?)\n`{3,}/);
-    if (jsonMatch) {
-      try {
-        const spec = JSON.parse(jsonMatch[1]);
-        if (spec.servers?.[0]?.url) {
-          return extractNameFromUrl(spec.servers[0].url);
-        }
-      } catch {}
-    }
-
-    // Try YAML
-    const yamlMatch = content.match(/`{3,}ya?ml[^\n]*\n([\s\S]*?)\n`{3,}/);
-    if (yamlMatch) {
-      try {
-        const spec = parseYAML(yamlMatch[1]);
-        if (spec?.servers?.[0]?.url) {
-          return extractNameFromUrl(spec.servers[0].url);
-        }
-      } catch {}
-    }
-  } catch {}
-
-  return null;
+    const spec = extractSpecFromMarkdown(content);
+    const url = spec?.servers?.[0]?.url;
+    return url ? extractNameFromUrl(url) : null;
+  } catch {
+    return null;
+  }
 }
 
 function extractNameFromUrl(urlString: string): string | null {
@@ -905,16 +911,18 @@ function generateMethod(methodName: string, ep: ParsedEndpoint, ctxParam?: Conte
 
   // Add auto-select hint to description
   if (usesCtxParam) {
-    desc = desc.replace(/\.$/, '') + `. Auto-selects current ${ctxParam!.name.replace(/_/g, ' ')}.`;
+    desc = `${desc.replace(/\.$/, '')}. Auto-selects current ${ctxParam?.name.replace(/_/g, ' ')}.`;
   }
 
   lines.push(`${indent}${methodName}: {`);
   lines.push(`${indent}  description: '${desc}',`);
   lines.push(`${indent}  parameters: ${generateParametersObject(ep, ctxParam)},`);
 
-  // Include response schema if available
+  // Include response and TOON schema if available
   if (ep.responseSchema) {
     lines.push(`${indent}  responseSchema: ${JSON.stringify(simplifySchema(ep.responseSchema))},`);
+    const toon = generateTOONSchema(ep.responseSchema);
+    if (toon) lines.push(`${indent}  toonSchema: ${JSON.stringify(toon)},`);
   }
 
   const hasParams = (ep.operation.parameters || []).length > 0 || !!ep.operation.requestBody;
@@ -1003,7 +1011,7 @@ function generateParametersObject(ep: ParsedEndpoint, ctxParam?: ContextParam | 
     const requiredStr = required ? ", required: true" : "";
 
     if (isCtxParam) {
-      desc = desc ? desc + " (optional - auto-selects)" : "(optional - auto-selects)";
+      desc = desc ? `${desc} (optional - auto-selects)` : "(optional - auto-selects)";
     }
 
     fields.push(`      ${safeName}: { type: '${paramType}', description: '${desc}'${requiredStr}${exampleStr} }`);
@@ -1045,7 +1053,7 @@ function generateExecuteFunction(ep: ParsedEndpoint, ctxParam?: ContextParam | n
 
   // Generate resolver call for context param
   const resolverLine = usesCtxParam
-    ? `const ${ctxParam!.name} = await resolve${ctxParam!.titleName}(params.${ctxParam!.name} as string | undefined);\n      `
+    ? `const ${ctxParam?.name} = await resolve${ctxParam?.titleName}(params.${ctxParam?.name} as string | undefined);\n      `
     : "";
 
   // Build URL expression with safe parameter substitution
@@ -1058,7 +1066,7 @@ function generateExecuteFunction(ep: ParsedEndpoint, ctxParam?: ContextParam | n
       if (isValidIdentifier(paramName)) {
         // Use resolved variable for context param, otherwise use params.xxx
         // Always encodeURIComponent to handle spaces, slashes, etc.
-        if (usesCtxParam && paramName === ctxParam!.name) {
+        if (usesCtxParam && paramName === ctxParam?.name) {
           return `\${encodeURIComponent(String(${paramName}))}`;
         }
         return `\${encodeURIComponent(String(params.${paramName}))}`;

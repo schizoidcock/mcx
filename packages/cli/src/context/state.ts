@@ -9,6 +9,10 @@
 
 import { MAX_BACKGROUND_TASKS, TASK_TTL_MS } from "../tools/constants.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("state");
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -145,7 +149,7 @@ function removeOverLimit(tasks: Map<string, BackgroundTask>): number {
 
   let removed = 0;
   while (tasks.size > MAX_BACKGROUND_TASKS && completed.length > 0) {
-    tasks.delete(completed.shift()![0]);
+    tasks.delete(completed.shift()?.[0]);
     removed++;
   }
   return removed;

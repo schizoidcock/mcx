@@ -1,4 +1,9 @@
 import type { Chunk } from './types.js';
+import { MAX_CHUNK_BYTES } from '../tools/constants.js';
+
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("chunker");
 
 const HEADING_REGEX = /^(#{1,4})\s+(.+)$/;
 const HORIZONTAL_RULE = /^---+$/;
@@ -211,23 +216,90 @@ export function chunkJSON(text: string, maxDepth = 3): Chunk[] {
 export function chunkContent(
   text: string,
   contentType?: 'markdown' | 'plaintext' | 'json',
-  linesPerChunk = 20
+  linesPerChunk = 20,
+  maxChunkBytes = MAX_CHUNK_BYTES
 ): Chunk[] {
-  // Use explicit content type if provided
+  let chunks: Chunk[];
+  
   if (contentType === 'markdown') {
-    return chunkMarkdown(text);
+    chunks = chunkMarkdown(text);
+  } else if (contentType === 'plaintext') {
+    chunks = chunkPlainText(text, linesPerChunk);
+  } else if (contentType === 'json') {
+    chunks = chunkJSON(text);
+  } else if (/^#{1,4}\s+.+$/m.test(text)) {
+    chunks = chunkMarkdown(text);
+  } else {
+    chunks = chunkPlainText(text, linesPerChunk);
   }
-  if (contentType === 'plaintext') {
-    return chunkPlainText(text, linesPerChunk);
-  }
-  if (contentType === 'json') {
-    return chunkJSON(text);
-  }
+  
+  return enforceChunkLimits(chunks, maxChunkBytes);
+}
 
-  // Auto-detect: markdown if it has headings (multiline regex avoids full split)
-  if (/^#{1,4}\s+.+$/m.test(text)) {
-    return chunkMarkdown(text);
+/**
+ * Find best split point within maxBytes using delimiter hierarchy.
+ * Priority: paragraph > line > sentence > word
+ */
+function findSplitPoint(text: string, maxBytes: number): number {
+  const NL = String.fromCharCode(10);
+  const delimiters = [NL + NL, NL, '. ', ' '];
+  
+  for (const delim of delimiters) {
+    const regex = new RegExp(delim, 'g');
+    let lastGoodPos = -1;
+    let match: RegExpExecArray | null;
+    
+    while ((match = regex.exec(text)) !== null) {
+      const pos = match.index + match[0].length;
+      if (Buffer.byteLength(text.slice(0, pos)) > maxBytes) break;
+      lastGoodPos = pos;
+    }
+    
+    if (lastGoodPos > 0) return lastGoodPos;
   }
+  
+  return maxBytes;
+}
 
-  return chunkPlainText(text, linesPerChunk);
+/**
+ * Split oversized chunks into smaller pieces.
+ */
+function splitOversized(chunk: Chunk, maxBytes: number): Chunk[] {
+  const bytes = Buffer.byteLength(chunk.content);
+  if (bytes <= maxBytes) return [chunk];
+  
+  const result: Chunk[] = [];
+  let remaining = chunk.content;
+  let partNum = 1;
+  
+  while (Buffer.byteLength(remaining) > maxBytes) {
+    const splitAt = findSplitPoint(remaining, maxBytes);
+    const piece = remaining.slice(0, splitAt).trim();
+    remaining = remaining.slice(splitAt).trim();
+    
+    if (piece) {
+      result.push({
+        title: `${chunk.title} (${partNum++})`,
+        content: piece,
+        hasCode: chunk.hasCode,
+      });
+    }
+  }
+  
+  if (remaining) {
+    result.push({
+      title: result.length > 0 ? `${chunk.title} (${partNum})` : chunk.title,
+      content: remaining,
+      hasCode: chunk.hasCode,
+    });
+  }
+  
+  return result;
+}
+
+/**
+ * Apply size limits to all chunks.
+ */
+export function enforceChunkLimits(chunks: Chunk[], maxBytes = MAX_CHUNK_BYTES): Chunk[] {
+  return chunks.flatMap(chunk => splitOversized(chunk, maxBytes));
 }

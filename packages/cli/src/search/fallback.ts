@@ -2,6 +2,9 @@ import type { SearchResult, SearchOptions } from './types.js';
 import type { ContentStore } from './store.js';
 import { fuzzyCorrect } from './vocabulary.js';
 
+import { createDebugger } from "../utils/debug.js";
+const debug = createDebugger("fallback");
+
 /**
  * Reciprocal Rank Fusion (RRF) constant.
  * Higher k = more weight to lower-ranked results.

@@ -170,7 +170,7 @@ async function cleanGlobalInstall(): Promise<boolean> {
       deps[CORE_PACKAGE] = "latest";
       deps[ADAPTERS_PACKAGE] = "latest";
       pkg.dependencies = deps;
-      await writeFile(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+      await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
       console.log(pc.green("  Updated package.json to latest versions"));
     }
 
@@ -209,7 +209,7 @@ async function updateCli(): Promise<boolean> {
     await runCommand("bun", ["install", "-g", `${CLI_PACKAGE}@latest`]);
     console.log(pc.green(`  Updated to ${latest}`));
     return true;
-  } catch (error) {
+  } catch (_error) {
     console.log(pc.red("  Update failed. Try running with sudo or as admin."));
     return false;
   }
@@ -261,7 +261,7 @@ async function updateProject(cwd: string): Promise<boolean> {
     await runCommand("bun", ["add", ...updates], false);
     console.log(pc.green("  Dependencies updated"));
     return true;
-  } catch (error) {
+  } catch (_error) {
     console.log(pc.red("  Failed to update dependencies"));
     return false;
   }

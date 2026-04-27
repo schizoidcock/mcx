@@ -4,6 +4,10 @@ import {
 } from "../tools/constants.js";
 import type { SearchResult, SnippetWindow } from "./types.js";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("snippets");
+
 /**
  * Extract snippet(s) around ALL search matches up to maxLen.
  * Multi-term aware: finds all terms, merges overlapping windows.
@@ -20,7 +24,7 @@ export function extractSnippet(
   if (content.includes('**')) return content.replace(/\s+/g, ' ').trim();
   
   const windows = collectMatchWindows(content, query);
-  if (windows.length === 0) return content.slice(0, maxLen) + '…';
+  if (windows.length === 0) return `${content.slice(0, maxLen)}…`;
   
   return assembleSnippets(content, windows, maxLen);
 }
@@ -71,8 +75,8 @@ function assembleSnippets(content: string, windows: SnippetWindow[], maxLen: num
 /** Format window slice with ellipsis markers */
 function formatWindow(slice: string, hasPrefix: boolean, hasSuffix: boolean): string {
   let result = slice.replace(/\s+/g, ' ').trim();
-  if (hasPrefix) result = '…' + result;
-  if (hasSuffix) result = result + '…';
+  if (hasPrefix) result = `…${result}`;
+  if (hasSuffix) result = `${result}…`;
   return result;
 }
 
@@ -146,8 +150,8 @@ function mergeWindows(windows: SnippetWindow[]): SnippetWindow[] {
 // Helper: create snippet from range with ellipsis
 function createSnippet(content: string, start: number, end: number): string {
   let snippet = content.slice(start, end);
-  if (start > 0) snippet = '...' + snippet;
-  if (end < content.length) snippet = snippet + '...';
+  if (start > 0) snippet = `...${snippet}`;
+  if (end < content.length) snippet = `${snippet}...`;
   return snippet.replace(/\s+/g, ' ').trim();
 }
 

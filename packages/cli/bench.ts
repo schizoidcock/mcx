@@ -3,7 +3,7 @@
  * MCX Benchmark - Measure execution time for common operations
  */
 
-import { readFileSync, readdirSync, statSync } from "fs";
+import { readFileSync, readdirSync, } from "fs";
 import { join } from "path";
 
 const ITERATIONS = 5;

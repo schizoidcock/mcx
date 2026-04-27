@@ -87,7 +87,7 @@ async function ensurePackageJson(cwd: string): Promise<boolean> {
       console.error(pc.dim(`  Error: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`));
       console.error(pc.yellow(`  Creating backup and reinitializing...`));
       // Create backup of corrupted file
-      await writeFile(pkgPath + ".bak", content);
+      await writeFile(`${pkgPath}.bak`, content);
       pkg = {};
     }
   } else {
@@ -119,7 +119,7 @@ async function ensurePackageJson(cwd: string): Promise<boolean> {
   }
 
   // Write package.json
-  await writeFile(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+  await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 
   if (created) {
     console.log(pc.green("  Created package.json"));

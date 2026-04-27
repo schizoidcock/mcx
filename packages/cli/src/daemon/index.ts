@@ -10,12 +10,16 @@
  * - Early returns
  */
 
-import { readFile } from 'fs/promises';
-import { existsSync } from 'fs';
-import { relative, extname, basename } from 'path';
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { relative, extname, basename } from 'node:path';
 import { getContentStore } from '../search';
 import { DAEMON_POLL_INTERVAL_MS, INDEXABLE_EXTENSIONS } from '../tools/constants.js';
 import type { FileFinder } from '@ff-labs/fff-bun';
+
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("daemon");
 
 // ============================================================================
 // Types

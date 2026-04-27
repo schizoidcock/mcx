@@ -83,9 +83,9 @@ describe('detectContextParam', () => {
     ];
     const result = detectContextParam(endpoints);
     expect(result).not.toBeNull();
-    expect(result!.name).toBe('project_id');
-    expect(result!.camelName).toBe('projectId');
-    expect(result!.titleName).toBe('ProjectId');
+    expect(result?.name).toBe('project_id');
+    expect(result?.camelName).toBe('projectId');
+    expect(result?.titleName).toBe('ProjectId');
   });
 
   test('skips generic params like {id}', () => {
@@ -114,8 +114,8 @@ describe('detectContextParam', () => {
       { path: '/projects/{project_id}/settings', method: 'get', operation: {}, methodName: 'get', category: 'general' },
     ];
     const result = detectContextParam(endpoints);
-    expect(result!.name).toBe('project_id');
-    expect(result!.count).toBe(4);
+    expect(result?.name).toBe('project_id');
+    expect(result?.count).toBe(4);
   });
 });
 

@@ -22,7 +22,7 @@ const DEFAULT_RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
  * Uses "full jitter" strategy: delay = random(0, min(cap, base * 2^attempt))
  */
 export function jitterBackoff(attempt: number, baseMs = 100, maxMs = 5000): number {
-  const exponential = Math.min(maxMs, baseMs * Math.pow(2, attempt));
+  const exponential = Math.min(maxMs, baseMs * 2 ** attempt);
   return Math.floor(Math.random() * exponential);
 }
 
@@ -74,7 +74,6 @@ export async function fetchWithRetry(
         const delay = jitterBackoff(attempt, baseDelayMs, maxDelayMs);
         onRetry?.(attempt + 1, delay, error);
         await sleep(delay);
-        continue;
       }
     }
   }
@@ -108,7 +107,6 @@ export async function withRetry<T>(
         const delay = jitterBackoff(attempt, baseDelayMs, maxDelayMs);
         onRetry?.(attempt + 1, delay, error);
         await sleep(delay);
-        continue;
       }
     }
   }

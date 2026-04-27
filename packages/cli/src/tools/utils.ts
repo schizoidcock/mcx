@@ -201,21 +201,23 @@ function buildDeltaPart(delta: number, firstDiff: number, oldCount: number, newC
 }
 
 /** Generate compact diff summary. Format: "10->15 lines ([+5] at 6-10, modified 6-10)" */
-/** Format modified lines description */
-const formatModified = (modified: number[]): string | null => {
-  if (modified.length === 0) return null;
-  if (modified.length <= 20) return `modified ${groupRanges(modified)}`;
-  return `modified ${modified.length} lines`;
-};
-
 export function diffSummary(oldContent: string, newContent: string): string {
-  const oldLines = oldContent ? oldContent.split('\n') : [];
-  const newLines = newContent ? newContent.split('\n') : [];
-  const { firstDiff, modified } = findModifiedLines(oldLines, newLines);
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  const delta = newLines.length - oldLines.length;
   
-  const delta = buildDeltaPart(newLines.length - oldLines.length, firstDiff, oldLines.length, newLines.length);
-  const mod = formatModified(modified);
-  const parts = [delta || (modified.length > 0 ? '[~]' : null), mod].filter(Boolean);
+  const { firstDiff, modified } = findModifiedLines(oldLines, newLines);
+  const parts: string[] = [];
+  
+  const deltaPart = buildDeltaPart(delta, firstDiff, oldLines.length, newLines.length);
+  if (deltaPart) parts.push(deltaPart);
+  else if (modified.length > 0) parts.push('[~]');
+  
+  if (modified.length > 0 && modified.length <= 20) {
+    parts.push(`modified ${groupRanges(modified)}`);
+  } else if (modified.length > 20) {
+    parts.push(`modified ${modified.length} lines`);
+  }
   
   const changes = parts.length > 0 ? ` (${parts.join(', ')})` : '';
   return `${oldLines.length}->${newLines.length} lines${changes}`;

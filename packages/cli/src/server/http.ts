@@ -17,6 +17,10 @@ import { createMcxServerCore } from "./core.js";
 import { getMcxHomeDir } from "../utils/paths.js";
 import { logger } from "../utils/logger.js";
 
+import { createDebugger, reloadDebugConfig } from "../utils/debug.js";
+
+const debug = createDebugger("http");
+
 // ============================================================================
 // HTTP Mode (Bun.serve)
 // ============================================================================
@@ -28,6 +32,7 @@ export async function runHttp(port: number, fffSearchPath?: string) {
 
 async function initHttpServer(port: number, fffSearchPath?: string) {
   await loadEnvFile();
+  reloadDebugConfig();
   console.error(pc.cyan(`Starting MCX MCP server (HTTP:${port})...\n`));
 
   const config = await loadConfig();
@@ -89,7 +94,7 @@ async function handleMcpPost(req: Request, transport: StreamableHTTPServerTransp
 
 function registerShutdownHandlers(cleanup: () => void): void {
   const debugLog = (msg: string) => {
-    const fs = require("fs");
+    const fs = require("node:fs");
     const logPath = path.join(getMcxHomeDir(), "logs", "debug.log");
     fs.appendFileSync(logPath, `${new Date().toISOString()} ${msg}\n`);
   };

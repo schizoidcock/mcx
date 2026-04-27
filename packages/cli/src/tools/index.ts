@@ -28,7 +28,6 @@ export { createEmptyContext } from "./types.js";
 export { formatToolResult, formatError } from "./utils.js";
 
 // Tools (extracted from serve.ts)
-export { mcxWrite } from "./write.js";
 export { mcxDoctor } from "./doctor.js";
 export { mcxUpgrade } from "./upgrade.js";
 export { mcxWatch } from "./watch.js";

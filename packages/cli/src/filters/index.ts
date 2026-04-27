@@ -19,7 +19,6 @@ export { applyDeclarativeFilter, applyHybridFilter } from "./apply.js";
 export {
   formatGitDiff,
   formatTestOutput,
-  formatLintOutput,
   formatDockerLogs,
   formatLsOutput,
   formatJsonStructure,

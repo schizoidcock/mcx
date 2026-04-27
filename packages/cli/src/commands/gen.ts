@@ -1,10 +1,9 @@
 /**
  * MCX Adapter Generator - CLI Interface
  */
-import * as path from "path";
-import * as readline from "readline";
+import * as path from "node:path";
+import * as readline from "node:readline";
 import { realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import pc from "picocolors";
 
 import { type FileFinder, isExcludedPath } from "../utils/fff";
@@ -22,6 +21,9 @@ import {
   type FilterOptions,
 } from "./gen-core";
 import { getConfigPath, getMcxHomeDir, normalizePath } from "../utils/paths";
+
+import { createDebugger } from "../utils/debug.js";
+const debug = createDebugger("cmdgen");
 
 // ============================================================================
 // Security: Path Validation
@@ -49,7 +51,7 @@ async function validateOutputPath(outputPath: string): Promise<string> {
     const realDir = await realpath(dir).catch(() => dir);
     // SECURITY: Check exact match OR path starts with dir + separator
     // This prevents prefix collision (e.g., /home/.mcx-malicious matching /home/.mcx)
-    if (realParent === realDir || realParent.startsWith(realDir + "/") || realParent.startsWith(realDir + "\\")) {
+    if (realParent === realDir || realParent.startsWith(`${realDir}/`) || realParent.startsWith(`${realDir}\\`)) {
       return absolutePath;
     }
   }
@@ -406,7 +408,7 @@ async function promptImportAdapter(adapterName: string, adapterPath: string): Pr
   const match = newContent.match(adaptersRegex);
 
   if (match) {
-    let currentAdapters = match[1];
+    const currentAdapters = match[1];
 
     // Remove comments and clean up
     const cleanedAdapters = currentAdapters
@@ -448,7 +450,7 @@ function getRelativeImportPath(configPath: string, adapterPath: string): string 
   relative = normalizePath(relative);
   relative = relative.replace(/\.ts$/, "");
   if (!relative.startsWith(".")) {
-    relative = "./" + relative;
+    relative = `./${relative}`;
   }
   return relative;
 }

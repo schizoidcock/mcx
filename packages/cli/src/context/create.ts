@@ -13,6 +13,9 @@ import { getState as getVariablesState } from "./variables.js";
   import { getMcxHomeDir } from "../utils/paths.js";
   import { join } from "node:path";
   import { MAX_WATCHED_PROJECTS } from "../tools/constants.js";
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("context");
 
   // ============================================================================
   // Configuration
@@ -35,20 +38,26 @@ import { getState as getVariablesState } from "./variables.js";
   // ============================================================================
 
   export const FILE_HELPERS_CODE = `
-  // Escape helpers - use NL instead of '\\n' in strings
-  const NL = '\\n';
-  const TAB = '\\t';
+  // ============================================================================
+  // Global constants for FILE_HELPERS_CODE
+  // NL, TAB = actual characters (use in split/join)
+  // ESC_N, ESC_T = literal escape sequences (for code with backslash-n)
+  // ============================================================================
+  const NL = String.fromCharCode(10);
+  const TAB = String.fromCharCode(9);
+  const ESC_N = String.fromCharCode(92) + 'n';  // Literal backslash-n for code
+  const ESC_T = String.fromCharCode(92) + 't';  // Literal backslash-t for code
   const isNumbered = (lines) => lines.length > 0 && /^\\d+:\\s/.test(lines[0]);
   const around = (stored, line, ctx = 10) => {
     const start = Math.max(0, line - ctx - 1);
     const end = Math.min(stored.lines.length, line + ctx);
-    return stored.lines.slice(start, end).join('\\n');
+    return stored.lines.slice(start, end).join(NL);
   };
   const lines = (stored, start, end) => {
     if (!stored?.lines) throw new Error('not a file variable');
     const s = Math.max(0, start - 1);
     const e = Math.min(stored.lines.length, end);
-    return stored.lines.slice(s, e).join('\\n');
+    return stored.lines.slice(s, e).join(NL);
   };
   const grep = (stored, pattern, ctx = 0) => {
     if (!stored?.lines) throw new Error('not a file variable');
@@ -61,36 +70,32 @@ import { getState as getVariablesState } from "./variables.js";
       matches.push(...stored.lines.slice(start, end));
       if (ctx > 0) matches.push('---');
     });
-    return matches.length > 0 ? matches.join('\\n') : 'No matches';
+    return matches.length > 0 ? matches.join(NL) : 'No matches';
   };
+  const countBraces = (s) => (s.match(/\{/g) || []).length - (s.match(/\}/g) || []).length;
   const block = (stored, pattern) => {
     if (!stored?.lines) throw new Error('not a file variable');
     const start = stored.lines.findIndex(l => l.includes(pattern));
     if (start < 0) return 'Pattern not found: ' + pattern;
-    let depth = 0;
-    let entered = false;
-    const result = [];
+    let depth = 0, entered = false;
     for (let i = start; i < stored.lines.length; i++) {
-      const line = stored.lines[i];
-      const content = line.replace(/^\\d+:\\s*/, '');
-      result.push(line);
-      depth += (content.match(/\\{/g) || []).length;
-      depth -= (content.match(/\\}/g) || []).length;
+      depth += countBraces(stored.lines[i].replace(/^\\d+:\\s*/, ''));
       if (depth > 0) entered = true;
-      if (entered && depth <= 0) break;
+      if (entered && depth <= 0) return stored.lines.slice(start, i + 1).join(NL);
     }
-    return result.join('\\n');
+    return stored.lines.slice(start).join(NL);
   };
+  const OUTLINE_PATTERNS = [
+    /^\\d+:\\s*(export\\s+)?(async\\s+)?function\\s+\\w+/,
+    /^\\d+:\\s*(export\\s+)?(const|let|var)\\s+\\w+\\s*=/,
+    /^\\d+:\\s*(export\\s+)?class\\s+\\w+/,
+    /^\\d+:\\s*(export\\s+)?interface\\s+\\w+/,
+    /^\\d+:\\s*(export\\s+)?type\\s+\\w+/,
+  ];
   const outline = (stored, opts = {}) => {
     if (!stored?.lines) throw new Error('not a file variable');
-    const patterns = [
-      /^\\d+:\\s*(export\\s+)?(async\\s+)?function\\s+\\w+/,
-      /^\\d+:\\s*(export\\s+)?(const|let|var)\\s+\\w+\\s*=/,
-      /^\\d+:\\s*(export\\s+)?class\\s+\\w+/,
-      /^\\d+:\\s*(export\\s+)?interface\\s+\\w+/,
-      /^\\d+:\\s*(export\\s+)?type\\s+\\w+/,
-    ];
-    return stored.lines.filter(line => patterns.some(p => p.test(line))).slice(0, opts.limit || 50).join('\\n');
+    const matches = stored.lines.filter(l => OUTLINE_PATTERNS.some(p => p.test(l)));
+    return matches.slice(0, opts.limit || 50).join(NL);
   };
   const keys = (obj) => obj ? Object.keys(obj) : [];
   const values = (obj) => obj ? Object.values(obj) : [];
@@ -105,14 +110,45 @@ import { getState as getVariablesState } from "./variables.js";
     return result;
   };
   const tree = (obj, depth = 2, indent = 0) => {
-    if (!obj || typeof obj !== 'object' || depth <= 0) return typeof obj === 'string' ? '"..."' : String(obj);
-    const spaces = '  '.repeat(indent);
+    if (obj === null || obj === undefined) return 'null';
+    if (typeof obj !== 'object') return typeof obj === 'string' ? '"..."' : String(obj);
+    if (depth <= 0) return Array.isArray(obj) ? '[...]' : '{...}';
     if (Array.isArray(obj)) return '[' + obj.length + ' items]';
+    const spaces = '  '.repeat(indent);
     const entries = Object.entries(obj).slice(0, 10);
+    const extra = Object.keys(obj).length - 10;
     const lines = entries.map(([k, v]) => spaces + '  ' + k + ': ' + tree(v, depth - 1, indent + 1));
-    if (Object.keys(obj).length > 10) lines.push(spaces + '  ... +' + (Object.keys(obj).length - 10) + ' more');
-    return '{\\n' + lines.join(',\\n') + '\\n' + spaces + '}';
+    if (extra > 0) lines.push(spaces + '  ... +' + extra + ' more');
+    return '{' + NL + lines.join(',' + NL) + NL + spaces + '}';
   };
+  // splice: edit lines with integrity check
+  const splice = (stored, startLine, deleteCount, ...newContent) => {
+    if (!stored?.lines) throw new Error("not a file variable");
+    const rawLines = stored.raw.split(NL);
+    const start = Math.max(0, Math.min(startLine - 1, rawLines.length));
+    const delCount = Math.max(0, Math.min(deleteCount, rawLines.length - start));
+    const toInsert = newContent.flatMap(arg => String(arg).split(NL));
+    const expected = rawLines.length - delCount + toInsert.length;
+    rawLines.splice(start, delCount, ...toInsert);
+    if (rawLines.length !== expected) throw new Error('splice: expected ' + expected + ', got ' + rawLines.length);
+    return rawLines.join(NL);
+  };
+  // spliceInfo: preview splice operation
+  const spliceInfo = (stored, startLine, deleteCount, ...newContent) => {
+    if (!stored?.lines) throw new Error("not a file variable");
+    const rawLines = stored.raw.split(NL);
+    const start = Math.max(0, Math.min(startLine - 1, rawLines.length));
+    const delCount = Math.max(0, Math.min(deleteCount, rawLines.length - start));
+    const toInsert = newContent.flatMap(arg => String(arg).split(NL));
+    const deleted = rawLines.slice(start, start + delCount);
+    const expanded = toInsert.length !== newContent.length ? ' (from ' + newContent.length + ' args)' : '';
+    return [
+      'SPLICE: ' + rawLines.length + ' -> ' + (rawLines.length - delCount + toInsert.length) + ' lines',
+      'DELETE ' + delCount + ': ' + deleted.slice(0, 3).map(l => l.slice(0, 40)).join(' | ') + (deleted.length > 3 ? '...' : ''),
+      'INSERT ' + toInsert.length + expanded + ': ' + toInsert.slice(0, 3).map(l => l.slice(0, 40)).join(' | ') + (toInsert.length > 3 ? '...' : '')
+    ].join(NL);
+  };
+  
   `;
 
   // Line count for filtering helper logs

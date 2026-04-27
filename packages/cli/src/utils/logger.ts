@@ -35,7 +35,6 @@ const TOOL_CATEGORY: Record<string, string> = {
   mcx_execute: "execute",
   mcx_file: "file",
 
-  mcx_write: "file",
   mcx_grep: "search",
   mcx_find: "search",
   mcx_search: "search",
@@ -66,7 +65,11 @@ function getDateStr(): string {
 }
 
 function getTimeStr(): string {
-  return new Date().toISOString().slice(11, 19); // HH:MM:SS
+  const d = new Date();
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s}`;
 }
 
 function escapeValue(val: unknown): string {
@@ -74,7 +77,7 @@ function escapeValue(val: unknown): string {
   const s = String(val);
   // Escape commas and newlines
   if (s.includes(",") || s.includes("\n") || s.includes('"')) {
-    return '"' + s.replace(/"/g, '""') + '"';
+    return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
 }
@@ -140,7 +143,7 @@ async function writeToCategory(category: string, event: Record<string, unknown>)
     }
 
     // Write CSV values line
-    const line = toCSVLine(fields, event) + "\n";
+    const line = `${toCSVLine(fields, event)}\n`;
     await appendFile(file, line);
   } catch { /* best effort */ }
 }

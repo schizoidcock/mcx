@@ -76,7 +76,6 @@ function handleLineComment(char: string, state: ScanState): boolean {
 }
 
 function handleBlockComment(content: string, state: ScanState): boolean {
-  if (!state.inBlockComment) return false;
   if (content[state.i] === "*" && content[state.i + 1] === "/") {
     state.inBlockComment = false;
     state.i++;
@@ -84,8 +83,12 @@ function handleBlockComment(content: string, state: ScanState): boolean {
   return true;
 }
 
-function handleRegex(content: string, state: ScanState): boolean {
+function handleRegex(content: string, state: ScanState, regexWithNewline: number[]): boolean {
   if (!state.inRegex) return false;
+  // Detect literal newline in regex
+  if (content[state.i] === '\n') {
+    if (!regexWithNewline.includes(state.line)) regexWithNewline.push(state.line);
+  }
   const char = content[state.i];
   if (state.escaped) {
     state.escaped = false;
@@ -127,7 +130,6 @@ function detectRegex(content: string, state: ScanState): boolean {
   const prev = state.i > 0 ? content[state.i - 1] : "";
   if (/[a-zA-Z0-9_$)\]]/.test(prev)) return false;
   
-  state.inRegex = true;
   return true;
 }
 
@@ -137,8 +139,7 @@ function handleTemplateInterpolation(content: string, state: ScanState): boolean
   if (content[state.i] !== "$" || content[state.i + 1] !== "{") return false;
   
   state.templateDepth++;
-  state.i++;
-  return true;
+  return true;  // Caller handles i increment
 }
 
 function handleStringChar(content: string, state: ScanState): void {
@@ -191,49 +192,92 @@ function handleCloseBrace(
   state: ScanState,
   countBraces: boolean
 ): void {
+  if (!countBraces) return;
   const matchIdx = findLastIndex(openStack, b => b.depth === state.templateDepth);
   if (matchIdx >= 0) return void openStack.splice(matchIdx, 1);
   if (state.templateDepth > 0) return void state.templateDepth--;
   if (countBraces) unmatchedLines.push(state.line);
 }
 
-export function checkBraceBalance(content: string): BraceResult {
+
+// ============================================================================
+// Unified Scanner Result
+// ============================================================================
+
+export interface ScanResult {
+  regexWithNewline: number[]; // Lines with regex containing literal newline
+  fixed: string;
+  braceBalance: number;
+  unclosedLines: number[];
+  unmatchedLines: number[];
+}
+
+// ============================================================================
+// Unified Scanner (ONE pass - Linus principle)
+// ============================================================================
+
+export function scanAndValidate(content: string): ScanResult {
   const state = createState();
-  // Track {line, depth} to distinguish object braces from interpolation close
+  const NL = String.fromCharCode(10);
+  const BS = String.fromCharCode(92);
+  const BT = String.fromCharCode(96);
+  
+  const resultLines: string[] = [];
+  let currentLine = "";
   const openStack: Array<{line: number; depth: number}> = [];
   const unmatchedLines: number[] = [];
+  const regexWithNewline: number[] = [];
 
   while (state.i < content.length) {
     const char = content[state.i];
+    const prevI = state.i;
 
-    // Skip non-code sections
-    if (handleNewline(char, state)) { state.i++; continue; }
-    if (handleLineComment(char, state)) { state.i++; continue; }
-    if (handleBlockComment(content, state)) { state.i++; continue; }
-    if (handleRegex(content, state)) { state.i++; continue; }
-    if (detectComment(content, state)) { state.i++; continue; }
-    if (detectRegex(content, state)) { state.i++; continue; }
-    if (handleTemplateInterpolation(content, state)) { state.i++; continue; }
+    if (char === NL) {
+      const esc = inString(state) && currentStringChar(state) !== BT &&
+                  !state.inLineComment && !state.inBlockComment && !state.inRegex;
+      if (esc) { currentLine += BS + "n"; }
+      else { resultLines.push(currentLine); currentLine = ""; state.inLineComment = false; }
+      state.line++;
+      state.i++;
+      continue;
+    }
 
-    // Handle strings
+    if (handleLineComment(char, state)) { currentLine += char; state.i++; continue; }
+    if (handleBlockComment(content, state)) { currentLine += content.slice(prevI, state.i + 1); state.i++; continue; }
+    if (detectComment(content, state)) { currentLine += char; state.i++; continue; }
+    if (detectRegex(content, state)) { currentLine += char; state.i++; continue; }
+    if (handleTemplateInterpolation(content, state)) { currentLine += "${"; state.i += 2; continue; }
+
     handleStringChar(content, state);
-    if (handleStringContent(content, state)) { state.i++; continue; }
+    if (handleStringContent(content, state)) { currentLine += char; state.i++; continue; }
 
-    // Count braces (only when not in string, or inside template interpolation)
     const countBraces = !inString(state) || state.templateDepth > 0;
-    if (countBraces && char === "{") {
-      openStack.push({line: state.line, depth: state.templateDepth});
-    }
-    if (char === "}") {
-      handleCloseBrace(openStack, unmatchedLines, state, countBraces);
-    }
+    if (char === "}") handleCloseBrace(openStack, unmatchedLines, state, countBraces);
 
+    currentLine += char;
     state.i++;
   }
 
+  if (currentLine) resultLines.push(currentLine);
+
   return {
-    balance: openStack.length - unmatchedLines.length,
+    regexWithNewline,
+    fixed: resultLines.join(NL),
+    braceBalance: openStack.length - unmatchedLines.length,
     unclosedLines: openStack.map(b => b.line),
     unmatchedLines,
   };
+}
+
+// ============================================================================
+// Public API (backward compatible)
+// ============================================================================
+
+export function checkBraceBalance(content: string): BraceResult {
+  const r = scanAndValidate(content);
+  return { balance: r.braceBalance, unclosedLines: r.unclosedLines, unmatchedLines: r.unmatchedLines };
+}
+
+export function fixBrokenStrings(content: string): string {
+  return scanAndValidate(content).fixed;
 }

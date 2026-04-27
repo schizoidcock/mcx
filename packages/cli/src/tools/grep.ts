@@ -8,13 +8,14 @@
 import { resolve, isAbsolute } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatError } from "./utils.js";
-import { formatStored } from "../utils/truncate.js";
 import { setVariable } from "../context/variables.js";
 import { formatGrepMCX, type GrepMatch } from "./format-grep.js";
 import { trackToolUsage, updateProximityContext, getProximityScore } from "../context/tracking.js";
 import { eventTips, errorTips } from "../context/tips.js";
-import { initializeFinder, getFinderForPath } from "../context/create.js";
+import { validationErrors } from "../context/messages/index.js";
+import { getFinderForPath } from "../context/create.js";
 import { GREP_PAGE_SIZE } from "./constants.js";
+import { debugGrep as debug } from "../utils/debug.js";
 
 // ============================================================================
 // Types
@@ -143,7 +144,7 @@ function validateGrepParams(params: GrepParams): { ok: true; data: ValidatedGrep
   const query = params.query || params.pattern;
   
   if (!query) {
-    return { ok: false, error: formatError("Missing query or pattern parameter") };
+    return { ok: false, error: formatError(validationErrors.missing("query or pattern")) };
   }
   
   const parsed = parseGrepQuery(query);
@@ -157,7 +158,7 @@ function validateGrepParams(params: GrepParams): { ok: true; data: ValidatedGrep
   }
   
   if (!isAbsolute(params.path)) {
-    return { ok: false, error: formatError(`Absolute path required. Got: "${params.path}"`) };
+    return { ok: false, error: formatError(validationErrors.absolutePath(params.path)) };
   }
 
   // Detect file path (has extension) - grep needs directory
@@ -172,9 +173,10 @@ async function handleGrep(
   ctx: ToolContext,
   params: GrepParams
 ): Promise<McpResult> {
+  const span = debug.span("handleGrep", { query: params.query || params.pattern, path: params.path, mode: params.mode });
   // Validate
   const v = validateGrepParams(params);
-  if (!v.ok) return v.error;
+  if (!v.ok) { span.end({ error: "validation" }); return v.error; }
   const { parsed, path: basePath } = v.data;
 
   // Get finder for search path
@@ -216,11 +218,13 @@ async function handleGrep(
       return eventTips.grepNoMatches(parsed.searchTerm, results.value.totalFilesSearched);
     }
 
+    span.end({ matches: items.length, files: results.value.totalFilesSearched });
     return processGrepResults(ctx, items, parsed.searchTerm, 
       results.value.totalMatched, results.value.totalFilesSearched);
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    span.end({ error: msg });
     return formatError(`Grep failed: ${msg}`);
   }
 }

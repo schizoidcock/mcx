@@ -1,8 +1,8 @@
 /**
  * MCX Adapter Generator - React TUI
  */
-import * as path from "path";
-import { stat } from "fs/promises";
+import * as path from "node:path";
+import { stat } from "node:fs/promises";
 import * as nf from "@m234/nerd-fonts";
 import { useState, useEffect, useCallback, memo } from "react";
 import { createCliRenderer } from "@opentui/core";
@@ -18,7 +18,6 @@ import {
   generateAdapter,
   generateSDKAdapter,
   type SourceAnalysis,
-  type DetectedAuth,
 } from "./gen-core";
 import { normalizePath } from "../utils/paths";
 
@@ -32,7 +31,7 @@ function getRelativeImportPath(configPath: string, adapterPath: string): string 
   relative = normalizePath(relative);
   relative = relative.replace(/\.ts$/, "");
   if (!relative.startsWith(".")) {
-    relative = "./" + relative;
+    relative = `./${relative}`;
   }
   return relative;
 }
@@ -447,7 +446,7 @@ const SourcePathStep = memo(function SourcePathStep({
     }, 150);
 
     return () => clearTimeout(timer);
-  }, [inputValue, mode]);
+  }, [inputValue, mode, currentPath]);
 
   // Auto-select file in list when inputValue matches an entry
   useEffect(() => {
@@ -475,7 +474,7 @@ const SourcePathStep = memo(function SourcePathStep({
     if (isWindows) {
       getWindowsDrives().then(setDrives);
     }
-  }, []);
+  }, [isWindows]);
 
   // Load directory contents
   useEffect(() => {
@@ -766,7 +765,7 @@ const OutputPathStep = memo(function OutputPathStep({
     if (isWindows) {
       getWindowsDrives().then(setDrives);
     }
-  }, []);
+  }, [isWindows]);
 
   // Load directory contents
   useEffect(() => {
@@ -1064,7 +1063,7 @@ const AnalysisSummaryStep = memo(function AnalysisSummaryStep({
         </box>
         <box flexDirection="row" gap={1}>
           <text fg={COLORS.dim}>Path:</text>
-          <text fg={COLORS.text}>{sourcePath.length > 50 ? "..." + sourcePath.slice(-47) : sourcePath}</text>
+          <text fg={COLORS.text}>{sourcePath.length > 50 ? `...${sourcePath.slice(-47)}` : sourcePath}</text>
         </box>
         <text> </text>
 
@@ -1097,7 +1096,7 @@ const AnalysisSummaryStep = memo(function AnalysisSummaryStep({
               paddingLeft={2}
             >
               {categories.map(([cat, eps]) => {
-                const displayCat = cat.length > 30 ? cat.slice(0, 27) + "..." : cat;
+                const displayCat = cat.length > 30 ? `${cat.slice(0, 27)}...` : cat;
                 return <text key={cat} fg={COLORS.text}>{`• ${displayCat}: ${eps.length}`}</text>;
               })}
             </scrollbox>
@@ -1157,8 +1156,8 @@ function GeneratorWizard({ onComplete }: { onComplete: (result: GeneratorResult 
   const [adapterName, setAdapterName] = useState("");
   const [outputPath, setOutputPath] = useState("");
   const [authOverride, setAuthOverride] = useState<string | undefined>(undefined);
-  const [baseUrl, setBaseUrl] = useState<string | undefined>(undefined);
-  const [readOnly, setReadOnly] = useState(false);
+  const [_baseUrl, setBaseUrl] = useState<string | undefined>(undefined);
+  const [_readOnly, _setReadOnly] = useState(false);
   const [generatedFile, setGeneratedFile] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<SourceAnalysis | null>(null);
   const [configStatus, setConfigStatus] = useState<"checking" | "none" | "exists" | "imported">("checking");
@@ -1205,7 +1204,7 @@ function GeneratorWizard({ onComplete }: { onComplete: (result: GeneratorResult 
 
       const adapterCode = analysis?.sdk
         ? generateSDKAdapter(adapterName, analysis.endpoints, analysis.sdk)
-        : generateAdapter(adapterName, analysis!.endpoints, finalBaseUrl, finalAuth);
+        : generateAdapter(adapterName, analysis?.endpoints, finalBaseUrl, finalAuth);
 
       await Bun.write(finalOutputPath, adapterCode);
 
@@ -1396,8 +1395,8 @@ function GeneratorWizard({ onComplete }: { onComplete: (result: GeneratorResult 
             const finalAuth = authOverride || analysis?.auth;
 
             const adapterCode = analysis?.sdk
-              ? generateSDKAdapter(adapterName, analysis!.endpoints, analysis!.sdk)
-              : generateAdapter(adapterName, analysis!.endpoints, value, finalAuth);
+              ? generateSDKAdapter(adapterName, analysis?.endpoints, analysis?.sdk)
+              : generateAdapter(adapterName, analysis?.endpoints, value, finalAuth);
 
             await Bun.write(outputPath, adapterCode);
 
@@ -1468,7 +1467,7 @@ function GeneratorWizard({ onComplete }: { onComplete: (result: GeneratorResult 
       const match = newContent.match(adaptersRegex);
 
       if (match) {
-        let currentAdapters = match[1];
+        const currentAdapters = match[1];
 
         // Remove comments and clean up
         const cleanedAdapters = currentAdapters

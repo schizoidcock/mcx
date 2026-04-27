@@ -9,9 +9,9 @@ import { resolve, isAbsolute, dirname, basename, relative } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { formatError } from "./utils.js";
 
-import { compactPath, normalizePath } from "../utils/paths.js";
+import { normalizePath } from "../utils/paths.js";
 import { trackToolUsage, updateProximityContext, getProximityScore } from "../context/tracking.js";
-import { initializeFinder, getFinderForPath } from "../context/create.js";
+import { getFinderForPath } from "../context/create.js";
 import {
   IMPORT_REGEX,
   RESOLVE_EXTENSIONS,
@@ -20,7 +20,13 @@ import {
   RELATED_PAGE_SIZE,
   normalizeScore,
 } from "./constants.js";
+import { debugFind as debug } from "../utils/debug.js";
+import { validationErrors } from "../context/messages/index.js";
 
+// Type labels for find results (Linus: table over ternary chain)
+const TYPE_LABELS = { dirs: "directories", all: "items", files: "files" } as const;
+
+// ============================================================================
 // ============================================================================
 // Types
 // ============================================================================
@@ -31,6 +37,7 @@ export interface FindParams {
   path?: string;     // Directory to search
   related?: string;  // Find related files (imports/importers)
   limit?: number;    // Max results
+  includeIgnored?: boolean;  // Include .gitignore'd files (uses glob fallback)
 }
 
 interface ImporterMatch {
@@ -54,7 +61,7 @@ function validateFindParams(params: FindParams): { ok: true; data: ValidatedFind
   
   if (!query) {
     return { ok: false, error: formatError(
-      "Missing query or pattern parameter",
+      validationErrors.missing("query or pattern"),
       "Example: mcx_find({ query: '*.ts' }) or mcx_find({ related: 'file.ts' })"
     )};
   }
@@ -82,6 +89,12 @@ function parseQueryPath(
   if (lastSlash <= 0) return { searchPath: resolve(basePath), searchQuery: query };
   
   const pathPart = query.slice(0, lastSlash);
+  
+  // If pathPart is only wildcards (e.g., "**"), keep query intact and use basePath
+  if (/^[*?]+$/.test(pathPart)) {
+    return { searchPath: resolve(basePath), searchQuery: query };
+  }
+  
   if (!isAbsolute(pathPart) && !pathPart.includes("*") && !pathPart.includes("?")) {
     return formatError(
       `Absolute path required. Got: "${pathPart}"`,
@@ -104,17 +117,37 @@ function scoreAndSortFiles<T extends { relativePath: string }>(
   return scored.sort((a, b) => b.score - a.score).map(s => s.file);
 }
 
+/** Fallback search using Bun.Glob (ignores .gitignore) */
+async function globFallbackSearch(
+  searchPath: string,
+  query: string,
+  limit: number
+): Promise<Array<{ relativePath: string }>> {
+  const hasRecursive = query.includes('**/');
+  const pattern = hasRecursive ? query : `**/${query.includes('*') ? query : `*${query}*`}`;
+  const glob = new Bun.Glob(pattern);
+  const results: Array<{ relativePath: string }> = [];
+  
+  for await (const path of glob.scan({ cwd: searchPath, onlyFiles: true })) {
+    results.push({ relativePath: path });
+    if (results.length >= limit * 2) break;
+  }
+  return results;
+}
+
 /** Format find results (Linus: extract formatting) */
 function formatFindResults(
   files: Array<{ relativePath: string; status?: string }>,
   fffScores: Array<{ total?: number }> | undefined,
-  limit: number
+  limit: number,
+  type: "files" | "dirs" | "all" = "files"
 ): string {
   const sorted = scoreAndSortFiles(files, fffScores);
   const toShow = sorted.slice(0, limit);
   const hidden = files.length - toShow.length;
+  const label = TYPE_LABELS[type];
 
-  const lines = [`Found ${files.length} files${hidden > 0 ? ` (showing ${limit}, +${hidden} hidden)` : ""}:`, ""];
+  const lines = [`Found ${files.length} ${label}${hidden > 0 ? ` (showing ${limit}, +${hidden} hidden)` : ""}:`];
   for (const file of toShow) {
     let line = file.relativePath;
     if (file.status === "modified") line += " ★";
@@ -128,9 +161,9 @@ async function handleFind(
   ctx: ToolContext,
   params: FindParams
 ): Promise<McpResult> {
+  const span = debug.span("handleFind", { query: params.query || params.pattern, path: params.path, type: params.type });
   // Related files mode (different flow)
-  if (params.related) return handleFindRelated(ctx, params.related);
-
+  if (params.related) { span.end({ mode: "related" }); return handleFindRelated(ctx, params.related); }
   // Validate
   const v = validateFindParams(params);
   if (!v.ok) return v.error;
@@ -140,6 +173,19 @@ async function handleFind(
   const parsed = parseQueryPath(query, basePath);
   if ('content' in parsed) return parsed; // Error result
   const { searchPath, searchQuery } = parsed;
+
+  // Fallback for gitignored files (Linus: single code path when possible)
+  if (params.includeIgnored) {
+    const files = await globFallbackSearch(searchPath, searchQuery, limit);
+    trackToolUsage("mcx_find");
+    if (files.length === 0) {
+      span.end({ matches: 0, mode: "glob" });
+      return `No files matching "${query}" (glob search, includes ignored)
+-> Try: broader pattern`;
+    }
+    span.end({ matches: files.length, mode: "glob" });
+    return formatFindResults(files, undefined, limit, "files");
+  }
 
   try {
     const finder = await getFinderForPath(ctx, searchPath);
@@ -156,7 +202,11 @@ async function handleFind(
       return formatError(`Search failed: ${results.error}`);
     }
 
-    const files = results.value.items;
+    // Normalize items (mixed returns {type, item}, others return item directly)
+    // NOTE: fff mixedSearch bug - only returns files, not directories (v0.6.4)
+    const files = searchType === "all"
+      ? results.value.items.map((m: { item: unknown }) => m.item)
+      : results.value.items;
     const fffScores = results.value.scores || [];
 
     // Track usage
@@ -170,14 +220,18 @@ async function handleFind(
 
     // No matches
     if (files.length === 0) {
-      const typeLabel = searchType === "dirs" ? "directories" : searchType === "all" ? "files/dirs" : "files";
-      return `No ${typeLabel} matching "${query}" (searched: ${results.value.totalMatched || 0})\n-> Try: broader pattern or different path`;
+      span.end({ matches: 0, searchType });
+      const typeLabel = TYPE_LABELS[searchType];
+      return `No ${typeLabel} matching "${query}" (searched: ${results.value.totalMatched || 0})
+-> Try: broader pattern or different path`;
     }
 
-    return formatFindResults(files, fffScores, limit);
+    span.end({ matches: files.length, searchType });
+    return formatFindResults(files, fffScores, limit, searchType);
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    span.end({ error: msg });
     return formatError(`Find failed: ${msg}`);
   }
 }
@@ -301,8 +355,9 @@ async function getSiblings(targetDir: string, target: string, basePath: string):
 // ============================================================================
 
 async function handleFindRelated(ctx: ToolContext, targetFile: string): Promise<McpResult> {
+  const span = debug.span("handleFindRelated", { targetFile });
   const target = isAbsolute(targetFile) ? targetFile : resolve(process.cwd(), targetFile);
-  if (!await Bun.file(target).exists()) return formatError(`File not found: ${targetFile}`);
+  if (!await Bun.file(target).exists()) { span.end({ error: "not found" }); return formatError(`File not found: ${targetFile}`); }
 
   const targetDir = dirname(target);
   const basePath = await findProjectRoot(targetDir);
@@ -330,6 +385,7 @@ async function handleFindRelated(ctx: ToolContext, targetFile: string): Promise<
     lines.push("No related files found.");
   }
 
+  span.end({ imports: imports.length, importers: importers.length, siblings: siblings.length });
   return lines.join("\n");
 }
 
@@ -349,6 +405,7 @@ Examples:
 - mcx_find({ query: "src", type: "dirs", path: "/project" }) - Find directories
 - mcx_find({ query: "config", type: "all", path: "/project" }) - Files and dirs
 - mcx_find({ related: "serve.ts", path: "/project" }) - Find imports/importers
+- mcx_find({ query: "audit", includeIgnored: true, path: "/project" }) - Include .gitignore'd
 
 Query syntax: "file.ts", "*.ts", "!test", "status:modified"
 Path is REQUIRED (absolute path to project directory)`,
@@ -382,6 +439,11 @@ Path is REQUIRED (absolute path to project directory)`,
         enum: ["files", "dirs", "all"],
         default: "files",
         description: "Search type: files, dirs, or all",
+      },
+      includeIgnored: {
+        type: "boolean",
+        default: false,
+        description: "Include .gitignore'd files (uses glob fallback)",
       },
     },
   },

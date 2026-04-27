@@ -5,6 +5,9 @@
  */
 
 import type { ToolDefinition, McpResult } from "./types.js";
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("upgrade");
 
 
 // ============================================================================
@@ -12,13 +15,14 @@ import type { ToolDefinition, McpResult } from "./types.js";
 // ============================================================================
 
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface UpgradeParams {}
+export type UpgradeParams = {}
 
 // ============================================================================
 // Handler
 // ============================================================================
 
 async function handleUpgrade(): Promise<McpResult> {
+  debug.debug("handleUpgrade");
   const pkg = await import("../../package.json");
   const currentVersion = pkg.version;
   const upgradeCmd = "bun add -g @papicandela/mcx-cli@latest";

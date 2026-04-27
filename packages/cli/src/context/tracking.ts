@@ -8,6 +8,9 @@
 
 import type { SessionWorkflow } from "../tools/types.js";
 import { getVariableSummary } from "./variables.js";
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("tracking");
 
 // ============================================================================
 // Constants
@@ -37,11 +40,11 @@ const workflow: SessionWorkflow = {
 /**
  * Record a tool invocation for pattern analysis.
  */
-export function trackToolUsage(tool: string, file?: string, success: boolean = true): void {
+export function trackToolUsage(tool: string, file?: string): void {
   const now = Date.now();
   
   // Add to recent tools
-  workflow.lastTools.push({ tool, file, timestamp: now, success });
+  workflow.lastTools.push({ tool, file, timestamp: now });
   
   // Keep only recent entries
   if (workflow.lastTools.length > MAX_RECENT_TOOLS) {
@@ -62,16 +65,6 @@ export function trackToolUsage(tool: string, file?: string, success: boolean = t
  */
 export function getRecentTools(n: number = 5): Array<{ tool: string; file?: string }> {
   return workflow.lastTools.slice(-n).map(t => ({ tool: t.tool, file: t.file }));
-}
-
-
-/**
- * Check if the last tool invocation was successful.
- */
-export function wasLastToolSuccessful(): boolean {
-  // Check the PREVIOUS tool (second to last), since current is already tracked
-  const prev = workflow.lastTools[workflow.lastTools.length - 2];
-  return prev?.success ?? true;
 }
 
 // ============================================================================
@@ -134,20 +127,30 @@ export function getToolSuggestions(tool: string): ToolSuggestion[] {
  * Update proximity context with recent files and patterns.
  * Used for boosting search results near recently accessed content.
  */
-/** Move items to front of array (MRU pattern) */
-const moveToFront = (arr: string[], items: string[], max: number): void => {
-  for (const item of items) {
-    const idx = arr.indexOf(item);
-    if (idx >= 0) arr.splice(idx, 1);
-    arr.unshift(item);
-  }
-  if (arr.length > max) arr.length = max;
-};
-
 export function updateProximityContext(files: string[], patterns: string[]): void {
   const ctx = workflow.proximityContext;
-  moveToFront(ctx.recentFiles, files, MAX_RECENT_FILES);
-  moveToFront(ctx.recentPatterns, patterns, MAX_RECENT_PATTERNS);
+  
+  // Add files (most recent first)
+  for (const f of files) {
+    const idx = ctx.recentFiles.indexOf(f);
+    if (idx >= 0) ctx.recentFiles.splice(idx, 1);
+    ctx.recentFiles.unshift(f);
+  }
+  
+  // Add patterns
+  for (const p of patterns) {
+    const idx = ctx.recentPatterns.indexOf(p);
+    if (idx >= 0) ctx.recentPatterns.splice(idx, 1);
+    ctx.recentPatterns.unshift(p);
+  }
+  
+  // Trim to max
+  if (ctx.recentFiles.length > MAX_RECENT_FILES) {
+    ctx.recentFiles.length = MAX_RECENT_FILES;
+  }
+  if (ctx.recentPatterns.length > MAX_RECENT_PATTERNS) {
+    ctx.recentPatterns.length = MAX_RECENT_PATTERNS;
+  }
 }
 
 /**
@@ -252,14 +255,6 @@ const METHOD_PATTERN = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]
 const methodUsage = new Map<string, number>();
 
 /** Track adapter method calls in code (frecency) */
-/** Evict least frequently used entry from map */
-const evictLFU = <K, V extends number>(map: Map<K, V>, cap: number): void => {
-  if (map.size <= cap) return;
-  let minKey: K | null = null, minVal = Infinity;
-  for (const [k, v] of map) if (v < minVal) { minKey = k; minVal = v; }
-  if (minKey !== null) map.delete(minKey);
-};
-
 export function trackMethodUsage(code: string, adapters: Record<string, unknown>): void {
   METHOD_PATTERN.lastIndex = 0;
   let match;
@@ -270,7 +265,14 @@ export function trackMethodUsage(code: string, adapters: Record<string, unknown>
       methodUsage.set(key, (methodUsage.get(key) || 0) + 1);
     }
   }
-  evictLFU(methodUsage, METHOD_USAGE_CAP);
+  // Evict LFU if over cap
+  if (methodUsage.size > METHOD_USAGE_CAP) {
+    let minKey = '', minVal = Infinity;
+    for (const [k, v] of methodUsage) {
+      if (v < minVal) { minKey = k; minVal = v; }
+    }
+    if (minKey) methodUsage.delete(minKey);
+  }
 }
 
 /** Get frecency score for sorting */

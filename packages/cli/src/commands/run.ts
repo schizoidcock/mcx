@@ -1,8 +1,11 @@
-import { readFile, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { join, extname, resolve } from "node:path";
 import { homedir } from "node:os";
 import pc from "picocolors";
 import { exists } from "../utils/paths";
+
+import { createDebugger } from "../utils/debug.js";
+const debug = createDebugger("cmdrun");
 
 /**
  * Validate that a path is within allowed directories to prevent path traversal attacks.
@@ -20,7 +23,7 @@ async function validatePath(filePath: string): Promise<string> {
     const realDir = await realpath(dir).catch(() => dir);
     // SECURITY: Check exact match OR realPath starts with realDir + separator
     // This prevents prefix collision (e.g., /home/.mcx-malicious matching /home/.mcx)
-    if (realPath === realDir || realPath.startsWith(realDir + "/") || realPath.startsWith(realDir + "\\")) {
+    if (realPath === realDir || realPath.startsWith(`${realDir}/`) || realPath.startsWith(`${realDir}\\`)) {
       return realPath;
     }
   }
@@ -28,23 +31,7 @@ async function validatePath(filePath: string): Promise<string> {
   throw new Error(`Path not allowed: ${filePath}. Must be within cwd or ~/.mcx/`);
 }
 
-async function loadConfig(): Promise<Record<string, unknown> | null> {
-  const cwd = process.cwd();
-  const configPath = join(cwd, "mcx.config.ts");
 
-  if (!(await exists(configPath))) {
-    return null;
-  }
-
-  try {
-    // Dynamic import for the config
-    const configModule = await import(`file://${configPath}`);
-    return configModule.default || configModule;
-  } catch (error) {
-    console.error(pc.red("Failed to load mcx.config.ts:"), error);
-    return null;
-  }
-}
 
 async function runScript(scriptPath: string): Promise<void> {
   const absolutePath = resolve(process.cwd(), scriptPath);

@@ -4,7 +4,6 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import pc from "picocolors";
-import * as path from "path";
 import { initCommand } from "./commands/init.js";
 import { runCommand } from "./commands/run.js";
 import { serveCommand } from "./commands/serve.js";

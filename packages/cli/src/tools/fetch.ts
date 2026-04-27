@@ -6,11 +6,14 @@
  */
 
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
-import { formatError, formatBytes } from "./utils.js";
-import { errorTips } from "../context/tips.js";
+import { formatError, } from "./utils.js";
 import { trackToolUsage, suggestNextTool, trackNetworkBytes } from "../context/tracking.js";
 import { htmlToMarkdown, extractHtmlTitle } from "../search/html-to-markdown.js";
 import { isBlockedUrl } from "../utils/security.js";
+import { createDebugger } from "../utils/debug.js";
+import { validationErrors } from "../context/messages/index.js";
+
+const debug = createDebugger("fetch");
 
 // ============================================================================
 // Types
@@ -74,7 +77,7 @@ function formatAge(ms: number): string {
 }
 
 function getPreview(content: string, maxLen: number = 3000): string {
-  return content.length <= maxLen ? content : content.slice(0, maxLen) + "\n\n... [truncated]";
+  return content.length <= maxLen ? content : `${content.slice(0, maxLen)}\n\n... [truncated]`;
 }
 
 function searchQueries(
@@ -98,7 +101,7 @@ function extractLabelFromUrl(url: string): string {
     const urlObj = new URL(url);
     const path = urlObj.pathname;
     const lastPart = path !== "/" ? path.split("/").filter(Boolean).pop() : null;
-    const suffix = lastPart ? " - " + lastPart.replace(/[-_]/g, " ").replace(/\.\w+$/, "") : "";
+    const suffix = lastPart ? ` - ${lastPart.replace(/[-_]/g, " ").replace(/\.\w+$/, "")}` : "";
     return urlObj.hostname + suffix;
   } catch {
     return "fetched";
@@ -142,16 +145,17 @@ async function handleFetch(
   params: FetchParams
 ): Promise<McpResult> {
   const { url, queries: rawQueries, force = false, preview = false, timeout } = params;
+  const span = debug.span("handleFetch", { url, queries: rawQueries?.length, force, preview });
   
   if (!url) {
-    return formatError("Missing url parameter");
+    return formatError(validationErrors.missing("url"));
   }
   
   // Validate queries if provided
   const queries = rawQueries ?? [];
   if (rawQueries !== undefined && !Array.isArray(rawQueries)) {
     return formatError(
-      `queries must be an array\n` +
+      `${validationErrors.mustBeType("queries", "an array")}\n` +
       `💡 Example: mcx_fetch({ url: "...", queries: ["term1", "term2"] })`
     );
   }
@@ -256,10 +260,12 @@ async function handleFetch(
     }
     
     trackToolUsage("mcx_fetch");
+    span.end({ cached: false, chunks, sizeKB, queries: queries.length });
     return output.join("\n") + (suggestNextTool("mcx_fetch") || "");
     
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    span.end({ error: msg });
     return formatError(`Fetch error: ${msg}`);
   }
 }

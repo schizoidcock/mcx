@@ -137,24 +137,24 @@ describe('batchSearch', () => {
     expect(typeof results).toBe('object');
     expect(results).toHaveProperty('auth');
     expect(results).toHaveProperty('database');
-    expect(Array.isArray(results['auth'])).toBe(true);
-    expect(Array.isArray(results['database'])).toBe(true);
+    expect(Array.isArray(results.auth)).toBe(true);
+    expect(Array.isArray(results.database)).toBe(true);
   });
 
   test('groups results by query', () => {
     const results = batchSearch(store, ['authentication', 'caching']);
 
     // Auth query should find auth content
-    expect(results['authentication'].length).toBeGreaterThan(0);
+    expect(results.authentication.length).toBeGreaterThan(0);
     // Caching query should find cache content
-    expect(results['caching'].length).toBeGreaterThan(0);
+    expect(results.caching.length).toBeGreaterThan(0);
   });
 
   test('handles queries with no results', () => {
     const results = batchSearch(store, ['nonexistent']);
 
     expect(results).toHaveProperty('nonexistent');
-    expect(results['nonexistent']).toEqual([]);
+    expect(results.nonexistent).toEqual([]);
   });
 
   test('respects limit per query', () => {
@@ -164,6 +164,6 @@ describe('batchSearch', () => {
     store.index('Auth method 3', 'auth3');
 
     const results = batchSearch(store, ['auth'], { limit: 2 });
-    expect(results['auth'].length).toBeLessThanOrEqual(2);
+    expect(results.auth.length).toBeLessThanOrEqual(2);
   });
 });

@@ -6,19 +6,21 @@
  */
 
 import { readFile, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, basename, resolve } from "node:path";
+import { isAbsolute, resolve, basename } from "node:path";
 import type { ToolContext, ToolDefinition, McpResult } from "./types.js";
 import { normalizePath } from "../utils/paths.js";
 import { formatError, indexAndSearch, diffSummary } from "./utils.js";
 import { FILE_HELPERS_CODE } from "../context/create.js";
 import { formatFileResult, formatStored } from "../utils/truncate.js";
-import { updateProximityContext, trackFsBytes, trackToolUsage, suggestNextTool } from "../context/tracking.js";
+import { updateProximityContext, trackFsBytes, trackToolUsage, } from "../context/tracking.js";
 import { errorTips, eventTips } from "../context/tips.js";
+import { validationErrors } from "../context/messages/index.js";
 import { getVariable, setFileVariable, getAllPrefixed, getFileVarByPath, getPathByFileVar, clearFileVariables } from "../context/variables.js";
 import { getStoredAt, getEditedAt, recordStore, recordEdit } from "../context/files.js";
 import { FILE_INDEX_THRESHOLD } from "./constants.js";
 import { formatSearchSnippets } from "../search/snippets.js";
 import { checkBraceBalance } from "../utils/syntax.js";
+import { debugFile as debug } from "../utils/debug.js";
 
 // ============================================================================
 
@@ -32,6 +34,7 @@ export interface FileParams {
   clear?: boolean;   // Clear all file variables
   intent?: string;   // Auto-search after indexing large files
   write?: boolean;   // Write code result back to file
+  content?: string;  // Direct content for create/overwrite (no read required)
 }
 
 interface FileContent {
@@ -67,6 +70,14 @@ async function isFileStale(path: string): Promise<boolean> {
   }
 }
 
+/** Auto-reload stale file and return diff (Linus: ONE source of truth) */
+async function autoReloadStale(varName: string, path: string): Promise<string> {
+  const oldContent = getVariable(varName)?.value?.raw || '';
+  const newContent = await readFile(path, 'utf8');
+  storeContent(varName, newContent, path);
+  return diffSummary(oldContent, newContent);
+}
+
 
 
 // ============================================================================
@@ -76,9 +87,9 @@ async function isFileStale(path: string): Promise<boolean> {
 function validateParams(params: FileParams): { ok: true } | { ok: false; error: McpResult } {
   const { storeAs, code, write, intent } = params;
   
-  if (!storeAs) return { ok: false, error: formatError("Missing storeAs parameter") };
-  if (write && !code) return { ok: false, error: formatError("write: true requires code parameter") };
-  if (intent && code) return { ok: false, error: formatError("Cannot use intent and code together") };
+  if (!storeAs) return { ok: false, error: formatError(validationErrors.missing("storeAs")) };
+  if (write && !code) return { ok: false, error: formatError(validationErrors.required("write: true", "code parameter")) };
+  if (intent && code) return { ok: false, error: formatError(validationErrors.incompatible("intent", "code")) };
   // NOTE: Stale check moved to handleExistingVar for auto-reload support
   return { ok: true };
 }
@@ -135,15 +146,30 @@ const buildDiffParts = (delta: number, firstDiff: number, modified: number[]): s
   return parts;
 };
 
-/** Generate diff summary: "10->15 lines (+5 at 6-10, modified 3)" */
+/** Generate diff summary with compact indicators: "[+5] 10->15 | at 6-10, ~3" */
 function diffSummary(oldContent: string, newContent: string): string {
-  const oldLines = oldContent.split('\n');
-  const newLines = newContent.split('\n');
+  const NL = String.fromCharCode(10);
+  const oldLines = oldContent.split(NL);
+  const newLines = newContent.split(NL);
   const delta = newLines.length - oldLines.length;
   const { firstDiff, modified } = findModifiedLines(oldLines, newLines);
-  const parts = buildDiffParts(delta, firstDiff, modified);
-  const changes = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-  return `${oldLines.length}->${newLines.length} lines${changes}`;
+  
+  // Compact indicator
+  const indicator = delta > 0 ? '[+' + delta + ']' : delta < 0 ? '[' + delta + ']' : modified.length > 0 ? '[~]' : '';
+  
+  // Build details
+  const details: string[] = [];
+  if (delta !== 0 && firstDiff > 0) {
+    details.push('at ' + firstDiff + '-' + (firstDiff + Math.abs(delta) - 1));
+  }
+  if (modified.length > 0 && modified.length <= 10) {
+    details.push('~' + groupRanges(modified));
+  } else if (modified.length > 10) {
+    details.push('~' + modified.length + ' lines');
+  }
+  
+  const detailStr = details.length > 0 ? ' | ' + details.join(', ') : '';
+  return (indicator + ' ' + oldLines.length + '->' + newLines.length + detailStr).trim();
 }
 
 // Handle existing variable (no path provided)
@@ -154,16 +180,12 @@ async function handleExistingVar(ctx: ToolContext, params: FileParams): Promise<
   const existing = getVariable(storeAs);
   const path = getPathByFileVar(storeAs);
 
-  if (!existing?.value) return formatError(`${storeAs} not found\n` + errorTips.loadFirst(storeAs));
+  if (!existing?.value) return formatError(`${storeAs} not found\n${errorTips.loadFirst(storeAs)}`);
 
-  // Auto-reload stale files with diff summary
-  let staleNote = '';
-  if (path && await isFileStale(path)) {
-    const oldContent = existing.value.raw;
-    const newContent = await readFile(path, 'utf8');
-    staleNote = `Auto-reloaded: ${diffSummary(oldContent, newContent)}\n`;
-    storeContent(storeAs, newContent, path);
-  }
+  // Auto-reload stale files
+  const staleNote = path && await isFileStale(path)
+    ? `Auto-reloaded: ${await autoReloadStale(storeAs, path)}\n`
+    : '';
 
   return dispatchCode(ctx, code, write, storeAs, path!, `${staleNote}✓ ${storeAs} ready`, staleNote);
 }
@@ -174,21 +196,24 @@ async function handleExistingVar(ctx: ToolContext, params: FileParams): Promise<
 
 function buildNoIntentResult(ctx: ToolContext, content: string, label: string, stored: string): string {
   ctx.contentStore.index(content, label, { contentType: "code" });
-  return stored + '\n' + eventTips.autoIndex(label, content.length);
+  return `${stored}\n${eventTips.autoIndex(label, content.length)}`;
 }
 
-function buildIntentResult(ctx: ToolContext, content: string, label: string, intent: string, stored: string): string {
+function buildIntentResult(_ctx: ToolContext, content: string, label: string, intent: string, stored: string): string {
   const { results, terms } = indexAndSearch(content, label, intent, "code");
   if (results.length === 0) {
     const hint = terms.length > 0 ? `\nSearchable: ${terms.join(', ')}` : '';
-    return stored + `\nIndexed: ${label}\nNo matches.${hint}\n-> mcx_search() to explore`;
+    return `${stored}\nIndexed: ${label}\nNo matches.${hint}\n-> mcx_search() to explore`;
   }
-  return stored + '\n' + formatSearchSnippets(results, intent);
+  return `${stored}\n${formatSearchSnippets(results, intent)}`;
 }
 
 function handleLargeFile(
-  ctx: ToolContext, storeAs: string, path: string, parsed: FileContent, content: string, intent?: string
+  ctx: ToolContext, storeAs: string, path: string, parsed: FileContent, content: string, intent?: string, code?: string
 ): McpResult {
+  if (code) {
+    return formatError(validationErrors.fileTooLarge(String(FILE_INDEX_THRESHOLD)));
+  }
   const label = `file:${path}`;
   const stored = formatStored(storeAs, { lines: parsed.lines.length });
   
@@ -223,13 +248,17 @@ async function checkDuplicateVar(
   const existingVar = getFileVarByPath(resolvedPath);
   
   if (!existingVar || existingVar === storeAs) return null;
+  
+  // If file is stale, auto-reload (Linus: eliminate special cases)
   if (await isFileStale(resolvedPath)) {
-    return formatError(`${existingVar} is stale\n` + errorTips.reload(resolvedPath, existingVar));
+    if (storeAs && storeAs !== existingVar) return null;
+    const diff = await autoReloadStale(existingVar, resolvedPath);
+    return `Auto-reloaded ${existingVar}: ${diff}`;
   }
   
   // If user requested different name with code, reject and guide
   if (storeAs !== existingVar && code) {
-    const corrected = code.replaceAll('$' + storeAs, '$' + existingVar);
+    const corrected = code.replaceAll(`$${storeAs}`, `$${existingVar}`);
     return formatError(errorTips.alreadyLoaded(existingVar, corrected));
   }
 
@@ -251,7 +280,7 @@ async function loadFile(ctx: ToolContext, params: FileParams): Promise<McpResult
   const { storeAs, code, write, intent } = params;
   const path = normalizePath(params.path!);
   
-  if (!isAbsolute(path)) return formatError(`Absolute path required. Got: "${params.path}"`);
+  if (!isAbsolute(path)) return formatError(validationErrors.absolutePath(params.path!));
   const resolvedPath = normalizePath(resolve(path));
   
   // Check cache
@@ -265,14 +294,48 @@ async function loadFile(ctx: ToolContext, params: FileParams): Promise<McpResult
   // Read file
   let content: string;
   try { content = await readFile(resolvedPath, "utf-8"); }
-  catch { return formatError(`File not found: ${resolvedPath}`); }
+  catch { return formatError(validationErrors.notFound("File", resolvedPath)); }
   
   // Store and dispatch
   const parsed = storeContent(storeAs, content, resolvedPath);
   if (content.length > FILE_INDEX_THRESHOLD) {
-    return handleLargeFile(ctx, storeAs, resolvedPath, parsed, content, intent);
+    return handleLargeFile(ctx, storeAs, resolvedPath, parsed, content, intent, code);
   }
   return dispatchCode(ctx, code, write, storeAs, resolvedPath, formatStored(storeAs, { lines: parsed.lines.length }));
+}
+
+// ============================================================================
+// Direct write handler (replaces mcx_write)
+// ============================================================================
+
+async function handleDirectWrite(params: FileParams): Promise<McpResult> {
+  const { path: filePath, content } = params;
+  
+  if (!filePath) return formatError(validationErrors.required("content", "path parameter"));
+  if (!isAbsolute(filePath)) return formatError(validationErrors.absolutePath(filePath));
+  if (typeof content !== 'string') return formatError(validationErrors.mustBeType("content", "a string"));
+  
+  const validated = validateWriteContent(content, basename(filePath));
+  if (!validated.ok) return validated.error;
+  
+  let oldContent: string | null = null;
+  try {
+    oldContent = await readFile(filePath, 'utf8');
+  } catch {
+    // File doesn't exist - that's ok for create
+  }
+  
+  await writeFile(filePath, validated.content);
+  recordEdit(filePath);
+
+  const NL = String.fromCharCode(10);
+  const lineCount = validated.content.split(NL).length;
+  const fileName = basename(filePath);
+  
+  if (oldContent === null) {
+    return '[new ✓] ' + fileName + ' | ' + lineCount + ' lines (1-' + lineCount + ')';
+  }
+  return '[ok ✓] ' + fileName + ' | ' + diffSummary(oldContent, content);
 }
 
 // ============================================================================
@@ -280,22 +343,38 @@ async function loadFile(ctx: ToolContext, params: FileParams): Promise<McpResult
 // ============================================================================
 
 async function handleFile(ctx: ToolContext, params: FileParams): Promise<McpResult> {
+  debug.span("handleFile", { path: params.path, storeAs: params.storeAs, hasCode: !!params.code, write: params.write });
+  debug.time("handleFile");
+  
   // Clear variables
   if (params.clear) {
     const cleared = clearFileVariables();
-    return `✓ Cleared ${cleared} file variable${cleared !== 1 ? 's' : ''}`;
+    debug.timeEnd("handleFile");
+    return `✓ Cleared ${cleared} file variable${cleared !== 1 ? "s" : ""}`;
   }
   
   // Normalize path
   if (params.path) params.path = normalizePath(params.path);
   
+  // Direct content write (no read required) - replaces mcx_write
+  if (params.content !== undefined) {
+    const result = await handleDirectWrite(params);
+    debug.timeEnd("handleFile");
+    return result;
+  }
+  
   // Validate
   const validated = validateParams(params);
-  if (!validated.ok) return validated.error;
+  if (!validated.ok) {
+    debug.error("validation failed", validated.error);
+    debug.timeEnd("handleFile");
+    return validated.error;
+  }
   
   // Route
-  if (!params.path) return handleExistingVar(ctx, params);
-  return loadFile(ctx, params);
+  const result = params.path ? await loadFile(ctx, params) : await handleExistingVar(ctx, params);
+  debug.timeEnd("handleFile");
+  return result;
 }
 
 function parseFileContent(content: string, path: string): FileContent {
@@ -307,17 +386,16 @@ function parseFileContent(content: string, path: string): FileContent {
  * Execute code in sandbox - ONE source of truth for code execution.
  */
 
-// Normalize JSON double-escapes: \\n → \n (Linus: single purpose helper)
-const normalizeEscapes = (s: string): string =>
-  s.replace(/\\\\n/g, '\\n').replace(/\\\\t/g, '\\t').replace(/\\\\r/g, '\\r');
 
 async function runCode(
   ctx: ToolContext,
   code: string
 ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  debug.debug("runCode", { codeLen: code.length, preview: code.slice(0, 80) });
+  debug.time("runCode");
   const variables = getAllPrefixed();
-  const normalizedCode = normalizeEscapes(code);
-  const fullCode = FILE_HELPERS_CODE + "\nreturn (" + normalizedCode + ")";
+  const normalizedCode = code;
+  const fullCode = `${FILE_HELPERS_CODE}\nreturn (${normalizedCode})`;
 
   try {
     const result = await ctx.sandbox.execute(fullCode, {
@@ -325,7 +403,11 @@ async function runCode(
       variables,
       env: {},
     });
-    if (!result.success) return { ok: false, error: (result.error?.message || "Execution failed") + "\n💡 write requires JS expression returning string, e.g.: $var.raw.replace('old', 'new')" };
+    debug.timeEnd("runCode");
+    if (!result.success) {
+      debug.error("sandbox failed", result.error?.message);
+      return { ok: false, error: `${result.error?.message || "Execution failed"}\n${errorTips.writeRequiresExpression()}` };
+    }
     return { ok: true, value: result.value };
   } catch (err) {
     return { ok: false, error: String(err) };
@@ -376,7 +458,7 @@ async function executeCode(
 // ============================================================================
 
 const SAFE_PATTERNS: Record<string, (s: string) => boolean> = {
-  braces: s => /^[{}\[\]};,]+$/.test(s),
+  braces: s => /^[{}[\]};,]+$/.test(s),
   comments: s => s.startsWith('//') || s.startsWith('/*') || s.startsWith('*'),
   chaining: s => s.startsWith('.') && s.length < 30,
   controlFlow: s => ['break;', 'continue;', 'return;', 'throw;'].includes(s),
@@ -399,7 +481,7 @@ const getBlock = (lines: string[], i: number) =>
 
 /** Format duplicate preview */
 const formatDuplicate = (line: string) => 
-  (line.length > 40 ? line.slice(0, 37) + '...' : line) + ' (3-line block repeated)';
+  `${line.length > 40 ? `${line.slice(0, 37)}...` : line} (3-line block repeated)`;
 
 function findDuplicatesInContent(content: string): string[] {
   const lines = content.split('\n');
@@ -420,7 +502,7 @@ export function validateWriteContent(
   value: unknown, varName: string
 ): { ok: true; content: string } | { ok: false; error: McpResult } {
   if (typeof value !== 'string') {
-    return { ok: false, error: formatError(`${varName}: write requires code to return string\n💡 write requires JS expression returning string, e.g.: $var.raw.replace('old', 'new')`) };
+    return { ok: false, error: formatError(errorTips.writeRequiresString(varName)) };
   }
   
   const content = value.replace(/\r\n/g, '\n');
@@ -430,12 +512,12 @@ export function validateWriteContent(
     const count = Math.abs(braceCheck.balance);
     const type = braceCheck.balance > 0 ? 'unclosed' : 'unmatched';
     const lines = braceCheck.balance > 0 ? braceCheck.unclosedLines : braceCheck.unmatchedLines;
-    return { ok: false, error: formatError(`unbalanced braces - ${count} ${type} brace(s) at line(s): ${lines.join(', ')}`) };
+    return { ok: false, error: formatError(validationErrors.unbalancedBraces(count, type, lines)) };
   }
 
   const duplicates = findDuplicatesInContent(content);
   if (duplicates.length > 0) {
-    return { ok: false, error: formatError(`Suspicious duplicates:\n${duplicates.join('\n')}`) };
+    return { ok: false, error: formatError(validationErrors.suspiciousDuplicates(duplicates)) };
   }
   
   return { ok: true, content };
@@ -455,8 +537,9 @@ async function executeAndWrite(
   const validated = validateWriteContent(result.value, varName);
   if (!validated.ok) return validated.error;
 
-  // Detect failed replaces (content unchanged)
-  if (validated.content === oldContent) {
+  // Detect failed replaces (content unchanged, normalize line endings)
+  const normalize = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (normalize(validated.content) === normalize(oldContent)) {
     return formatError(`${varName}: content unchanged - replace pattern may not have matched`);
   }
 
@@ -467,14 +550,14 @@ async function executeAndWrite(
 
   // Generate diff summary
   const diff = oldContent ? diffSummary(oldContent, validated.content) : '';
-  const diffNote = diff ? ` ${diff}` : '';
-
-  return `✓ Wrote ${validated.content.length} chars to ${filePath}${diffNote}`;
+  const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath;
+  const NL = String.fromCharCode(10);
+  return '[ok ✓] ' + fileName + ' | ' + diff;
 }
 
 export const mcxFile: ToolDefinition<FileParams> = {
   name: "mcx_file",
-  description: `Read file into variable OR query existing variable with helpers.
+  description: `Read, query, edit, or create files.
 
 **Load file:**
 mcx_file({ path: "/abs/path/file.ts", storeAs: "x" })
@@ -485,6 +568,9 @@ mcx_file({ storeAs: "x", code: "grep($x, 'TODO')" })
 **Edit and write back:**
 mcx_file({ storeAs: "x", code: "$x.raw.replace(/old/g, 'new')", write: true })
 
+**Create/overwrite file (no read required):**
+mcx_file({ path: "/abs/path/new.ts", content: "const x = 1;" })
+
 **Helpers:**
 - grep($var, 'pattern') - search content
 - lines($var, start, end) - get line range
@@ -493,9 +579,7 @@ mcx_file({ storeAs: "x", code: "$x.raw.replace(/old/g, 'new')", write: true })
 - outline($var) - structure overview
 - $var.raw - content without line numbers (for write)
 
-**Stale detection:** If file was edited since loading, you'll be prompted to reload.
-
-Note: Shell/Python file operations in mcx_execute redirect here.`,
+**Stale detection:** If file was edited since loading, you'll be prompted to reload.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -505,6 +589,7 @@ Note: Shell/Python file operations in mcx_execute redirect here.`,
       clear: { type: "boolean", description: "Clear all file variables" },
       intent: { type: "string", description: "Auto-search after indexing large files" },
       write: { type: "boolean", description: "Write code result back to file (code must return string)" },
+      content: { type: "string", description: "Direct content for create/overwrite (no read required)" },
     },
   },
   handler: handleFile,

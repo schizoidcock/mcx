@@ -42,6 +42,9 @@ export interface FormatGrepResult {
 
 import { GREP_MAX_PER_FILE, GREP_MAX_LINE_WIDTH } from "./constants.js";
 
+import { createDebugger } from "../utils/debug.js";
+const debug = createDebugger("formatgrep");
+
 const GREP_MAX_FILES = 20;
 
 // ============================================================================

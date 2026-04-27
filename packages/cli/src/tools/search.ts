@@ -10,9 +10,13 @@ import type { ResolvedSpec, ToolSpec, ParameterSpec } from "../spec/types.js";
 import type { ContentStore } from "../search/store.js";
 import { formatError } from "./utils.js";
 import { errorTips } from "../context/tips.js";
+import { validationErrors, warnings } from "../context/messages/index.js";
 import { getMethodFrecency } from "../context/tracking.js";
 import { setVariable } from "../context/variables.js";
 import { checkSearchThrottle } from "../context/guards.js";
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("search");
 import { MAX_PARAMS_FULL, MAX_PARAMS_TRUNCATED, MAX_DESC_LENGTH, SNIPPET_MAX_BATCH, SNIPPET_MAX_REGULAR } from "./constants.js";
 import { extractSnippet } from "../search/snippets.js";
 
@@ -45,7 +49,9 @@ async function handleSpecSearch(
   code: string,
   storeAs?: string
 ): Promise<McpResult> {
+  const span = debug.span("handleSpecSearch", { codeLen: code.length, storeAs });
   if (!ctx.spec) {
+    span.end({ error: "no spec" });
     return formatError("No spec loaded", errorTips.noSpecLoaded());
   }
   
@@ -62,8 +68,10 @@ async function handleSpecSearch(
     const output = formatSpecResult(value);
     const storedMsg = storeAs ? `\nStored as $${storeAs}` : "";
     
+    span.end({ resultType: typeof value });
     return output + storedMsg;
   } catch (err) {
+    span.end({ error: String(err) });
     return formatError(`Spec query failed: ${String(err)}`);
   }
 }
@@ -78,7 +86,7 @@ function formatSpecResult(value: unknown): string {
   }
   if (typeof value === "object") {
     const json = JSON.stringify(value, null, 2);
-    return json.length > 3000 ? json.slice(0, 3000) + "\n... [truncated]" : json;
+    return json.length > 3000 ? `${json.slice(0, 3000)}\n... [truncated]` : json;
   }
   return String(value);
 }
@@ -103,6 +111,7 @@ function handleContentSearch(
   storeAs?: string,
   source?: string
 ): McpResult {
+  debug.debug("handleContentSearch", { queries: queries.length, limit, source });
   const sourceIds = source ? resolveSourceIds(ctx.contentStore, source) : undefined;
   const results = queries.map(query => ({
     query,
@@ -152,7 +161,7 @@ function formatParam(p: ParameterSpec): string[] {
   const req = p.required ? "(required)" : "(optional)";
   const def = p.default !== undefined ? ` = ${JSON.stringify(p.default)}` : "";
   const desc = p.description?.length > MAX_DESC_LENGTH 
-    ? p.description.slice(0, MAX_DESC_LENGTH - 3) + "..." : p.description;
+    ? `${p.description.slice(0, MAX_DESC_LENGTH - 3)}...` : p.description;
   const lines = [`- **${p.name}**: \`${p.type}\` ${req}${def}`];
   if (desc) lines.push(`  ${desc}`);
   return lines;
@@ -220,13 +229,15 @@ async function handleSearch(
   ctx: ToolContext,
   params: SearchParams
 ): Promise<McpResult> {
+  const { code, queries, adapter, storeAs, limit = 5, source } = params;
+  const span = debug.span("handleSearch", { hasCode: !!code, queriesLen: queries?.length, adapter, source });
   // Throttle check (skip for spec exploration which is lightweight)
   const throttle = checkSearchThrottle();
   if (throttle.blocked) {
-    return formatError(`Search throttled (${throttle.calls} calls in window). Wait a moment.`);
+    span.end({ throttled: true });
+    return formatError(warnings.searchThrottled(throttle.calls));
   }
   
-  const { code, queries, adapter, storeAs, limit = 5, source } = params;
   const effectiveLimit = throttle.reducedLimit ? Math.min(limit, 3) : limit;
   
   // Mode 1: Spec exploration
@@ -238,8 +249,8 @@ async function handleSearch(
   if (queries !== undefined) {
     if (!Array.isArray(queries)) {
       return formatError(
-        `queries must be an array\n` +
-        `💡 Example: mcx_search({ queries: ["term1", "term2"] })`
+        validationErrors.mustBeType("queries", "an array"),
+        "Example: mcx_search({ queries: [\"term1\", \"term2\"] })"
       );
     }
     if (queries.length > 0) {
@@ -254,6 +265,7 @@ async function handleSearch(
   }
   
   // No mode specified
+  span.end({ error: "no mode" });
   return formatError(
     "Specify one of: code (spec query), queries (content search), adapter (method search)\n" +
     "Examples:\n" +

@@ -7,6 +7,10 @@ import { homedir } from "node:os";
 import { mkdirSync, existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("paths");
+
 /** Max directory depth to traverse (prevents symlink loops) */
 const MAX_TRAVERSE_DEPTH = 100;
 
@@ -131,7 +135,7 @@ export function compactPath(filePath: string, maxLen = 50): string {
   
   const parts = normalizePath(filePath).split('/');
   if (parts.length <= 2) {
-    return '...' + filePath.slice(-(maxLen - 3));
+    return `...${filePath.slice(-(maxLen - 3))}`;
   }
   
   const first = parts[0];
@@ -141,13 +145,13 @@ export function compactPath(filePath: string, maxLen = 50): string {
   if (minimal.length <= maxLen) {
     let result = last;
     for (let i = parts.length - 2; i > 0; i--) {
-      const candidate = `${first}/.../` + parts.slice(i).join('/');
+      const candidate = `${first}/.../${parts.slice(i).join('/')}`;
       if (candidate.length <= maxLen) {
         result = parts.slice(i).join('/');
       } else break;
     }
-    return `${first}/.../` + result;
+    return `${first}/.../${result}`;
   }
   
-  return '.../' + last.slice(-(maxLen - 4));
+  return `.../${last.slice(-(maxLen - 4))}`;
 }

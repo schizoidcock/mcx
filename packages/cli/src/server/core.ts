@@ -23,10 +23,11 @@ import { createServerState, trackTokenOutput } from "../context/state.js";
 import { createFinderCache, withFinder, destroyFinderCache } from "../utils/finder.js";
 
 // Context
-import { createToolContext, FILE_HELPERS_CODE } from "../context/create.js";
+import { createToolContext, } from "../context/create.js";
 
 // Search
 import { getContentStore } from "../search/index.js";
+import { debugServer as debug } from "../utils/debug.js";
 
 // Tools
 import { registerExtractedTools } from "../tools/register.js";

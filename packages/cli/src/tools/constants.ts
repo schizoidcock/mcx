@@ -22,6 +22,49 @@ export const FILE_INDEX_THRESHOLD = 10_000;
 
 /** Auto-index large outputs instead of truncating (bytes) */
 export const FORMAT_INDEX_THRESHOLD = 20_000;
+
+/** Large output threshold - show if smaller, just header if larger (100KB) */
+export const LARGE_OUTPUT_THRESHOLD = 102_400;
+
+/** Adapter result truncation threshold (chars) */
+export const ADAPTER_TRUNCATE_THRESHOLD = 3000;
+
+/** Adapter result display limit (chars) */
+export const ADAPTER_DISPLAY_LIMIT = 2000;
+
+/** Max items to show in tree format */
+export const TREE_MAX_ITEMS = 10;
+
+/** Keys to use as ID in tree format (priority order) */
+export const TREE_ID_KEYS = ['id', 'name', 'number', 'title'];
+
+/** Keys to extract as status in tree format */
+export const TREE_STATUS_KEYS = ['status', 'state'];
+
+/** Keys to extract as amount in tree format */
+export const TREE_AMOUNT_KEYS = ['total', 'amount'];
+
+/** Keys to extract as date in tree format */
+export const TREE_DATE_KEYS = ['date', 'created_at'];
+
+// ============================================================================
+// Formatter Limits
+// ============================================================================
+
+/** Max items to show in formatted output */
+export const FORMAT_MAX_ITEMS = 10;
+
+/** Max title/string length in formatted output */
+export const FORMAT_MAX_TITLE = 50;
+
+/** Max array items in preview */
+export const FORMAT_ARRAY_PREVIEW = 3;
+
+/** Max object keys in preview */
+export const FORMAT_KEYS_PREVIEW = 5;
+
+/** Max relevant lines in diff */
+export const FORMAT_MAX_RELEVANT = 20;
 // ============================================================================
 // Character Limits
 // ============================================================================
@@ -98,7 +141,7 @@ const FILE_READ_PARTS = [
 ];
 
 /** Joined code template for sandbox file reading */
-export const FILE_READ_CODE = FILE_READ_PARTS.join(';') + ';';
+export const FILE_READ_CODE = `${FILE_READ_PARTS.join(';')};`;
 
 /** Build code to read a file inside sandbox */
 export function buildReadCode(escapedPath: string): string {
@@ -151,6 +194,9 @@ export const CLEANUP_INTERVAL = 50;
 
 /** Max chunks in ContentStore before eviction */
 export const MAX_CHUNKS = 5000;
+
+/** Max bytes per chunk before splitting */
+export const MAX_CHUNK_BYTES = 4096;
 
 /** Content stale after this time (30 min, same as MAP_TTL_MS) */
 export const CONTENT_STALE_MS = 30 * 60 * 1000;

@@ -7,8 +7,13 @@
 
 import type { ToolContext, ToolDefinition, McpResult, BackgroundTask } from "./types.js";
 import { formatError } from "./utils.js";
+import { validationErrors } from "../context/messages/index.js";
 import { setVariable } from "../context/variables.js";
 import { cleanupOldTasks } from "../context/state.js";
+
+import { createDebugger } from "../utils/debug.js";
+
+const debug = createDebugger("tasks");
 
 // ============================================================================
 // Types
@@ -76,7 +81,7 @@ async function handleSpawn(
   const existing = ctx.backgroundTasks.get(taskId);
   
   if (existing?.status === "running") {
-    return formatError(`Task "${taskId}" already running`);
+    return formatError(validationErrors.alreadyRunning("Task", taskId));
   }
   
   const task = createTask(taskId, label);
@@ -97,7 +102,7 @@ function handleCheckById(
   id: string
 ): McpResult {
   const task = tasks.get(id);
-  if (!task) return formatError(`Task "${id}" not found`);
+  if (!task) return formatError(validationErrors.notFound("Task", id));
   
   const lines = [
     `Task: ${task.id}`,
@@ -123,7 +128,7 @@ function handleList(
   }
   
   if (filtered.length === 0) {
-    return `No ${statusFilter === "all" ? "" : statusFilter + " "}tasks`;
+    return `No ${statusFilter === "all" ? "" : `${statusFilter} `}tasks`;
   }
   
   const lines = filtered.map((t) => {
@@ -160,7 +165,7 @@ async function handleCommands(
   return results.join("\n");
 }
 
-function storeResult(_ctx: ToolContext, name: string, value: unknown): void {
+function storeResult(name: string, value: unknown): void {
   setVariable(name, value);
 }
 
@@ -176,7 +181,7 @@ async function runOperation(
   
   const json = JSON.stringify(result.value);
   if (storeAs) {
-    storeResult(ctx, storeAs, result.value);
+    storeResult(storeAs, result.value);
     return `✓ $${storeAs} = ${json.slice(0, 100)}`;
   }
   return `✓ ${json.slice(0, 150)}`;
@@ -201,27 +206,33 @@ async function handleTasks(
   ctx: ToolContext,
   params: TasksParams
 ): Promise<McpResult> {
+  const span = debug.span("handleTasks", { hasCode: !!params.code, id: params.id, commandsLen: params.commands?.length, opsLen: params.operations?.length });
   // Spawn mode: code provided
   if (params.code) {
+    span.end({ mode: "spawn" });
     return handleSpawn(ctx, params.code, params.label);
   }
   
   // Check by ID
   if (params.id) {
+    span.end({ mode: "check" });
     return handleCheckById(ctx.backgroundTasks, params.id);
   }
   
   // Commands mode
   if (params.commands?.length) {
+    span.end({ mode: "commands" });
     return handleCommands(ctx, params.commands);
   }
   
   // Operations mode
   if (params.operations?.length) {
+    span.end({ mode: "operations" });
     return handleOperations(ctx, params.operations);
   }
   
   // Default: list tasks
+  span.end({ mode: "list" });
   return handleList(ctx.backgroundTasks, params.status || "all");
 }
 

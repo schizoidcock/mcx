@@ -10,11 +10,12 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "test": "turbo run test",
-    "lint": "turbo run lint",
+    "lint": "biome lint packages/",
     "clean": "turbo run clean && rm -rf node_modules",
     "mcx": "bun ./packages/cli/dist/index.js"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.13",
     "turbo": "^2.9.6",
     "typescript": "^6.0.3"
   },
